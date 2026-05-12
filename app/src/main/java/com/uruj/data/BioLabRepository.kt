@@ -26,6 +26,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 import kotlin.reflect.KClass
 
 /**
@@ -74,13 +76,18 @@ class BioLabRepository(context: Context) {
         val now = Instant.now()
         val monthAgo = now.minus(Duration.ofDays(30))
         val weekAgo = now.minus(Duration.ofDays(7))
-        val dayAgo = now.minus(Duration.ofDays(1))
+        // "Today" = calendar-day boundary (local-timezone midnight to now), to
+        // match what Samsung Health shows when the user looks at "min today"
+        // or "max today". v0.2.5 used a rolling 24h window which produced a
+        // misleading "matches Samsung's max" copy at hours after midnight.
+        val todayStart = LocalDate.now(ZoneId.systemDefault())
+            .atStartOfDay(ZoneId.systemDefault()).toInstant()
 
         // Pull last 30d of HR samples WITH timestamps — both for max-HR detection
         // (needs broad range to catch hard efforts) and for the RHR/HRV proxy
         // windows. Timestamps also feed the sleeping-RHR filter below.
         val hrTimed30d = readHrSamplesTimestamped(client, granted, monthAgo, now)
-        val hrTimedToday = readHrSamplesTimestamped(client, granted, dayAgo, now)
+        val hrTimedToday = readHrSamplesTimestamped(client, granted, todayStart, now)
         val hrSamples30d = hrTimed30d.map { it.second }
         val hrSamplesToday = hrTimedToday.map { it.second }
         val hrAnalysisToday = hrAnalyzer.analyze(hrSamplesToday)
@@ -110,11 +117,11 @@ class BioLabRepository(context: Context) {
 
         val sleepLastNightHours = readLastNightSleep(client, granted, now)
         val spo2LastValue = readLatestSpo2(client, granted, weekAgo, now)
-        val stepsToday = readStepsCount(client, granted, dayAgo, now)
-        val distanceTodayMeters = readDistanceMeters(client, granted, dayAgo, now)
-        val totalCalsToday = readTotalCaloriesKcal(client, granted, dayAgo, now)
-        val activeCalsToday = readActiveCaloriesKcal(client, granted, dayAgo, now)
-        val exerciseToday = readExerciseSessionCount(client, granted, dayAgo, now)
+        val stepsToday = readStepsCount(client, granted, todayStart, now)
+        val distanceTodayMeters = readDistanceMeters(client, granted, todayStart, now)
+        val totalCalsToday = readTotalCaloriesKcal(client, granted, todayStart, now)
+        val activeCalsToday = readActiveCaloriesKcal(client, granted, todayStart, now)
+        val exerciseToday = readExerciseSessionCount(client, granted, todayStart, now)
         val exerciseSessionEnds30d = readExerciseSessionEnds(client, granted, monthAgo, now)
         val samsungVo2Max = readLatestVo2Max(client, granted, monthAgo, now)
         val latestWeight = readLatestWeight(client, granted, monthAgo, now)

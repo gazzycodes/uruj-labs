@@ -107,9 +107,23 @@ class HrRecoveryCalculator {
     }
 
     companion object {
-        private val EFFORT_LOOKBACK: Duration = Duration.ofMinutes(5)
+        // Effort lookback widened from 5min → 30min because endurance riders
+        // commonly cool down for several minutes before pressing stop. The
+        // strict clinical HRR1 protocol assumes max effort right at the
+        // termination point; real-world cyclists cool down. Capturing peak
+        // within the closing 30 min still represents the working HR for
+        // recovery comparison.
+        private val EFFORT_LOOKBACK: Duration = Duration.ofMinutes(30)
+        // Recovery window widened from 30-120s → 30s-10min to match Fit Band 3
+        // spot-check cadence (~5-10min between samples at rest). 30s lower
+        // bound still excludes the working HR; 10min upper bound is short
+        // enough that any sample inside represents legitimate post-effort
+        // recovery state.
         private val RECOVERY_WINDOW_START: Duration = Duration.ofSeconds(30)
-        private val RECOVERY_WINDOW_END: Duration = Duration.ofSeconds(120)
-        private const val MIN_PEAK_BPM = 130
+        private val RECOVERY_WINDOW_END: Duration = Duration.ofMinutes(10)
+        // Peak threshold lowered from 130 → 120 to include moderate-intensity
+        // rides. Below 120 bpm the recovery curve is too shallow to be a
+        // meaningful autonomic-recovery signal.
+        private const val MIN_PEAK_BPM = 120
     }
 }
