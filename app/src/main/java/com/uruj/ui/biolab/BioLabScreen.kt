@@ -133,6 +133,9 @@ fun BioLabScreen(
             // Hero cards: the biohacker flex numbers
             item("vo2") { Vo2MaxCard(s) }
             item("cv_age") { CardiovascularAgeCard(s) }
+            if (s.hrr1Median != null) {
+                item("hrr1") { HrRecoveryCard(s) }
+            }
 
             item("cardio_header") { SectionHeader("Cardiovascular") }
             item("hr_card") { HeartRateCard(s) }
@@ -296,10 +299,10 @@ private fun Vo2MaxCard(s: BioLabSnapshot) {
 private fun CardiovascularAgeCard(s: BioLabSnapshot) {
     val bio = s.biologicalAge
     val delta = s.biologicalAgeDelta
-    BioCard("Cardiovascular Biological Age", accentColor = UrujNeonMagenta) {
+    BioCard("Fitness Age Estimate", accentColor = UrujNeonMagenta) {
         if (bio == null) {
             Text(
-                "Need RHR + VO₂ max to compute biological age.",
+                "Need RHR + VO₂ max to compute fitness age.",
                 color = UrujMuted, fontSize = 12.sp,
             )
             return@BioCard
@@ -339,6 +342,53 @@ private fun CardiovascularAgeCard(s: BioLabSnapshot) {
             s.biologicalAgeVerdict,
             color = UrujText, fontSize = 12.sp, fontWeight = FontWeight.Medium,
         )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Estimate from RHR + VO₂ max fitness markers. NOT a cardiovascular risk metric — real CV age needs blood pressure, lipids, family history.",
+            color = UrujMuted, fontSize = 10.sp,
+        )
+    }
+}
+
+@Composable
+private fun HrRecoveryCard(s: BioLabSnapshot) {
+    val drop = s.hrr1Median ?: return
+    // Color the hero number by the cardiology-grade band.
+    val accent = when {
+        drop >= 18 -> UrujZone2  // green — excellent
+        drop >= 12 -> UrujZone3  // amber — average
+        else -> UrujZone5        // red — poor / elevated CV risk
+    }
+    BioCard("HR Recovery (HRR1) — autonomic health", accentColor = accent) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                drop.toString(),
+                color = accent,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Black,
+                fontSize = 56.sp,
+                letterSpacing = (-2).sp,
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "bpm drop in 60s",
+                color = UrujMuted,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(bottom = 14.dp),
+            )
+        }
+        Text(
+            s.hrr1Classification ?: "—",
+            color = UrujText, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Median of ${s.hrr1SampleCount} rides where peak HR ≥130 bpm. " +
+                "Peer-reviewed cardiovascular health metric (Cole et al., NEJM 1999). " +
+                "Lower drop → higher all-cause mortality risk independent of VO₂ max.",
+            color = UrujMuted, fontSize = 10.sp,
+        )
     }
 }
 
@@ -365,11 +415,25 @@ private fun HeartRateCard(s: BioLabSnapshot) {
             )
         }
         MetricRow(
-            "MAX HR",
+            "MAX HR (effective)",
             value = "${s.maxHrBpm} bpm",
             subtitle = if (s.maxHrAutoDetected) "auto-detected from your rides — high confidence"
-            else "220−age estimate, real-world ±10-12 bpm. Updates if a ride records higher.",
+            else "220−age estimate, real-world ±10-12 bpm. Auto-updates if a ride records higher.",
         )
+        if (s.highestHrToday != null) {
+            MetricRow(
+                "MAX HR TODAY",
+                value = "${s.highestHrToday} bpm",
+                subtitle = "highest sample observed today (matches Samsung's max)",
+            )
+        }
+        if (s.highestHr30d != null) {
+            MetricRow(
+                "MAX HR 30d",
+                value = "${s.highestHr30d} bpm",
+                subtitle = "your hardest observed effort in 30 days — true max likely higher",
+            )
+        }
         if (s.restingHrBpm != null) {
             MetricRow("HR RESERVE", value = "${s.maxHrBpm - s.restingHrBpm} bpm")
         }

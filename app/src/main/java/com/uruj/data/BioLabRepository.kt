@@ -19,6 +19,7 @@ import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import com.uruj.power.CardiovascularAgeCalculator
 import com.uruj.power.HrAnalyzer
+import com.uruj.power.HrRecoveryCalculator
 import com.uruj.power.KarvonenZonesCalculator
 import com.uruj.power.VO2MaxCalculator
 import kotlinx.coroutines.Dispatchers
@@ -43,6 +44,7 @@ class BioLabRepository(context: Context) {
     private val vo2Calc = VO2MaxCalculator()
     private val cvAgeCalc = CardiovascularAgeCalculator()
     private val karvonenCalc = KarvonenZonesCalculator()
+    private val hrrCalc = HrRecoveryCalculator()
 
     suspend fun snapshot(): BioLabSnapshot = withContext(Dispatchers.IO) {
         val profile = profileStore.current()
@@ -95,6 +97,11 @@ class BioLabRepository(context: Context) {
         // Health's "min today" display. Useful as a cross-check next to our
         // derived sleeping RHR (different definitions, both should be sane).
         val lowestHrToday = hrSamplesToday.filter { it >= 35 }.minOrNull()
+        // Today's observed max + 30d max — shows the gap between Samsung's
+        // observed max (sub-maximal effort) and our formula-based max ceiling.
+        // 250 bpm filter rules out sensor-glitch spikes.
+        val highestHrToday = hrSamplesToday.filter { it in 35..250 }.maxOrNull()
+        val highestHr30d = hrSamples30d.filter { it in 35..250 }.maxOrNull()
 
         // Samsung's own daily RHR record — if the band writes one, that's the
         // authoritative platform number. Show it alongside ours for full
@@ -108,6 +115,7 @@ class BioLabRepository(context: Context) {
         val totalCalsToday = readTotalCaloriesKcal(client, granted, dayAgo, now)
         val activeCalsToday = readActiveCaloriesKcal(client, granted, dayAgo, now)
         val exerciseToday = readExerciseSessionCount(client, granted, dayAgo, now)
+        val exerciseSessionEnds30d = readExerciseSessionEnds(client, granted, monthAgo, now)
         val samsungVo2Max = readLatestVo2Max(client, granted, monthAgo, now)
         val latestWeight = readLatestWeight(client, granted, monthAgo, now)
 
@@ -170,6 +178,12 @@ class BioLabRepository(context: Context) {
             karvonenCalc.compute(effectiveMaxHr, effectiveRestingHr)
         } else null
 
+        // Derived: HR Recovery (HRR1) — the actual peer-reviewed cardiovascular
+        // health metric we can compute from existing ride/workout data. Cole et
+        // al. NEJM 1999 + many follow-ups: a stronger mortality predictor than
+        // VO₂ max or max HR alone. Cardiology-grade signal from consumer data.
+        val hrr = hrrCalc.compute(exerciseSessionEnds30d, hrTimed30d)
+
         BioLabSnapshot(
             computedAtMs = System.currentTimeMillis(),
             healthConnectAvailable = true,
@@ -184,6 +198,8 @@ class BioLabRepository(context: Context) {
             restingHrSourceLabel = restingHrSourceLabel,
             restingHrFromSleep = sleepingRhr != null,
             lowestHrToday = lowestHrToday,
+            highestHrToday = highestHrToday,
+            highestHr30d = highestHr30d,
             samsungDirectRhrBpm = samsungDirectRhr,
             maxHrBpm = effectiveMaxHr,
             maxHrAutoDetected = maxHrCameFromAutoDetect,
@@ -205,6 +221,11 @@ class BioLabRepository(context: Context) {
             biologicalAgeVerdict = cvAge.verdict,
             karvonenZones = karvonenZones,
             ftpIsLikelyUntested = ftpIsLikelyUntested,
+
+            // Heart Rate Recovery — the real peer-reviewed cardio metric
+            hrr1Median = hrr?.medianHrr1,
+            hrr1Classification = hrr?.medianClassification,
+            hrr1SampleCount = hrr?.samples?.size ?: 0,
 
             // Activity
             stepsToday = stepsToday,
@@ -442,6 +463,26 @@ class BioLabRepository(context: Context) {
         }.onFailure { Log.w(TAG, "exercise read failed", it) }.getOrNull()
     }
 
+    /** End-time of every exercise session in the window — feeds the HRR1 calc. */
+    private suspend fun readExerciseSessionEnds(
+        client: HealthConnectClient,
+        granted: Set<String>,
+        start: Instant,
+        end: Instant,
+    ): List<Instant> {
+        if (HealthPermission.getReadPermission(ExerciseSessionRecord::class) !in granted) return emptyList()
+        return runCatching {
+            client.readRecords(
+                ReadRecordsRequest(
+                    recordType = ExerciseSessionRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(start, end),
+                    ascendingOrder = false,
+                ),
+            ).records.map { it.endTime }
+        }.onFailure { Log.w(TAG, "exercise ends read failed", it) }
+            .getOrDefault(emptyList())
+    }
+
     private suspend fun readLatestVo2Max(
         client: HealthConnectClient,
         granted: Set<String>,
@@ -521,6 +562,10 @@ data class BioLabSnapshot(
     val restingHrFromSleep: Boolean = false,
     /** Lowest HR sample recorded today — matches Samsung's "min today" display. */
     val lowestHrToday: Int? = null,
+    /** Highest HR sample today — Samsung's "max today" equivalent. */
+    val highestHrToday: Int? = null,
+    /** Highest HR over the 30-day observation window — your hardest tracked effort. */
+    val highestHr30d: Int? = null,
     /** Samsung Health's own daily RestingHeartRateRecord, if it writes one. */
     val samsungDirectRhrBpm: Int? = null,
     val maxHrBpm: Int = 190,
@@ -544,6 +589,12 @@ data class BioLabSnapshot(
     val karvonenZones: KarvonenZonesCalculator.Result? = null,
     /** True when FTP is at the placeholder default 200W — power-based VO2 is suppressed. */
     val ftpIsLikelyUntested: Boolean = true,
+    /** Median HRR1 across qualifying exercise sessions (peak ≥130 bpm) in 30d. */
+    val hrr1Median: Int? = null,
+    /** Cole-et-al-based classification of the median HRR1. */
+    val hrr1Classification: String? = null,
+    /** Number of qualifying sessions feeding the HRR1 median. */
+    val hrr1SampleCount: Int = 0,
 
     // Activity (today)
     val stepsToday: Int? = null,
