@@ -63,15 +63,21 @@ class HrRecoveryCalculator {
             // recovery curve worth measuring.
             if (peak < MIN_PEAK_BPM) return@mapNotNull null
 
-            // Recovery: lowest HR in the 30s–120s post-end window. With Fit Band 3
-            // spot-checks, we may not have a sample exactly at +60s; widening the
-            // window catches the actual recovery floor without leaking into the
-            // "warm-down walking pace" zone past 2 min.
+            // Recovery: HR sample whose timestamp is CLOSEST to end+60s.
+            // Cole's protocol measures HR exactly at +60s post-exercise. With
+            // Fit Band 3 spot-checks we won't land precisely on 60s — closest-
+            // by-time in the [+30s, +180s] window is the best honest match.
+            // Earlier versions used MIN-of-window which biased toward later
+            // (more recovered) samples — that measured HRR2-HRR3 and labelled
+            // it HRR1.
+            val ideal = end.plus(Duration.ofSeconds(60))
             val recoveryWindow = hrTimedSamples.filter { (t, _) ->
                 !t.isBefore(end.plus(RECOVERY_WINDOW_START)) &&
                     !t.isAfter(end.plus(RECOVERY_WINDOW_END))
             }
-            val recovery = recoveryWindow.minOfOrNull { it.second } ?: return@mapNotNull null
+            val recovery = recoveryWindow
+                .minByOrNull { (t, _) -> kotlin.math.abs(Duration.between(ideal, t).seconds) }
+                ?.second ?: return@mapNotNull null
             val drop = peak - recovery
             // Negative drops or absurd jumps indicate sensor weirdness, not data.
             if (drop !in 0..100) return@mapNotNull null
