@@ -340,7 +340,7 @@ private fun HeartRateCard(s: BioLabSnapshot) {
         MetricRow(
             "RESTING HR",
             value = s.restingHrBpm?.let { "$it bpm" } ?: "—",
-            subtitle = if (s.restingHrBpm != null) "proxy from ${s.hrRecords7d} HR samples" else null,
+            subtitle = s.restingHrSourceLabel.takeIf { it.isNotBlank() && s.restingHrBpm != null },
         )
         MetricRow(
             "MAX HR",

@@ -73,12 +73,22 @@ class BioLabRepository(context: Context) {
         val weekAgo = now.minus(Duration.ofDays(7))
         val dayAgo = now.minus(Duration.ofDays(1))
 
-        // Pull last 30d of HR samples — both for max-HR detection (needs broad range
-        // to catch hard efforts) and for the RHR/HRV proxy windows.
-        val hrSamples30d = readHrSamples(client, granted, monthAgo, now)
-        val hrSamplesToday = readHrSamples(client, granted, dayAgo, now)
+        // Pull last 30d of HR samples WITH timestamps — both for max-HR detection
+        // (needs broad range to catch hard efforts) and for the RHR/HRV proxy
+        // windows. Timestamps also feed the sleeping-RHR filter below.
+        val hrTimed30d = readHrSamplesTimestamped(client, granted, monthAgo, now)
+        val hrTimedToday = readHrSamplesTimestamped(client, granted, dayAgo, now)
+        val hrSamples30d = hrTimed30d.map { it.second }
+        val hrSamplesToday = hrTimedToday.map { it.second }
         val hrAnalysisToday = hrAnalyzer.analyze(hrSamplesToday)
         val hrAnalysis30d = hrAnalyzer.analyze(hrSamples30d)
+
+        // Sleeping-RHR filter — the legitimate true RHR signal. Daytime HR
+        // samples (sitting at a desk = 60-70 bpm) pull the bottom-percentile
+        // proxy upward. Filtering to sleep-window samples only captures the
+        // genuine deep-rest HR that elite-endurance athletes show.
+        val sleepWindows30d = readSleepWindows(client, granted, monthAgo, now)
+        val sleepingRhr = computeSleepingRhr(hrTimed30d, sleepWindows30d)
 
         val sleepLastNightHours = readLastNightSleep(client, granted, now)
         val spo2LastValue = readLatestSpo2(client, granted, weekAgo, now)
@@ -98,8 +108,25 @@ class BioLabRepository(context: Context) {
         val autoDetectedMaxHr = hrAnalysis30d.proxyMaxHrBpm?.takeIf { it > 100 } ?: 0
         val effectiveMaxHr = maxOf(profile.maxHrBpm, autoDetectedMaxHr)
         val maxHrCameFromAutoDetect = autoDetectedMaxHr > profile.maxHrBpm
-        val effectiveRestingHr = hrAnalysisToday.proxyRestingHrBpm
+
+        // RHR priority: sleeping RHR (true rest) > today's proxy > 30d proxy.
+        // The label tells the UI which source is in play, so the rider knows
+        // whether they're looking at a polished or a coarse number.
+        val effectiveRestingHr = sleepingRhr?.bpm
+            ?: hrAnalysisToday.proxyRestingHrBpm
             ?: hrAnalysis30d.proxyRestingHrBpm
+        val restingHrSourceLabel = when {
+            sleepingRhr != null -> {
+                val nights = sleepingRhr.nights
+                val plural = if (nights == 1) "night" else "nights"
+                "true sleeping RHR from $nights $plural"
+            }
+            hrAnalysisToday.proxyRestingHrBpm != null ->
+                "proxy from ${hrSamplesToday.size} HR samples (today)"
+            hrAnalysis30d.proxyRestingHrBpm != null ->
+                "proxy from ${hrSamples30d.size} HR samples (30d)"
+            else -> "no data yet"
+        }
 
         // Derived: VO2 max (both formulas, cross-validated)
         val vo2 = vo2Calc.compute(
@@ -134,6 +161,8 @@ class BioLabRepository(context: Context) {
             // Cardiovascular
             currentHrBpm = hrSamplesToday.lastOrNull(),
             restingHrBpm = effectiveRestingHr,
+            restingHrSourceLabel = restingHrSourceLabel,
+            restingHrFromSleep = sleepingRhr != null,
             maxHrBpm = effectiveMaxHr,
             maxHrAutoDetected = maxHrCameFromAutoDetect,
             hrvProxyMs = hrAnalysisToday.proxyHrvSdMs,
@@ -172,12 +201,12 @@ class BioLabRepository(context: Context) {
 
     // ---- Health Connect query helpers ----
 
-    private suspend fun readHrSamples(
+    private suspend fun readHrSamplesTimestamped(
         client: HealthConnectClient,
         granted: Set<String>,
         start: Instant,
         end: Instant,
-    ): List<Int> {
+    ): List<Pair<Instant, Int>> {
         if (HealthPermission.getReadPermission(HeartRateRecord::class) !in granted) return emptyList()
         return runCatching {
             client.readRecords(
@@ -189,9 +218,59 @@ class BioLabRepository(context: Context) {
                 ),
             ).records
                 .flatMap { it.samples }
-                .map { it.beatsPerMinute.toInt() }
+                .map { it.time to it.beatsPerMinute.toInt() }
         }.getOrDefault(emptyList())
     }
+
+    /** Pulls every sleep session in the window (start/end times only). */
+    private suspend fun readSleepWindows(
+        client: HealthConnectClient,
+        granted: Set<String>,
+        start: Instant,
+        end: Instant,
+    ): List<Pair<Instant, Instant>> {
+        if (HealthPermission.getReadPermission(SleepSessionRecord::class) !in granted) return emptyList()
+        return runCatching {
+            client.readRecords(
+                ReadRecordsRequest(
+                    recordType = SleepSessionRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(start, end),
+                    ascendingOrder = false,
+                ),
+            ).records.map { it.startTime to it.endTime }
+        }.onFailure { Log.w(TAG, "sleep windows read failed", it) }
+            .getOrDefault(emptyList())
+    }
+
+    /**
+     * True sleeping RHR — filter HR samples to those falling inside a sleep
+     * session, then take the 10th-percentile. Median would over-estimate
+     * because REM-phase HR spikes pull it up; min would under-estimate due to
+     * occasional sensor glitches dropping to 30s. The 10th-percentile is a
+     * robust deep-sleep RHR estimate that matches what Garmin / Whoop publish.
+     */
+    private fun computeSleepingRhr(
+        timedSamples: List<Pair<Instant, Int>>,
+        sleepWindows: List<Pair<Instant, Instant>>,
+    ): SleepingRhrResult? {
+        if (sleepWindows.isEmpty() || timedSamples.isEmpty()) return null
+        val duringSleep = timedSamples.filter { (time, _) ->
+            sleepWindows.any { (s, e) -> !time.isBefore(s) && !time.isAfter(e) }
+        }
+        // Need enough samples to be statistically meaningful. With 1s-2min
+        // sample cadence on Fit Band, even one night yields hundreds of points;
+        // anything under 30 means data is too sparse to trust.
+        if (duringSleep.size < 30) return null
+        val sortedBpms = duringSleep.map { it.second }.sorted()
+        val p10Index = (sortedBpms.size * 0.10).toInt().coerceIn(0, sortedBpms.lastIndex)
+        // Distinct sleep nights = count of windows that actually had ≥1 HR sample.
+        val nightsWithHr = sleepWindows.count { (s, e) ->
+            timedSamples.any { (t, _) -> !t.isBefore(s) && !t.isAfter(e) }
+        }
+        return SleepingRhrResult(bpm = sortedBpms[p10Index], nights = nightsWithHr)
+    }
+
+    private data class SleepingRhrResult(val bpm: Int, val nights: Int)
 
     private suspend fun readLastNightSleep(
         client: HealthConnectClient,
@@ -382,6 +461,10 @@ data class BioLabSnapshot(
     // Cardiovascular
     val currentHrBpm: Int? = null,
     val restingHrBpm: Int? = null,
+    /** Human-readable source label for RHR — "true sleeping RHR from N nights" or "proxy from N HR samples". */
+    val restingHrSourceLabel: String = "",
+    /** True when restingHrBpm came from the sleeping-RHR filter (high-confidence). */
+    val restingHrFromSleep: Boolean = false,
     val maxHrBpm: Int = 190,
     val maxHrAutoDetected: Boolean = false,
     val hrvProxyMs: Float? = null,
