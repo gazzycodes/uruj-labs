@@ -62,6 +62,7 @@ fun PreRideChecklistScreen(
     onOpenProfile: () -> Unit = {},
     onOpenHistory: () -> Unit = {},
     onOpenDiagnostics: () -> Unit = {},
+    onOpenBioLab: () -> Unit = {},
     viewModel: ChecklistViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -170,6 +171,7 @@ fun PreRideChecklistScreen(
                     onOpenProfile = onOpenProfile,
                     onOpenHistory = onOpenHistory,
                     onOpenDiagnostics = onOpenDiagnostics,
+                    onOpenBioLab = onOpenBioLab,
                 )
             }
             item("title") {
@@ -237,6 +239,7 @@ private fun UrujHeader(
     onOpenProfile: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onOpenBioLab: () -> Unit,
 ) {
     val tightPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
     Row(
@@ -264,6 +267,16 @@ private fun UrujHeader(
             )
         }
         Spacer(Modifier.weight(1f))
+        TextButton(onClick = onOpenBioLab, contentPadding = tightPadding) {
+            Text(
+                text = "LAB",
+                color = UrujAccent,
+                fontWeight = FontWeight.Black,
+                fontSize = 10.sp,
+                letterSpacing = 1.sp,
+                maxLines = 1,
+            )
+        }
         TextButton(onClick = onOpenDiagnostics, contentPadding = tightPadding) {
             Text(
                 text = "PIPELINE",

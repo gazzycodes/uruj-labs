@@ -15,6 +15,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.uruj.data.StoredRideSummary
 import com.uruj.service.RideRecorderService
 import com.uruj.service.RideStateHolder
+import com.uruj.ui.biolab.BioLabScreen
 import com.uruj.ui.checklist.PreRideChecklistScreen
 import com.uruj.ui.diagnostics.DiagnosticsScreen
 import com.uruj.ui.history.RideHistoryScreen
@@ -28,6 +29,7 @@ private sealed interface AppScreen {
     data object Profile : AppScreen
     data object History : AppScreen
     data object Diagnostics : AppScreen
+    data object BioLab : AppScreen
     data class ViewingPastRide(val summary: StoredRideSummary) : AppScreen
 }
 
@@ -63,6 +65,7 @@ class MainActivity : ComponentActivity() {
                             onOpenProfile = { screen = AppScreen.Profile },
                             onOpenHistory = { screen = AppScreen.History },
                             onOpenDiagnostics = { screen = AppScreen.Diagnostics },
+                            onOpenBioLab = { screen = AppScreen.BioLab },
                         )
                         AppScreen.Profile -> RiderProfileScreen(
                             onBack = { screen = AppScreen.Checklist },
@@ -74,6 +77,9 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                         AppScreen.Diagnostics -> DiagnosticsScreen(
+                            onBack = { screen = AppScreen.Checklist },
+                        )
+                        AppScreen.BioLab -> BioLabScreen(
                             onBack = { screen = AppScreen.Checklist },
                         )
                         is AppScreen.ViewingPastRide -> RideSummaryScreen(
