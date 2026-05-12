@@ -241,72 +241,61 @@ private fun UrujHeader(
     onOpenDiagnostics: () -> Unit,
     onOpenBioLab: () -> Unit,
 ) {
-    val tightPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        UrujLogo(size = 36.dp)
-        Spacer(Modifier.width(10.dp))
-        Column {
-            Text(
-                text = "URUJ LABS",
-                color = MaterialTheme.colorScheme.onBackground,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.Black,
-                fontSize = 16.sp,
-                letterSpacing = 3.sp,
-            )
-            Text(
-                text = "v${BuildConfig.VERSION_NAME}",
-                color = UrujAccent,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                fontSize = 8.sp,
-                letterSpacing = 1.sp,
-            )
+    // Two-row header: brand on top, navigation underneath. Four nav buttons in
+    // a single row was overflowing on ~360dp phones (PROFILE got pushed off the
+    // right edge). Splitting gives every action equal space and breathing room.
+    val navPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            UrujLogo(size = 36.dp)
+            Spacer(Modifier.width(10.dp))
+            Column {
+                Text(
+                    text = "URUJ LABS",
+                    color = MaterialTheme.colorScheme.onBackground,
+                    fontFamily = FontFamily.SansSerif,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 16.sp,
+                    letterSpacing = 3.sp,
+                )
+                Text(
+                    text = "v${BuildConfig.VERSION_NAME}",
+                    color = UrujAccent,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 8.sp,
+                    letterSpacing = 1.sp,
+                )
+            }
         }
-        Spacer(Modifier.weight(1f))
-        TextButton(onClick = onOpenBioLab, contentPadding = tightPadding) {
-            Text(
-                text = "LAB",
-                color = UrujAccent,
-                fontWeight = FontWeight.Black,
-                fontSize = 10.sp,
-                letterSpacing = 1.sp,
-                maxLines = 1,
-            )
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            NavButton(label = "LAB", onClick = onOpenBioLab, contentPadding = navPadding)
+            NavButton(label = "PIPELINE", onClick = onOpenDiagnostics, contentPadding = navPadding)
+            NavButton(label = "RIDES", onClick = onOpenHistory, contentPadding = navPadding)
+            NavButton(label = "PROFILE", onClick = onOpenProfile, contentPadding = navPadding)
         }
-        TextButton(onClick = onOpenDiagnostics, contentPadding = tightPadding) {
-            Text(
-                text = "PIPELINE",
-                color = UrujAccent,
-                fontWeight = FontWeight.Black,
-                fontSize = 10.sp,
-                letterSpacing = 1.sp,
-                maxLines = 1,
-            )
-        }
-        TextButton(onClick = onOpenHistory, contentPadding = tightPadding) {
-            Text(
-                text = "RIDES",
-                color = UrujAccent,
-                fontWeight = FontWeight.Black,
-                fontSize = 10.sp,
-                letterSpacing = 1.sp,
-                maxLines = 1,
-            )
-        }
-        TextButton(onClick = onOpenProfile, contentPadding = tightPadding) {
-            Text(
-                text = "PROFILE",
-                color = UrujAccent,
-                fontWeight = FontWeight.Black,
-                fontSize = 10.sp,
-                letterSpacing = 1.sp,
-                maxLines = 1,
-            )
-        }
+    }
+}
+
+@Composable
+private fun NavButton(label: String, onClick: () -> Unit, contentPadding: PaddingValues) {
+    TextButton(onClick = onClick, contentPadding = contentPadding) {
+        Text(
+            text = label,
+            color = UrujAccent,
+            fontWeight = FontWeight.Black,
+            fontSize = 11.sp,
+            letterSpacing = 1.5.sp,
+            maxLines = 1,
+        )
     }
 }
 
