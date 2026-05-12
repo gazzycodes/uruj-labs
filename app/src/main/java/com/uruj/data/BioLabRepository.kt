@@ -42,6 +42,7 @@ class BioLabRepository(context: Context) {
 
     private val appContext = context.applicationContext
     private val profileStore = RiderProfileStore(context)
+    private val rideHistory = RideHistoryRepository(context)
     private val hrAnalyzer = HrAnalyzer()
     private val vo2Calc = VO2MaxCalculator()
     private val cvAgeCalc = CardiovascularAgeCalculator()
@@ -123,6 +124,24 @@ class BioLabRepository(context: Context) {
         val activeCalsToday = readActiveCaloriesKcal(client, granted, todayStart, now)
         val exerciseToday = readExerciseSessionCount(client, granted, todayStart, now)
         val exerciseSessionEnds30d = readExerciseSessionEnds(client, granted, monthAgo, now)
+        // URUJ-recorded ride end times — every ride we've logged contributes
+        // to HRR1 regardless of whether Samsung also detected it as a workout.
+        // This closes the gap where the user records with URUJ but doesn't
+        // start a band workout, leaving Samsung blind to the session.
+        val urujRideEnds30d = rideHistory.listAll()
+            .map { Instant.ofEpochMilli(it.endedAtMs) }
+            .filter { !it.isBefore(monthAgo) && !it.isAfter(now) }
+        val combinedSessionEnds = (exerciseSessionEnds30d + urujRideEnds30d)
+            // Dedupe within ±60s — Samsung often writes its own session for a
+            // ride URUJ also recorded; double-counting would skew the median.
+            .sortedBy { it.epochSecond }
+            .fold(mutableListOf<Instant>()) { acc, instant ->
+                val last = acc.lastOrNull()
+                if (last == null || Duration.between(last, instant).abs() > Duration.ofSeconds(60)) {
+                    acc += instant
+                }
+                acc
+            }
         val samsungVo2Max = readLatestVo2Max(client, granted, monthAgo, now)
         val latestWeight = readLatestWeight(client, granted, monthAgo, now)
 
@@ -207,7 +226,7 @@ class BioLabRepository(context: Context) {
         // health metric we can compute from existing ride/workout data. Cole et
         // al. NEJM 1999 + many follow-ups: a stronger mortality predictor than
         // VO₂ max or max HR alone. Cardiology-grade signal from consumer data.
-        val hrr = hrrCalc.compute(exerciseSessionEnds30d, hrTimed30d)
+        val hrr = hrrCalc.compute(combinedSessionEnds, hrTimed30d)
         val hrr1AthleteContext = computeHrr1AthleteContext(hrr?.medianHrr1, vo2.classification)
 
         BioLabSnapshot(
