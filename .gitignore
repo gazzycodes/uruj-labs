@@ -1,0 +1,48 @@
+# Android Studio / Gradle
+*.iml
+.gradle/
+.kotlin/
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Local SDK / signing config — user-specific, never commit
+local.properties
+keystore.properties
+*.jks
+*.keystore
+
+# IDE
+/.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Build outputs
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Logs
+*.log
+hs_err_pid*
+
+# Personal ride data — never commit (privacy + repo bloat)
+fixtures/*
+!fixtures/.gitkeep
+!fixtures/README.md
+
+# Generated reports
+/app/release/
+/app/debug/
+
+# Python (for tools/)
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+venv/
+.venv/

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- URUJ training-lab palette: dark, neon, AMOLED-friendly -->
+    <color name="uruj_black">#FF000000</color>
+    <color name="uruj_surface">#FF0A0A12</color>
+    <color name="uruj_surface_high">#FF161624</color>
+    <color name="uruj_divider">#FF202030</color>
+
+    <color name="uruj_text">#FFEEEEEE</color>
+    <color name="uruj_text_dim">#FFBBBBBB</color>
+    <color name="uruj_muted">#FF707080</color>
+
+    <!-- Speed / primary data — Material Green A400, matches UrujAccent in Compose. -->
+    <color name="uruj_neon_cyan">#FF00E676</color>
+    <!-- HR / heartbeat accent -->
+    <color name="uruj_neon_magenta">#FFFF2DC8</color>
+    <!-- Zone colors: Z1=blue, Z2=green, Z3=amber, Z4=orange, Z5=red -->
+    <color name="uruj_zone_1">#FF2196F3</color>
+    <color name="uruj_zone_2">#FF00FF85</color>
+    <color name="uruj_zone_3">#FFFFC107</color>
+    <color name="uruj_zone_4">#FFFF6F00</color>
+    <color name="uruj_zone_5">#FFFF1744</color>
+
+    <!-- Default keep for backward compat -->
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>

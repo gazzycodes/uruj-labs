@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">URUJ</string>
+
+    <!-- Notification -->
+    <string name="notif_channel_name">Ride Recording</string>
+    <string name="notif_channel_description">Live URUJ telemetry visible on lock screen during a ride.</string>
+    <string name="notif_action_stop">Stop</string>
+    <string name="notif_speed_unit">kph</string>
+    <string name="notif_hr_unit">bpm</string>
+    <string name="notif_hr_placeholder">—</string>
+    <string name="notif_paused">PAUSED</string>
+</resources>

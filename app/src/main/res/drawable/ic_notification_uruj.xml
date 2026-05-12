@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Notification small icon. White silhouette only — Android strips color and uses
+     just the alpha channel. A "U" glyph approximating the URUJ wordmark. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M5,3 L5,14 C5,17.866 8.134,21 12,21 C15.866,21 19,17.866 19,14 L19,3 L15.5,3 L15.5,14 C15.5,15.933 13.933,17.5 12,17.5 C10.067,17.5 8.5,15.933 8.5,14 L8.5,3 Z" />
+</vector>
