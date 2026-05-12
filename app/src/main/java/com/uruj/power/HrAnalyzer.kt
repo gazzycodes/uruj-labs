@@ -22,7 +22,7 @@ class HrAnalyzer {
 
     fun analyze(samples: List<Int>): HrAnalysisResult {
         if (samples.size < 5) {
-            return HrAnalysisResult(samples.size, null, null, null, null, null)
+            return HrAnalysisResult(samples.size, null, null, null, null, null, null)
         }
         val sorted = samples.sorted()
         val median = sorted[sorted.size / 2]
@@ -34,19 +34,27 @@ class HrAnalyzer {
         val proxyRhr = lowest[lowest.size / 2]
 
         // Proxy HRV: standard deviation of the resting-quartile samples (bottom 25%).
-        // High variability in resting HR correlates with parasympathetic tone /
-        // good recovery, low variability = sympathetic dominance / fatigue.
         val restingQuartileCount = (sorted.size / 4).coerceAtLeast(10).coerceAtMost(sorted.size)
         val restingSamples = sorted.take(restingQuartileCount)
         val restingMean = restingSamples.average()
         val variance = restingSamples.sumOf { (it - restingMean) * (it - restingMean) } / restingSamples.size
         val proxyHrvSd = sqrt(variance).toFloat()
 
+        // Auto-detected max HR: median of the top 1% (or single max if not enough
+        // samples). This filters out spurious GPS/sensor spikes and captures
+        // genuine peak sustained efforts. Better than "single max" because one
+        // bad reading shouldn't define your max — but with sparse data, single
+        // max IS the best we can do until more data accumulates.
+        val highestCount = (sorted.size / 100).coerceAtLeast(1).coerceAtMost(sorted.size)
+        val highest = sorted.takeLast(highestCount)
+        val proxyMaxHr = highest[highest.size / 2]
+
         return HrAnalysisResult(
             sampleCount = samples.size,
             medianBpm = median,
             proxyRestingHrBpm = proxyRhr,
             proxyHrvSdMs = proxyHrvSd,
+            proxyMaxHrBpm = proxyMaxHr,
             minBpm = sorted.first(),
             maxBpm = sorted.last(),
         )
@@ -60,6 +68,8 @@ data class HrAnalysisResult(
     val proxyRestingHrBpm: Int?,
     /** Std deviation of resting-quartile HR samples. Proxy for HRV (not RMSSD, but correlated). */
     val proxyHrvSdMs: Float?,
+    /** Highest sustained HR (median of top 1%). Auto-detected max HR — replaces the 220-age default. */
+    val proxyMaxHrBpm: Int?,
     val minBpm: Int?,
     val maxBpm: Int?,
 )
