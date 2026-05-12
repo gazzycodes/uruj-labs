@@ -126,7 +126,25 @@ class BioLabRepository(context: Context) {
         // If auto-detect is *lower* (no all-out efforts yet) we trust the rider.
         val autoDetectedMaxHr = hrAnalysis30d.proxyMaxHrBpm?.takeIf { it > 100 } ?: 0
         val effectiveMaxHr = maxOf(profile.maxHrBpm, autoDetectedMaxHr)
-        val maxHrCameFromAutoDetect = autoDetectedMaxHr > profile.maxHrBpm
+
+        // Write-back: if a ride observed a higher max HR than the stored
+        // profile value, persist the new max. Without this, the Profile screen
+        // keeps showing the formula default (220-age) even after the rider
+        // demonstrably hits a higher number in a real effort. Per the v0.2.4
+        // sync policy: real observation wins where it exists.
+        if (autoDetectedMaxHr > profile.maxHrBpm) {
+            runCatching { profileStore.save(profile.copy(maxHrBpm = autoDetectedMaxHr)) }
+                .onFailure { Log.w(TAG, "max HR write-back failed", it) }
+        }
+
+        // maxHrCameFromAutoDetect: true when the effective max HR is NOT
+        // the bare 220-age formula default — i.e., either the user manually
+        // set it OR a ride bumped it (which the write-back above ensures
+        // is persisted next snapshot). Drives the "auto-detected vs formula"
+        // copy on the Heart Rate card.
+        val maxHrIsFormulaDefault = profile.maxHrBpm == (220 - profile.ageYears)
+        val maxHrCameFromAutoDetect =
+            autoDetectedMaxHr > profile.maxHrBpm || !maxHrIsFormulaDefault
 
         // RHR priority: sleeping RHR (true rest) > today's proxy > 30d proxy.
         // The label tells the UI which source is in play, so the rider knows
@@ -183,6 +201,7 @@ class BioLabRepository(context: Context) {
         // al. NEJM 1999 + many follow-ups: a stronger mortality predictor than
         // VO₂ max or max HR alone. Cardiology-grade signal from consumer data.
         val hrr = hrrCalc.compute(exerciseSessionEnds30d, hrTimed30d)
+        val hrr1AthleteContext = computeHrr1AthleteContext(hrr?.medianHrr1, vo2.classification)
 
         BioLabSnapshot(
             computedAtMs = System.currentTimeMillis(),
@@ -226,6 +245,7 @@ class BioLabRepository(context: Context) {
             hrr1Median = hrr?.medianHrr1,
             hrr1Classification = hrr?.medianClassification,
             hrr1SampleCount = hrr?.samples?.size ?: 0,
+            hrr1AthleteContext = hrr1AthleteContext,
 
             // Activity
             stepsToday = stepsToday,
@@ -241,6 +261,44 @@ class BioLabRepository(context: Context) {
         if (heightCm <= 0 || weightKg <= 0f) return null
         val heightM = heightCm / 100f
         return weightKg / (heightM * heightM)
+    }
+
+    /**
+     * Athlete-aware interpretation of HRR1. Cole's classification thresholds
+     * (≥18 excellent / 12-17 average / <12 elevated risk) were derived from a
+     * clinical/general population. Trained athletes typically see substantially
+     * higher recovery — a "Cole-Excellent" 18 bpm might actually flag concern
+     * in an elite endurance rider. This layer maps the raw HRR1 against the
+     * user's VO₂ fitness tier and produces a context line the UI can show
+     * alongside the universal Cole classification.
+     *
+     * The fitness-stratified ranges below come from sports-medicine literature
+     * on autonomic recovery in trained athletes (Borresen & Lambert 2008 and
+     * subsequent reviews on trained-athlete HRR norms).
+     */
+    private fun computeHrr1AthleteContext(hrr1: Int?, vo2Classification: String?): String? {
+        if (hrr1 == null || vo2Classification == null) return null
+        return when {
+            vo2Classification.startsWith("Elite") -> when {
+                hrr1 >= 22 -> "In the expected range for elite tier (22-30+ bpm). " +
+                    "Confirms strong autonomic conditioning — recovery is matching aerobic capacity."
+                hrr1 >= 18 -> "Below typical for elite tier (22-30+ bpm) despite Cole-Excellent rating. " +
+                    "Could indicate fatigue, overtraining, or insufficient recovery. Worth tracking trend."
+                else -> "Significantly below elite tier (22-30+ bpm). " +
+                    "Strong recovery deficit — sleep, hydration, training load worth reviewing."
+            }
+            vo2Classification.startsWith("Excellent") -> when {
+                hrr1 >= 20 -> "In the expected range for excellent tier (20-25 bpm). " +
+                    "Well-conditioned autonomic recovery for your fitness level."
+                hrr1 >= 15 -> "Slightly below expected for excellent tier (20-25 bpm). " +
+                    "Monitor trend — could be transient fatigue or insufficient recovery."
+                else -> "Below expected for your fitness tier (20-25 bpm). Recovery deficit possible."
+            }
+            vo2Classification.startsWith("Above average") ->
+                "For above-average fitness, HRR1 typically falls in 18-22 bpm. Cole's thresholds apply directly."
+            else ->
+                "Cole's general-population thresholds apply: ≥18 excellent, 12-17 average, <12 elevated CV risk."
+        }
     }
 
     // ---- Health Connect query helpers ----
@@ -595,6 +653,8 @@ data class BioLabSnapshot(
     val hrr1Classification: String? = null,
     /** Number of qualifying sessions feeding the HRR1 median. */
     val hrr1SampleCount: Int = 0,
+    /** Fitness-tier-aware interpretation of the HRR1 number (athlete vs general population). */
+    val hrr1AthleteContext: String? = null,
 
     // Activity (today)
     val stepsToday: Int? = null,

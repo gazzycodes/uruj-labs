@@ -382,7 +382,29 @@ private fun HrRecoveryCard(s: BioLabSnapshot) {
             s.hrr1Classification ?: "—",
             color = UrujText, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
         )
-        Spacer(Modifier.height(6.dp))
+        if (s.hrr1AthleteContext != null) {
+            Spacer(Modifier.height(8.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(UrujSurfaceHigh.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    "FOR YOUR FITNESS TIER",
+                    color = UrujMuted,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 9.sp,
+                    letterSpacing = 1.sp,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    s.hrr1AthleteContext,
+                    color = UrujText, fontSize = 11.sp,
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
         Text(
             "Median of ${s.hrr1SampleCount} rides where peak HR ≥130 bpm. " +
                 "Peer-reviewed cardiovascular health metric (Cole et al., NEJM 1999). " +
