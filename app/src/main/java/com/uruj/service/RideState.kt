@@ -26,6 +26,14 @@ data class RideState(
     val totalWorkKj: Float = 0f,
     val currentZone: PowerZone? = null,
     val ftpWatts: Int = 200,
+    /** Best 20-minute sliding-window average power across the ride. Drives FTP
+     *  auto-update at ride end: profile.ftpWatts ← 0.95 × this, if higher. */
+    val best20MinPowerWatts: Float = 0f,
+
+    // Heart rate tracking (in-ride observation, feeds the ride-end max-HR write-back)
+    /** Highest HR sample seen during this ride. Drives auto-bump of profile.maxHrBpm
+     *  at ride end when the rider exceeds their declared max. */
+    val maxHrBpmObserved: Int = 0,
 
     // Elevation tracker outputs (barometer-fused)
     val totalElevGainMeters: Float = 0f,

@@ -153,6 +153,41 @@ class RideRecorderService : Service() {
             }.onFailure { Log.w(TAG, "save summary failed", it) }
         }
 
+        // Ride-end profile write-backs — both max HR and FTP auto-update from
+        // the just-finished ride's observed performance. Monotonic increase
+        // only: if observed exceeds stored, persist. Lower values don't shrink
+        // the profile (sub-max effort doesn't mean the rider's ceiling dropped).
+        // Runs on long-lived service scope so it survives recordingJob.cancel().
+        scope.launch {
+            runCatching {
+                val current = profileStore.current()
+                var updated = current
+                var changeNote: String? = null
+
+                if (snapshot.maxHrBpmObserved > current.maxHrBpm) {
+                    updated = updated.copy(maxHrBpm = snapshot.maxHrBpmObserved)
+                    changeNote = "max HR ${current.maxHrBpm} → ${snapshot.maxHrBpmObserved}"
+                }
+
+                // FTP from 20-min best: standard methodology is FTP ≈ 0.95 × best
+                // 20-minute sustained average power. Only auto-update when our
+                // observed FTP estimate exceeds the stored value. The 0.95
+                // multiplier conservatively accounts for the gap between a
+                // 20-min all-out test and a 60-min sustainable threshold.
+                val observedFtp = (snapshot.best20MinPowerWatts * 0.95f).toInt()
+                if (observedFtp > current.ftpWatts && observedFtp >= 50) {
+                    updated = updated.copy(ftpWatts = observedFtp)
+                    val ftpNote = "FTP ${current.ftpWatts}W → ${observedFtp}W"
+                    changeNote = if (changeNote == null) ftpNote else "$changeNote, $ftpNote"
+                }
+
+                if (updated != current) {
+                    profileStore.save(updated)
+                    Log.d(TAG, "Profile auto-updated: $changeNote")
+                }
+            }.onFailure { Log.w(TAG, "profile write-back failed", it) }
+        }
+
         // Persist PRs on the long-lived service scope (not the recordingJob) so it
         // survives the upcoming cancel() and finishes writing to DataStore.
         scope.launch {
@@ -217,6 +252,13 @@ class RideRecorderService : Service() {
         val elevation = ElevationTracker()
         val power3s = RollingAverage(windowSeconds = 3)
         val power30s = RollingAverage(windowSeconds = 30)
+        // 20-min sliding window for FTP auto-update — the standard 20-min FTP
+        // test methodology says FTP ≈ 0.95 × best sustained 20-min average power.
+        // Tracking max across the ride lets us auto-update profile.ftpWatts at
+        // ride end without needing the rider to do a dedicated test.
+        val power20min = RollingAverage(windowSeconds = 1200)
+        var best20MinPowerWatts = 0f
+        var maxHrBpmObserved = 0
 
         runCatching { prTracker.load() }.onFailure { Log.w(TAG, "PR load failed", it) }
 
@@ -450,6 +492,22 @@ class RideRecorderService : Service() {
                 )
                 val pow3s = power3s.add(location.timestampMs, instantPower)
                 val pow30s = power30s.add(location.timestampMs, instantPower)
+                val pow20min = power20min.add(location.timestampMs, instantPower)
+                // Only count the 20-min average toward FTP estimation once the
+                // window is full (≥1200s of samples). Earlier partial windows
+                // would underestimate because they include warmup periods.
+                if (power20min.isFull() && pow20min > best20MinPowerWatts) {
+                    best20MinPowerWatts = pow20min
+                }
+
+                // Track the max HR sample seen so far in the ride. latestHr is
+                // refreshed by the HR flow coroutine — when it ticks higher,
+                // we record it for the ride-end profile write-back.
+                latestHr?.bpm?.let { bpm ->
+                    if (bpm in 35..250 && bpm > maxHrBpmObserved) {
+                        maxHrBpmObserved = bpm
+                    }
+                }
 
                 // Cumulative power stats. Integrate watts × dt to total work in joules.
                 lastPowerSampleMs?.let { previousMs ->
@@ -524,6 +582,8 @@ class RideRecorderService : Service() {
                         smoothedPower30sWatts = pow30s,
                         averagePowerWatts = avgPower,
                         maxPowerWatts = maxPowerWatts,
+                        best20MinPowerWatts = best20MinPowerWatts,
+                        maxHrBpmObserved = maxHrBpmObserved,
                         totalWorkKj = (totalWorkJoules / 1000.0).toFloat(),
                         currentZone = zone,
                         totalElevGainMeters = elevSnapshot.totalGainMeters.toFloat(),

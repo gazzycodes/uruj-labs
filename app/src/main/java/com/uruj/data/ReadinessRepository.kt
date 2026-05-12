@@ -13,6 +13,7 @@ import androidx.health.connect.client.time.TimeRangeFilter
 import com.uruj.domain.ReadinessInputs
 import com.uruj.power.HrAnalyzer
 import com.uruj.power.ReadinessCalculator
+import com.uruj.power.SleepingRhrCalculator
 import com.uruj.domain.ReadinessResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -55,6 +56,7 @@ class ReadinessRepository(context: Context) {
     private val calculator = ReadinessCalculator()
     private val historyRepo = RideHistoryRepository(appContext)
     private val hrAnalyzer = HrAnalyzer()
+    private val sleepingRhrCalc = SleepingRhrCalculator()
 
     suspend fun compute(): ReadinessResult = withContext(Dispatchers.IO) {
         val inputs = gatherInputs()
@@ -177,10 +179,23 @@ class ReadinessRepository(context: Context) {
             rhrBaseline = baseline
         }
 
-        // Fallback: derive proxies from raw HeartRateRecord samples when dedicated
-        // records aren't available. Requires HR permission, which the checklist already
-        // bundles with the other three.
+        // Sleeping-RHR via shared calculator — preferred over proxy when sleep
+        // data + HR samples align. Uses the same logic as Bio Lab so RHR matches
+        // across both screens (was the v0.2.9 inconsistency: Bio Lab 50 vs
+        // Readiness 55). Today = most recent sleep night's min; baseline =
+        // cross-night median over 7d.
         val hrPermGranted = HealthPermission.getReadPermission(HeartRateRecord::class) in granted
+        val sleepPermGranted = HealthPermission.getReadPermission(SleepSessionRecord::class) in granted
+        if (rhrToday == null && hrPermGranted && sleepPermGranted) {
+            val sleepingResult = readSleepingRhr(client, now)
+            if (sleepingResult != null) {
+                rhrToday = sleepingResult.mostRecentNightBpm
+                rhrBaseline = sleepingResult.medianBpm
+            }
+        }
+
+        // Fallback: derive proxies from raw HeartRateRecord samples when dedicated
+        // records aren't available AND sleeping-RHR couldn't be computed.
         if (hrPermGranted && (hrvToday == null || rhrToday == null)) {
             val proxies = readHrProxies(client, now)
             if (rhrToday == null && proxies.todayRhr != null) {
@@ -209,6 +224,43 @@ class ReadinessRepository(context: Context) {
         val todayHrvSd: Float?,
         val baselineHrvSd: Float?,
     )
+
+    /**
+     * Pull 7d of timestamped HR samples + sleep windows and run them through
+     * the shared SleepingRhrCalculator. Returns null on any failure — caller
+     * falls back to proxy logic. Matches Bio Lab's RHR algorithm exactly so
+     * both screens display the same number.
+     */
+    private suspend fun readSleepingRhr(
+        client: HealthConnectClient,
+        now: Instant,
+    ): SleepingRhrCalculator.Result? {
+        return runCatching {
+            val weekAgo = now.minus(Duration.ofDays(7))
+
+            val hrSamples = client.readRecords(
+                ReadRecordsRequest(
+                    recordType = HeartRateRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(weekAgo, now),
+                    ascendingOrder = false,
+                    pageSize = 5_000,
+                ),
+            ).records
+                .flatMap { it.samples }
+                .map { it.time to it.beatsPerMinute.toInt() }
+
+            val sleepWindows = client.readRecords(
+                ReadRecordsRequest(
+                    recordType = SleepSessionRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(weekAgo, now),
+                    ascendingOrder = false,
+                ),
+            ).records.map { it.startTime to it.endTime }
+
+            sleepingRhrCalc.compute(hrSamples, sleepWindows)
+        }.onFailure { Log.w("URUJ-Readiness", "sleeping RHR compute failed", it) }
+            .getOrNull()
+    }
 
     private suspend fun readHrProxies(client: HealthConnectClient, now: Instant): HrProxies {
         return runCatching {
