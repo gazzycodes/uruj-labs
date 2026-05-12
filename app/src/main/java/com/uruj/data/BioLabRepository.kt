@@ -91,9 +91,13 @@ class BioLabRepository(context: Context) {
         val latestWeight = readLatestWeight(client, granted, monthAgo, now)
 
         val effectiveWeightKg = latestWeight ?: profile.riderWeightKg
-        val effectiveMaxHr = hrAnalysis30d.proxyMaxHrBpm
-            ?.takeIf { it > 100 }
-            ?: profile.maxHrBpm
+        // Max-HR: profile value is the floor (user-declared belief). Auto-detect
+        // only wins when the rider has actually exceeded their declared max in a
+        // real effort — that's a legitimate signal the profile needs updating.
+        // If auto-detect is *lower* (no all-out efforts yet) we trust the rider.
+        val autoDetectedMaxHr = hrAnalysis30d.proxyMaxHrBpm?.takeIf { it > 100 } ?: 0
+        val effectiveMaxHr = maxOf(profile.maxHrBpm, autoDetectedMaxHr)
+        val maxHrCameFromAutoDetect = autoDetectedMaxHr > profile.maxHrBpm
         val effectiveRestingHr = hrAnalysisToday.proxyRestingHrBpm
             ?: hrAnalysis30d.proxyRestingHrBpm
 
@@ -131,7 +135,7 @@ class BioLabRepository(context: Context) {
             currentHrBpm = hrSamplesToday.lastOrNull(),
             restingHrBpm = effectiveRestingHr,
             maxHrBpm = effectiveMaxHr,
-            maxHrAutoDetected = hrAnalysis30d.proxyMaxHrBpm != null,
+            maxHrAutoDetected = maxHrCameFromAutoDetect,
             hrvProxyMs = hrAnalysisToday.proxyHrvSdMs,
             hrRecords7d = hrSamples30d.size,
 
