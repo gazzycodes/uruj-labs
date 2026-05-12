@@ -21,6 +21,7 @@ import com.uruj.power.CardiovascularAgeCalculator
 import com.uruj.power.HrAnalyzer
 import com.uruj.power.HrRecoveryCalculator
 import com.uruj.power.KarvonenZonesCalculator
+import com.uruj.power.SleepingRhrCalculator
 import com.uruj.power.VO2MaxCalculator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -48,6 +49,7 @@ class BioLabRepository(context: Context) {
     private val cvAgeCalc = CardiovascularAgeCalculator()
     private val karvonenCalc = KarvonenZonesCalculator()
     private val hrrCalc = HrRecoveryCalculator()
+    private val sleepingRhrCalc = SleepingRhrCalculator()
 
     suspend fun snapshot(): BioLabSnapshot = withContext(Dispatchers.IO) {
         val profile = profileStore.current()
@@ -99,7 +101,7 @@ class BioLabRepository(context: Context) {
         // proxy upward. Filtering to sleep-window samples only captures the
         // genuine deep-rest HR that elite-endurance athletes show.
         val sleepWindows30d = readSleepWindows(client, granted, monthAgo, now)
-        val sleepingRhr = computeSleepingRhr(hrTimed30d, sleepWindows30d)
+        val sleepingRhr = sleepingRhrCalc.compute(hrTimed30d, sleepWindows30d)
 
         // Today's absolute minimum HR — direct ground-truth match to Samsung
         // Health's "min today" display. Useful as a cross-check next to our
@@ -175,12 +177,12 @@ class BioLabRepository(context: Context) {
         // RHR priority: sleeping RHR (true rest) > today's proxy > 30d proxy.
         // The label tells the UI which source is in play, so the rider knows
         // whether they're looking at a polished or a coarse number.
-        val effectiveRestingHr = sleepingRhr?.bpm
+        val effectiveRestingHr = sleepingRhr?.medianBpm
             ?: hrAnalysisToday.proxyRestingHrBpm
             ?: hrAnalysis30d.proxyRestingHrBpm
         val restingHrSourceLabel = when {
             sleepingRhr != null -> {
-                val nights = sleepingRhr.nights
+                val nights = sleepingRhr.nightsCount
                 val plural = if (nights == 1) "night" else "nights"
                 "athletic RHR — median of $nights sleep $plural"
             }
@@ -369,48 +371,6 @@ class BioLabRepository(context: Context) {
         }.onFailure { Log.w(TAG, "sleep windows read failed", it) }
             .getOrDefault(emptyList())
     }
-
-    /**
-     * Athletic sleeping RHR — for each detected sleep night, find the minimum
-     * HR sample within that night (with a < 35 bpm glitch filter), then return
-     * the median of those nightly mins. This matches Garmin / Whoop's definition
-     * of resting HR — the lowest sustained HR during deep sleep, smoothed over
-     * the observation window.
-     *
-     * v0.2.2 used a percentile-of-all-sleep-samples approach (p10) which was
-     * over-conservative for sparse spot-check data like Fit Band 3. For a rider
-     * whose Samsung daily-min is ~50 and historic mins run in the 40s, p10
-     * landed at 55 — visibly higher than the band's own captured minima.
-     * Per-night min + cross-night median fixes both problems: it tracks the
-     * band's actual lows, and the median makes a single-night sensor weirdness
-     * a non-event.
-     */
-    private fun computeSleepingRhr(
-        timedSamples: List<Pair<Instant, Int>>,
-        sleepWindows: List<Pair<Instant, Instant>>,
-    ): SleepingRhrResult? {
-        if (sleepWindows.isEmpty() || timedSamples.isEmpty()) return null
-
-        val nightlyMins = sleepWindows.mapNotNull { (start, end) ->
-            val nightSamples = timedSamples
-                .filter { (t, bpm) -> !t.isBefore(start) && !t.isAfter(end) && bpm >= 35 }
-                .map { it.second }
-            // ≥5 samples per night to trust the min — under that, a stray early-
-            // morning waking sample could masquerade as a deep-sleep low.
-            if (nightSamples.size < 5) null else nightSamples.min()
-        }
-        if (nightlyMins.isEmpty()) return null
-
-        val sortedMins = nightlyMins.sorted()
-        val median = if (sortedMins.size % 2 == 1) {
-            sortedMins[sortedMins.size / 2]
-        } else {
-            (sortedMins[sortedMins.size / 2 - 1] + sortedMins[sortedMins.size / 2]) / 2
-        }
-        return SleepingRhrResult(bpm = median, nights = nightlyMins.size)
-    }
-
-    private data class SleepingRhrResult(val bpm: Int, val nights: Int)
 
     private suspend fun readLastNightSleep(
         client: HealthConnectClient,
