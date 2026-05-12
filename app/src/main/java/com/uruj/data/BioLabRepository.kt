@@ -9,6 +9,7 @@ import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.OxygenSaturationRecord
+import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
@@ -90,6 +91,16 @@ class BioLabRepository(context: Context) {
         val sleepWindows30d = readSleepWindows(client, granted, monthAgo, now)
         val sleepingRhr = computeSleepingRhr(hrTimed30d, sleepWindows30d)
 
+        // Today's absolute minimum HR — direct ground-truth match to Samsung
+        // Health's "min today" display. Useful as a cross-check next to our
+        // derived sleeping RHR (different definitions, both should be sane).
+        val lowestHrToday = hrSamplesToday.filter { it >= 35 }.minOrNull()
+
+        // Samsung's own daily RHR record — if the band writes one, that's the
+        // authoritative platform number. Show it alongside ours for full
+        // transparency; user shouldn't have to switch apps to compare.
+        val samsungDirectRhr = readLatestRestingHr(client, granted, weekAgo, now)
+
         val sleepLastNightHours = readLastNightSleep(client, granted, now)
         val spo2LastValue = readLatestSpo2(client, granted, weekAgo, now)
         val stepsToday = readStepsCount(client, granted, dayAgo, now)
@@ -119,7 +130,7 @@ class BioLabRepository(context: Context) {
             sleepingRhr != null -> {
                 val nights = sleepingRhr.nights
                 val plural = if (nights == 1) "night" else "nights"
-                "true sleeping RHR from $nights $plural"
+                "athletic RHR — median of $nights sleep $plural"
             }
             hrAnalysisToday.proxyRestingHrBpm != null ->
                 "proxy from ${hrSamplesToday.size} HR samples (today)"
@@ -128,11 +139,20 @@ class BioLabRepository(context: Context) {
             else -> "no data yet"
         }
 
-        // Derived: VO2 max (both formulas, cross-validated)
+        // FTP heuristic: 200W is the placeholder default. If the user has never
+        // opened Profile to set their own FTP (or set it to something other than
+        // 200), we assume FTP is untested and skip the power-based VO2 formula —
+        // a fabricated FTP would pollute the consensus by 5-15 mL/kg/min and
+        // mislead more than it informs. Honesty floor beats fictional ceiling.
+        val ftpIsLikelyUntested = profile.ftpWatts == 200
+        val ftpForVo2: Int? = if (ftpIsLikelyUntested) null else profile.ftpWatts
+
+        // Derived: VO2 max (both formulas, cross-validated). Power-based is
+        // suppressed when FTP is at default — consensus falls back to HR-only.
         val vo2 = vo2Calc.compute(
             hrMaxBpm = effectiveMaxHr,
             hrRestBpm = effectiveRestingHr,
-            ftpWatts = profile.ftpWatts,
+            ftpWatts = ftpForVo2,
             bodyWeightKg = effectiveWeightKg,
         )
         // Prefer Samsung's VO2 if available (it sees a wider data picture)
@@ -163,6 +183,8 @@ class BioLabRepository(context: Context) {
             restingHrBpm = effectiveRestingHr,
             restingHrSourceLabel = restingHrSourceLabel,
             restingHrFromSleep = sleepingRhr != null,
+            lowestHrToday = lowestHrToday,
+            samsungDirectRhrBpm = samsungDirectRhr,
             maxHrBpm = effectiveMaxHr,
             maxHrAutoDetected = maxHrCameFromAutoDetect,
             hrvProxyMs = hrAnalysisToday.proxyHrvSdMs,
@@ -182,6 +204,7 @@ class BioLabRepository(context: Context) {
             biologicalAgeDelta = cvAge.deltaYears,
             biologicalAgeVerdict = cvAge.verdict,
             karvonenZones = karvonenZones,
+            ftpIsLikelyUntested = ftpIsLikelyUntested,
 
             // Activity
             stepsToday = stepsToday,
@@ -243,31 +266,43 @@ class BioLabRepository(context: Context) {
     }
 
     /**
-     * True sleeping RHR — filter HR samples to those falling inside a sleep
-     * session, then take the 10th-percentile. Median would over-estimate
-     * because REM-phase HR spikes pull it up; min would under-estimate due to
-     * occasional sensor glitches dropping to 30s. The 10th-percentile is a
-     * robust deep-sleep RHR estimate that matches what Garmin / Whoop publish.
+     * Athletic sleeping RHR — for each detected sleep night, find the minimum
+     * HR sample within that night (with a < 35 bpm glitch filter), then return
+     * the median of those nightly mins. This matches Garmin / Whoop's definition
+     * of resting HR — the lowest sustained HR during deep sleep, smoothed over
+     * the observation window.
+     *
+     * v0.2.2 used a percentile-of-all-sleep-samples approach (p10) which was
+     * over-conservative for sparse spot-check data like Fit Band 3. For a rider
+     * whose Samsung daily-min is ~50 and historic mins run in the 40s, p10
+     * landed at 55 — visibly higher than the band's own captured minima.
+     * Per-night min + cross-night median fixes both problems: it tracks the
+     * band's actual lows, and the median makes a single-night sensor weirdness
+     * a non-event.
      */
     private fun computeSleepingRhr(
         timedSamples: List<Pair<Instant, Int>>,
         sleepWindows: List<Pair<Instant, Instant>>,
     ): SleepingRhrResult? {
         if (sleepWindows.isEmpty() || timedSamples.isEmpty()) return null
-        val duringSleep = timedSamples.filter { (time, _) ->
-            sleepWindows.any { (s, e) -> !time.isBefore(s) && !time.isAfter(e) }
+
+        val nightlyMins = sleepWindows.mapNotNull { (start, end) ->
+            val nightSamples = timedSamples
+                .filter { (t, bpm) -> !t.isBefore(start) && !t.isAfter(end) && bpm >= 35 }
+                .map { it.second }
+            // ≥5 samples per night to trust the min — under that, a stray early-
+            // morning waking sample could masquerade as a deep-sleep low.
+            if (nightSamples.size < 5) null else nightSamples.min()
         }
-        // Need enough samples to be statistically meaningful. With 1s-2min
-        // sample cadence on Fit Band, even one night yields hundreds of points;
-        // anything under 30 means data is too sparse to trust.
-        if (duringSleep.size < 30) return null
-        val sortedBpms = duringSleep.map { it.second }.sorted()
-        val p10Index = (sortedBpms.size * 0.10).toInt().coerceIn(0, sortedBpms.lastIndex)
-        // Distinct sleep nights = count of windows that actually had ≥1 HR sample.
-        val nightsWithHr = sleepWindows.count { (s, e) ->
-            timedSamples.any { (t, _) -> !t.isBefore(s) && !t.isAfter(e) }
+        if (nightlyMins.isEmpty()) return null
+
+        val sortedMins = nightlyMins.sorted()
+        val median = if (sortedMins.size % 2 == 1) {
+            sortedMins[sortedMins.size / 2]
+        } else {
+            (sortedMins[sortedMins.size / 2 - 1] + sortedMins[sortedMins.size / 2]) / 2
         }
-        return SleepingRhrResult(bpm = sortedBpms[p10Index], nights = nightsWithHr)
+        return SleepingRhrResult(bpm = median, nights = nightlyMins.size)
     }
 
     private data class SleepingRhrResult(val bpm: Int, val nights: Int)
@@ -426,6 +461,25 @@ class BioLabRepository(context: Context) {
         }.onFailure { Log.w(TAG, "VO2 max read failed", it) }.getOrNull()
     }
 
+    private suspend fun readLatestRestingHr(
+        client: HealthConnectClient,
+        granted: Set<String>,
+        start: Instant,
+        end: Instant,
+    ): Int? {
+        if (HealthPermission.getReadPermission(RestingHeartRateRecord::class) !in granted) return null
+        return runCatching {
+            client.readRecords(
+                ReadRecordsRequest(
+                    recordType = RestingHeartRateRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(start, end),
+                    ascendingOrder = false,
+                    pageSize = 1,
+                ),
+            ).records.firstOrNull()?.beatsPerMinute?.toInt()
+        }.onFailure { Log.w(TAG, "Samsung RHR read failed", it) }.getOrNull()
+    }
+
     private suspend fun readLatestWeight(
         client: HealthConnectClient,
         granted: Set<String>,
@@ -461,10 +515,14 @@ data class BioLabSnapshot(
     // Cardiovascular
     val currentHrBpm: Int? = null,
     val restingHrBpm: Int? = null,
-    /** Human-readable source label for RHR — "true sleeping RHR from N nights" or "proxy from N HR samples". */
+    /** Human-readable source label for RHR — "athletic RHR from N sleep nights" or "proxy from N HR samples". */
     val restingHrSourceLabel: String = "",
     /** True when restingHrBpm came from the sleeping-RHR filter (high-confidence). */
     val restingHrFromSleep: Boolean = false,
+    /** Lowest HR sample recorded today — matches Samsung's "min today" display. */
+    val lowestHrToday: Int? = null,
+    /** Samsung Health's own daily RestingHeartRateRecord, if it writes one. */
+    val samsungDirectRhrBpm: Int? = null,
     val maxHrBpm: Int = 190,
     val maxHrAutoDetected: Boolean = false,
     val hrvProxyMs: Float? = null,
@@ -484,6 +542,8 @@ data class BioLabSnapshot(
     val biologicalAgeDelta: Int? = null,
     val biologicalAgeVerdict: String = "",
     val karvonenZones: KarvonenZonesCalculator.Result? = null,
+    /** True when FTP is at the placeholder default 200W — power-based VO2 is suppressed. */
+    val ftpIsLikelyUntested: Boolean = true,
 
     // Activity (today)
     val stepsToday: Int? = null,

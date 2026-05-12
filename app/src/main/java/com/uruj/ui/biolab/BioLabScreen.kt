@@ -260,7 +260,8 @@ private fun Vo2MaxCard(s: BioLabSnapshot) {
                 )
             } else {
                 Text(
-                    "Estimates (cross-validated):",
+                    if (s.ftpIsLikelyUntested) "Estimate (HR-only — FTP untested):"
+                    else "Estimates (cross-validated):",
                     color = UrujMuted,
                     fontWeight = FontWeight.Black,
                     fontSize = 9.sp,
@@ -277,6 +278,13 @@ private fun Vo2MaxCard(s: BioLabSnapshot) {
                     Text(
                         "Power-based (FTP/weight): ${"%.1f".format(s.vo2MaxPowerBased)} mL/kg/min",
                         color = UrujText, fontSize = 11.sp,
+                    )
+                } else if (s.ftpIsLikelyUntested) {
+                    Text(
+                        "Power-based: omitted — FTP at default 200W placeholder. " +
+                            "Do a 20-min all-out test, set FTP in Profile, unlock cross-validation.",
+                        color = UrujMuted,
+                        fontSize = 10.sp,
                     )
                 }
             }
@@ -342,19 +350,33 @@ private fun HeartRateCard(s: BioLabSnapshot) {
             value = s.restingHrBpm?.let { "$it bpm" } ?: "—",
             subtitle = s.restingHrSourceLabel.takeIf { it.isNotBlank() && s.restingHrBpm != null },
         )
+        if (s.lowestHrToday != null) {
+            MetricRow(
+                "MIN TODAY",
+                value = "${s.lowestHrToday} bpm",
+                subtitle = "lowest sample recorded today (matches Samsung Health)",
+            )
+        }
+        if (s.samsungDirectRhrBpm != null) {
+            MetricRow(
+                "SAMSUNG RHR",
+                value = "${s.samsungDirectRhrBpm} bpm",
+                subtitle = "Samsung Health's own daily RHR (different definition — includes daytime rest)",
+            )
+        }
         MetricRow(
             "MAX HR",
             value = "${s.maxHrBpm} bpm",
-            subtitle = if (s.maxHrAutoDetected) "auto-detected from your rides"
-            else "default 220 − age; will refine as you train",
+            subtitle = if (s.maxHrAutoDetected) "auto-detected from your rides — high confidence"
+            else "220−age estimate, real-world ±10-12 bpm. Updates if a ride records higher.",
         )
         if (s.restingHrBpm != null) {
             MetricRow("HR RESERVE", value = "${s.maxHrBpm - s.restingHrBpm} bpm")
         }
         MetricRow(
-            "HRV PROXY",
+            "HR VARIABILITY (proxy)",
             value = s.hrvProxyMs?.let { "%.1f".format(it) } ?: "—",
-            subtitle = "std dev of resting-HR samples",
+            subtitle = "std dev of HR samples — NOT true HRV. Real HRV needs RR-intervals from a chest strap (v1.5).",
         )
     }
 }
