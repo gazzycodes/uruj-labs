@@ -406,7 +406,7 @@ private fun HrRecoveryCard(s: BioLabSnapshot) {
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            "Median of ${s.hrr1SampleCount} rides where peak HR ≥130 bpm. " +
+            "Median of ${s.hrr1SampleCount} rides where peak HR ≥120 bpm, measured 30-180s post-ride. " +
                 "Peer-reviewed cardiovascular health metric (Cole et al., NEJM 1999). " +
                 "Lower drop → higher all-cause mortality risk independent of VO₂ max.",
             color = UrujMuted, fontSize = 10.sp,

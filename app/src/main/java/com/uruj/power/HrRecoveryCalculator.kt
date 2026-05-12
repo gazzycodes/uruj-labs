@@ -114,13 +114,19 @@ class HrRecoveryCalculator {
         // within the closing 30 min still represents the working HR for
         // recovery comparison.
         private val EFFORT_LOOKBACK: Duration = Duration.ofMinutes(30)
-        // Recovery window widened from 30-120s → 30s-10min to match Fit Band 3
-        // spot-check cadence (~5-10min between samples at rest). 30s lower
-        // bound still excludes the working HR; 10min upper bound is short
-        // enough that any sample inside represents legitimate post-effort
-        // recovery state.
+        // Recovery window MUST stay close to Cole's 1-minute protocol. v0.2.6's
+        // 10-min upper bound captured plenty of samples but produced HRR drops
+        // of 50+ bpm — physiologically impossible for true HRR1 (Olympic-elite
+        // tops around 35 bpm in 60s). The wider window was actually measuring
+        // HRR3-HRR5 and mislabeling it as HRR1, and Cole's ≥18 excellent
+        // threshold doesn't apply to a 5-min drop.
+        //
+        // Final window: 30-180s (3 min tolerance). Gives Fit Band 3 enough
+        // slack to land a spot-check while staying close enough to 60s that
+        // Cole's classification remains valid. Sessions with no sample in
+        // this window are skipped — better no measurement than a wrong one.
         private val RECOVERY_WINDOW_START: Duration = Duration.ofSeconds(30)
-        private val RECOVERY_WINDOW_END: Duration = Duration.ofMinutes(10)
+        private val RECOVERY_WINDOW_END: Duration = Duration.ofSeconds(180)
         // Peak threshold lowered from 130 → 120 to include moderate-intensity
         // rides. Below 120 bpm the recovery curve is too shallow to be a
         // meaningful autonomic-recovery signal.
