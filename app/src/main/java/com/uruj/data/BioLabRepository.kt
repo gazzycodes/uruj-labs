@@ -274,9 +274,12 @@ class BioLabRepository(context: Context) {
             hrr1Classification = hrr?.medianClassification,
             hrr1SampleCount = hrr?.samples?.size ?: 0,
             hrr1AthleteContext = hrr1AthleteContext,
+            // Cap at 3 most recent so the card stays compact as ride history grows.
+            // Median in the hero number still uses ALL qualifying rides — this list
+            // is purely a variance preview, not the data backing the metric.
             hrr1RecentSamples = hrr?.samples
                 ?.sortedByDescending { it.sessionEnd }
-                ?.take(5)
+                ?.take(3)
                 ?.map {
                     HrrSample(
                         endTimeMs = it.sessionEnd.toEpochMilli(),

@@ -422,8 +422,18 @@ private fun HrRecoveryCard(s: BioLabSnapshot) {
                     .background(UrujSurfaceHigh.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
                     .padding(horizontal = 10.dp, vertical = 8.dp),
             ) {
+                // Label adapts to total count so the rider always sees "3 of N"
+                // when more rides exist — keeps card compact while signaling
+                // that the median uses the full set, not just these 3.
+                val totalCount = s.hrr1SampleCount
+                val shownCount = s.hrr1RecentSamples.size
+                val header = if (totalCount > shownCount) {
+                    "$shownCount LATEST OF $totalCount QUALIFYING RIDES"
+                } else {
+                    "RECENT RIDES (latest first)"
+                }
                 Text(
-                    "RECENT RIDES (latest first)",
+                    header,
                     color = UrujMuted,
                     fontWeight = FontWeight.Black,
                     fontSize = 9.sp,
