@@ -50,10 +50,14 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
         // 173 arrived ~15 min after ride end). Re-pulling on summary view
         // lets the displayed max catch up to reality.
         if (existing?.averageHrBpm != null) {
+            // Show stored data immediately with isRefreshing=true — UI renders a
+            // small spinner/badge so the rider knows a background HC re-pull is
+            // in flight (catches Samsung's late batch sync, e.g. 156 → 173).
             _hrEnrichment.value = HrEnrichmentState.Done(
                 avgHrBpm = existing.averageHrBpm,
                 maxHrBpm = existing.maxHrBpm,
                 sampleCount = existing.hrSampleCount,
+                isRefreshing = true,
             )
             viewModelScope.launch { refreshHrFromHc(sessionId, startedAtMs, endedAtMs, existing) }
             return
@@ -132,7 +136,16 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
         val (avg, max, count) = withContext(Dispatchers.IO) {
             fetchHrStats(client, startMs, endMs)
         }
-        if (avg == null || count <= existing.hrSampleCount) return // no new data
+        if (avg == null || count <= existing.hrSampleCount) {
+            // No new data — clear the refreshing flag so UI stops spinning.
+            _hrEnrichment.value = HrEnrichmentState.Done(
+                avgHrBpm = existing.averageHrBpm,
+                maxHrBpm = existing.maxHrBpm,
+                sampleCount = existing.hrSampleCount,
+                isRefreshing = false,
+            )
+            return
+        }
 
         historyRepo.save(
             existing.copy(
@@ -141,7 +154,12 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
                 hrSampleCount = count,
             ),
         )
-        _hrEnrichment.value = HrEnrichmentState.Done(avg, max, count)
+        _hrEnrichment.value = HrEnrichmentState.Done(
+            avgHrBpm = avg,
+            maxHrBpm = max,
+            sampleCount = count,
+            isRefreshing = false,
+        )
         Log.d(
             "URUJ-Summary",
             "Ride $sessionId HR refreshed: ${existing.hrSampleCount} → $count samples, max ${existing.maxHrBpm} → $max",
@@ -176,7 +194,16 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
 sealed class HrEnrichmentState {
     data object Idle : HrEnrichmentState()
     data class Polling(val secondsElapsed: Int) : HrEnrichmentState()
-    data class Done(val avgHrBpm: Int?, val maxHrBpm: Int?, val sampleCount: Int) : HrEnrichmentState()
+    /** HR is shown from the stored summary. [isRefreshing] is true while we have a
+     *  background re-pull in flight; UI shows a small spinner/badge to signal the
+     *  number may update if Samsung's batch sync has more samples than we stored. */
+    data class Done(
+        val avgHrBpm: Int?,
+        val maxHrBpm: Int?,
+        val sampleCount: Int,
+        val isRefreshing: Boolean = false,
+        val lastRefreshAtMs: Long = System.currentTimeMillis(),
+    ) : HrEnrichmentState()
     data object TimedOut : HrEnrichmentState()
     /** Health Connect not installed / no permission — silent skip, no HR for this user. */
     data object NotAvailable : HrEnrichmentState()

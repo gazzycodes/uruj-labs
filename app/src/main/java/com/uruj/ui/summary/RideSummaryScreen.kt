@@ -12,12 +12,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -243,12 +245,31 @@ private fun HrCard(hrState: HrEnrichmentState) {
                         right = "${hrState.maxHrBpm ?: "—"} bpm",
                         rightLabel = "MAX",
                     )
-                    Text(
-                        text = "${hrState.sampleCount} samples synced from Health Connect",
-                        color = UrujMuted,
-                        fontSize = 11.sp,
+                    Row(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "${hrState.sampleCount} samples from Health Connect",
+                            color = UrujMuted,
+                            fontSize = 11.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (hrState.isRefreshing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(10.dp),
+                                color = UrujNeonMagenta,
+                                strokeWidth = 1.5.dp,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "↻ checking Samsung…",
+                                color = UrujNeonMagenta,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
                 }
             }
         }
