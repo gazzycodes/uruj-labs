@@ -10,7 +10,9 @@ import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.uruj.data.RideHistoryRepository
+import com.uruj.data.RiderProfileStore
 import com.uruj.data.StoredRideSummary
+import com.uruj.power.TimeInZoneCalculator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -34,9 +36,19 @@ import java.time.Instant
 class RideSummaryViewModel(application: Application) : AndroidViewModel(application) {
 
     private val historyRepo = RideHistoryRepository(application)
+    private val profileStore = RiderProfileStore(application)
+    private val zoneCalc = TimeInZoneCalculator()
 
     private val _hrEnrichment = MutableStateFlow<HrEnrichmentState>(HrEnrichmentState.Idle)
     val hrEnrichment: StateFlow<HrEnrichmentState> = _hrEnrichment.asStateFlow()
+
+    /**
+     * Time-in-zone for the ride. Null until HC HR data is fetched (post-batch-sync
+     * from Samsung typically 5-30 min after workout end). Same %max-HR thresholds
+     * as route map polyline coloring so visualization + analysis agree.
+     */
+    private val _timeInZone = MutableStateFlow<TimeInZoneCalculator.Result?>(null)
+    val timeInZone: StateFlow<TimeInZoneCalculator.Result?> = _timeInZone.asStateFlow()
 
     private var pollingJob: Job? = null
 
@@ -171,6 +183,32 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
         startMs: Long,
         endMs: Long,
     ): Triple<Int?, Int?, Int> {
+        val timed = fetchHrTimedSamples(client, startMs, endMs)
+        if (timed.isEmpty()) return Triple(null, null, 0)
+        val bpms = timed.map { it.second }
+        val avg = bpms.average().toInt()
+        val max = bpms.max()
+        // Side-effect: also compute time-in-zone from these timed samples and
+        // emit. Same fetch covers both summary stats AND zone breakdown — no
+        // duplicate HC query. Profile lookup is cheap (DataStore in-memory).
+        runCatching {
+            val profile = profileStore.current()
+            val tiz = zoneCalc.compute(
+                samples = timed.map { Instant.ofEpochMilli(it.first) to it.second },
+                maxHrBpm = profile.maxHrBpm,
+                rideEndMs = endMs,
+            )
+            _timeInZone.value = tiz
+        }.onFailure { Log.w("URUJ-Summary", "time-in-zone compute failed", it) }
+        return Triple(avg, max, timed.size)
+    }
+
+    /** Pull timestamped HR samples for the ride window. Returns (epoch-ms, bpm) pairs. */
+    private suspend fun fetchHrTimedSamples(
+        client: HealthConnectClient,
+        startMs: Long,
+        endMs: Long,
+    ): List<Pair<Long, Int>> {
         return runCatching {
             val response = client.readRecords(
                 ReadRecordsRequest(
@@ -181,13 +219,12 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
                     ),
                 ),
             )
-            val samples = response.records.flatMap { it.samples }
-            if (samples.isEmpty()) return Triple(null, null, 0)
-            val avg = samples.map { it.beatsPerMinute }.average().toInt()
-            val max = samples.maxOf { it.beatsPerMinute }.toInt()
-            Triple(avg, max, samples.size)
-        }.onFailure { Log.w("URUJ-Summary", "HR fetch failed", it) }
-            .getOrDefault(Triple(null, null, 0))
+            response.records
+                .flatMap { it.samples }
+                .map { it.time.toEpochMilli() to it.beatsPerMinute.toInt() }
+                .sortedBy { it.first }
+        }.onFailure { Log.w("URUJ-Summary", "HR timed-samples fetch failed", it) }
+            .getOrDefault(emptyList())
     }
 }
 
