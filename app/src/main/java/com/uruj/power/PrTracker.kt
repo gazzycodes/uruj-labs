@@ -84,6 +84,24 @@ class PrTracker(context: Context) {
         }
     }
 
+    /**
+     * Wipes all stored PR ceilings — in-memory state, persisted values, and
+     * announcement-cooldown timestamps. Next sustained efforts that complete
+     * a window become the new fresh PRs. Used to clear pollution from early
+     * test rides that registered inflated power (pre-v0.1 GPS-quality fix)
+     * and left ceilings too high for real efforts to beat.
+     */
+    suspend fun reset() {
+        bests.clear()
+        lastAnnouncedAt.clear()
+        rolling.values.forEach { it.reset() }
+        dataStore.edit { prefs ->
+            windowLengthsSec.forEach { sec ->
+                prefs.remove(bestKey(sec))
+            }
+        }
+    }
+
     private fun bestKey(seconds: Int) = floatPreferencesKey("pr_best_${seconds}s_watts")
 }
 

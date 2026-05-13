@@ -35,7 +35,11 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.uruj.data.BioLabSnapshot
+import com.uruj.data.HrrSample
 import com.uruj.power.KarvonenZonesCalculator
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujNeonMagenta
@@ -115,6 +119,16 @@ fun BioLabScreen(
                     color = UrujMuted,
                     fontSize = 12.sp,
                 )
+                snapshot?.let { snap ->
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Last refresh: ${relativeAge(snap.computedAtMs)}",
+                        color = UrujMuted,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp,
+                        letterSpacing = 1.sp,
+                    )
+                }
             }
 
             val s = snapshot
@@ -404,6 +418,47 @@ private fun HrRecoveryCard(s: BioLabSnapshot) {
                 )
             }
         }
+        if (s.hrr1RecentSamples.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(UrujSurfaceHigh.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    "RECENT RIDES (latest first)",
+                    color = UrujMuted,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 9.sp,
+                    letterSpacing = 1.sp,
+                )
+                Spacer(Modifier.height(4.dp))
+                s.hrr1RecentSamples.forEach { sample ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            formatHrrSampleDate(sample.endTimeMs),
+                            color = UrujMuted,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            modifier = Modifier.width(56.dp),
+                        )
+                        Text(
+                            "peak ${sample.peakBpm}",
+                            color = UrujMuted, fontSize = 10.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "${sample.hrr1Bpm} bpm drop",
+                            color = UrujText,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         Text(
             "Median of ${s.hrr1SampleCount} rides where peak HR ≥120 bpm, measured 30-180s post-ride. " +
@@ -440,7 +495,7 @@ private fun HeartRateCard(s: BioLabSnapshot) {
             "MAX HR (effective)",
             value = "${s.maxHrBpm} bpm",
             subtitle = if (s.maxHrAutoDetected) "auto-detected from your rides — high confidence"
-            else "220−age estimate, real-world ±10-12 bpm. Auto-updates if a ride records higher.",
+            else "220−age estimate, ±10-12 bpm. Hit ≥${s.maxHrBpm + 1} bpm in a ride to auto-bump.",
         )
         if (s.highestHrToday != null) {
             MetricRow(
@@ -575,3 +630,18 @@ private fun ActivityCard(s: BioLabSnapshot) {
         }
     }
 }
+
+/** Human-readable elapsed time since a timestamp ("12s ago" / "4m ago" / "2h ago"). */
+private fun relativeAge(thenMs: Long): String {
+    val ageMs = (System.currentTimeMillis() - thenMs).coerceAtLeast(0L)
+    val seconds = ageMs / 1000
+    return when {
+        seconds < 60 -> "${seconds}s ago"
+        seconds < 3600 -> "${seconds / 60}m ago"
+        seconds < 86_400 -> "${seconds / 3600}h ago"
+        else -> "${seconds / 86_400}d ago"
+    }
+}
+
+private val hrrSampleDateFmt = SimpleDateFormat("MMM d", Locale.getDefault())
+private fun formatHrrSampleDate(ms: Long): String = hrrSampleDateFmt.format(Date(ms))

@@ -164,8 +164,75 @@ fun RiderProfileScreen(
                 }
             }
 
+            Spacer(Modifier.height(24.dp))
+
+            // Personal-records management. Hidden behind a confirm dialog because
+            // it's destructive — wipes 60s / 5min / 20min power ceilings. Needed
+            // when pre-v0.1 test rides set fake-high PRs (indoor walking before
+            // the GPS-quality fix registered as kilowatt spikes) and today's real
+            // efforts can't beat the polluted ceilings.
+            PersonalRecordsResetSection(
+                onReset = { viewModel.resetPrs() },
+            )
+
             Spacer(Modifier.height(20.dp))
         }
+    }
+}
+
+@Composable
+private fun PersonalRecordsResetSection(onReset: () -> Unit) {
+    var showConfirm by remember { mutableStateOf(false) }
+    var resetDone by remember { mutableStateOf(false) }
+
+    Section("Personal Records") {
+        Text(
+            "Wipes the 60s / 5min / 20min power ceilings. New rides will build fresh PRs " +
+                "from scratch. Use this if early test rides set unrealistic ceilings.",
+            color = UrujMuted,
+            fontSize = 12.sp,
+        )
+        Spacer(Modifier.height(8.dp))
+        TextButton(
+            onClick = { showConfirm = true },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+        ) {
+            Text(
+                if (resetDone) "✓ PRs cleared" else "RESET ALL PERSONAL RECORDS",
+                color = if (resetDone) UrujAccent else Color(0xFFFF5252),
+                fontWeight = FontWeight.Black,
+                letterSpacing = 2.sp,
+            )
+        }
+    }
+
+    if (showConfirm) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showConfirm = false },
+            title = { Text("Reset Personal Records?", color = UrujText) },
+            text = {
+                Text(
+                    "All current PR ceilings will be cleared. The next sustained 60s / 5min / 20min " +
+                        "efforts will become your new PRs. This cannot be undone.",
+                    color = UrujMuted,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onReset()
+                    resetDone = true
+                    showConfirm = false
+                }) {
+                    Text("RESET", color = Color(0xFFFF5252), fontWeight = FontWeight.Black)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirm = false }) {
+                    Text("CANCEL", color = UrujMuted)
+                }
+            },
+            containerColor = UrujSurface,
+        )
     }
 }
 

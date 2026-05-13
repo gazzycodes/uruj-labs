@@ -213,10 +213,20 @@ private fun DiagnosticsLine(snapshot: ReadinessSnapshot) {
             )
         }
         Spacer(Modifier.height(2.dp))
+        // RHR label depends on where the score actually pulled its value from.
+        // "0 RHR direct records" is true but misleading when SleepingRhrCalculator
+        // derived the value from sleep + HR samples — the readiness score IS
+        // using a derived RHR even though the direct-record count is zero.
+        val rhrLabel = when (diag.rhrSourceLabel) {
+            "direct" -> "${diag.rhrRecords7d} RHR(direct)"
+            "sleep" -> "RHR(sleep) ✓"
+            "proxy" -> "RHR(HR-proxy)"
+            else -> "${diag.rhrRecords7d} RHR"
+        }
         Text(
             text = "Records (7d): ${diag.sleepRecords7d} sleep · " +
                 "${diag.hrvRecords7d} HRV · " +
-                "${diag.rhrRecords7d} RHR · " +
+                "$rhrLabel · " +
                 "${diag.hrRecords7d} HR · " +
                 "${diag.rideSummariesAll} URUJ rides",
             color = if (anyData) UrujText else UrujMuted,

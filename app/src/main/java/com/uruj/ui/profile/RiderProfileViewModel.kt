@@ -11,6 +11,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.uruj.data.RiderProfileStore
 import com.uruj.domain.RiderProfile
+import com.uruj.power.PrTracker
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -41,6 +42,23 @@ class RiderProfileViewModel(application: Application) : AndroidViewModel(applica
     fun save(profile: RiderProfile) {
         viewModelScope.launch {
             store.save(profile)
+        }
+    }
+
+    /**
+     * Clears all stored Personal Records — wipes the 60s / 5min / 20min power
+     * ceilings so future rides build fresh PRs. Used to remove pollution from
+     * early test rides that left inflated ceilings (pre-v0.1 GPS-quality fix
+     * registered indoor walking as kilowatt power spikes).
+     */
+    fun resetPrs(onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            runCatching {
+                val tracker = PrTracker(appContext)
+                tracker.reset()
+                Log.d(TAG, "Personal records reset")
+            }.onFailure { Log.w(TAG, "PR reset failed", it) }
+            onDone()
         }
     }
 
