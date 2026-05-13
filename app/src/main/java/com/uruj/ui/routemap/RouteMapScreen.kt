@@ -155,40 +155,52 @@ fun RouteMapScreen(
             },
         )
 
-        // Top app-bar style header. statusBarsPadding so it doesn't collide
-        // with the notch/system clock.
-        Column(modifier = Modifier.statusBarsPadding()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.background.copy(alpha = 0.85f))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = onBack) {
+        // Top app-bar — SOLID dark background extending all the way under the
+        // system status bar (status-bar icons need contrast). Apply solid
+        // background at the outer Column level, then statusBarsPadding on the
+        // inner content. v0.3.3 version made the status bar disappear because
+        // background was alpha 0.85 and didn't cover the top inset.
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.background),
+        ) {
+            Column(modifier = Modifier.statusBarsPadding()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = onBack) {
+                        Text(
+                            "← BACK",
+                            color = UrujAccent,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 12.sp,
+                            letterSpacing = 2.sp,
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
                     Text(
-                        "← BACK",
-                        color = UrujAccent,
+                        "ROUTE MAP",
+                        color = UrujText,
                         fontWeight = FontWeight.Black,
-                        fontSize = 12.sp,
-                        letterSpacing = 2.sp,
+                        fontSize = 14.sp,
+                        letterSpacing = 3.sp,
                     )
+                    Spacer(Modifier.weight(1f))
+                    Spacer(Modifier.width(64.dp)) // balances the back button width
                 }
-                Spacer(Modifier.weight(1f))
-                Text(
-                    "ROUTE MAP",
-                    color = UrujText,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 14.sp,
-                    letterSpacing = 3.sp,
-                )
-                Spacer(Modifier.weight(1f))
-                Spacer(Modifier.width(64.dp)) // balances the back button width
-            }
-            // Zone legend so the rider knows what colors mean
-            val ready = state as? RouteMapState.Ready
-            if (ready != null) {
-                ZoneLegend(maxHrBpm = ready.maxHrBpm)
+                // Ride identification — date, distance, duration. Without this
+                // the rider has no idea which ride they're looking at.
+                val ready = state as? RouteMapState.Ready
+                if (ready?.summary != null) {
+                    RideIdentificationRow(ready.summary)
+                }
+                if (ready != null) {
+                    ZoneLegend(maxHrBpm = ready.maxHrBpm, hasHrData = ready.hasHrData)
+                }
             }
         }
 
@@ -231,7 +243,40 @@ fun RouteMapScreen(
 }
 
 @Composable
-private fun ZoneLegend(maxHrBpm: Int) {
+private fun RideIdentificationRow(summary: com.uruj.data.StoredRideSummary) {
+    val dateFmt = remember { SimpleDateFormat("MMM d, yyyy · HH:mm", Locale.getDefault()) }
+    val distanceKm = "%.2f".format(summary.totalDistanceMeters / 1000.0)
+    val durationMin = summary.movingTimeMs / 60_000L
+    val durationStr = if (durationMin >= 60L) {
+        "${durationMin / 60}h ${"%02d".format(durationMin % 60)}m"
+    } else {
+        "${durationMin}m"
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "$distanceKm km · $durationStr",
+            color = UrujText,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            dateFmt.format(Date(summary.startedAtMs)),
+            color = UrujMuted,
+            fontWeight = FontWeight.Bold,
+            fontSize = 10.sp,
+        )
+    }
+}
+
+@Composable
+private fun ZoneLegend(maxHrBpm: Int, hasHrData: Boolean) {
     val zones = listOf(
         HrZone.Z1 to UrujZone1,
         HrZone.Z2 to UrujZone2,
@@ -239,38 +284,49 @@ private fun ZoneLegend(maxHrBpm: Int) {
         HrZone.Z4 to UrujZone4,
         HrZone.Z5 to UrujZone5,
     )
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.85f))
             .padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text(
-            "ZONES (%max $maxHrBpm)",
-            color = UrujMuted,
-            fontWeight = FontWeight.Black,
-            fontSize = 9.sp,
-            letterSpacing = 1.sp,
-        )
-        zones.forEach { (zone, color) ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(color),
-                )
-                Spacer(Modifier.width(3.dp))
-                Text(
-                    "Z${zone.ordinal + 1}",
-                    color = UrujText,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 10.sp,
-                )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                if (hasHrData) "HR ZONES (%max $maxHrBpm)" else "NO HR DATA",
+                color = if (hasHrData) UrujMuted else UrujZone3,
+                fontWeight = FontWeight.Black,
+                fontSize = 9.sp,
+                letterSpacing = 1.sp,
+            )
+            if (hasHrData) {
+                zones.forEach { (zone, color) ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(color),
+                        )
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            "Z${zone.ordinal + 1}",
+                            color = UrujText,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.sp,
+                        )
+                    }
+                }
             }
         }
+        Text(
+            if (hasHrData) "route is colored by your effort intensity — blue = recovery, red = sprint"
+            else "Fit Band 3 didn't push HR samples during this ride. Route shown in green; future rides will color by zone.",
+            color = UrujMuted,
+            fontSize = 9.sp,
+            modifier = Modifier.padding(top = 2.dp),
+        )
     }
 }
 
@@ -308,7 +364,14 @@ private fun PointDetailPanel(
         Spacer(Modifier.height(8.dp))
         DetailRow("AT", "${elapsedMin}:${"%02d".format(elapsedSecRem)} into ride")
         DetailRow("CLOCK", timeFmt.format(Date(point.sample.timestampMs)))
-        point.sample.hrBpm?.let { DetailRow("HEART RATE", "$it bpm") }
+        if (point.sample.hrBpm != null) {
+            DetailRow("HEART RATE", "${point.sample.hrBpm} bpm")
+        } else {
+            // Explicit "not recorded" row instead of hiding silently — tells the
+            // rider whether HR was zero (huh?) vs absent from the NDJSON (which
+            // is the actual case for rides predating our HC HR pipeline).
+            DetailRow("HEART RATE", "not recorded")
+        }
         DetailRow("SPEED", "%.1f kph".format(point.sample.speedMetersPerSecond * 3.6f))
         DetailRow("ELEVATION", "%.0f m".format(point.sample.altitudeMeters))
         DetailRow("GPS ACCURACY", "±%.0f m".format(point.sample.horizontalAccuracyMeters))
@@ -369,7 +432,10 @@ private fun buildSegmentedPolylines(points: List<ZonedPoint>): List<Polyline> {
         val polyline = Polyline().apply {
             setPoints(currentRun)
             outlinePaint.color = androidColorForZone(currentZone)
-            outlinePaint.strokeWidth = 12f
+            // 16f stroke + anti-aliasing — chunky enough to stand out from
+            // OSM street rendering, especially when zone is null and the
+            // line is solid green rather than mixed-color.
+            outlinePaint.strokeWidth = 16f
             outlinePaint.isAntiAlias = true
         }
         polylines += polyline
@@ -397,7 +463,11 @@ private fun androidColorForZone(zone: HrZone?): Int = when (zone) {
     HrZone.Z3 -> AndroidColor.parseColor("#FFC107")  // amber
     HrZone.Z4 -> AndroidColor.parseColor("#FF7043")  // orange
     HrZone.Z5 -> AndroidColor.parseColor("#FF1744")  // red
-    null -> AndroidColor.parseColor("#9E9E9E")        // muted grey — no HR data
+    // No HR data → use URUJ accent green so the route is HIGHLY visible
+    // against OSM tiles. Previous muted grey blended into street rendering
+    // and made the polyline invisible — major UX bug on older rides whose
+    // NDJSON has no per-second HR samples (Fit Band 3 batches HR post-ride).
+    null -> AndroidColor.parseColor("#00E676")
 }
 
 private fun zoneColor(zone: HrZone): Color = when (zone) {

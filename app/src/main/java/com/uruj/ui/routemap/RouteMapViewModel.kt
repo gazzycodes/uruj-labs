@@ -4,7 +4,9 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.uruj.data.NdjsonRideReader
+import com.uruj.data.RideHistoryRepository
 import com.uruj.data.RiderProfileStore
+import com.uruj.data.StoredRideSummary
 import com.uruj.domain.RideSample
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +29,7 @@ class RouteMapViewModel(application: Application) : AndroidViewModel(application
 
     private val reader = NdjsonRideReader(application)
     private val profileStore = RiderProfileStore(application)
+    private val historyRepo = RideHistoryRepository(application)
 
     private val _state = MutableStateFlow<RouteMapState>(RouteMapState.Loading)
     val state: StateFlow<RouteMapState> = _state.asStateFlow()
@@ -35,6 +38,8 @@ class RouteMapViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             _state.value = RouteMapState.Loading
             val profile = profileStore.current()
+            // Load summary AND samples — header needs ride context (date/dist/duration).
+            val summary = historyRepo.load(sessionId)
             val samples = reader.readSamples(sessionId, stride = 3)
             val gpsPoints = samples.filter {
                 it.horizontalAccuracyMeters in 0.1f..50f &&
@@ -52,11 +57,18 @@ class RouteMapViewModel(application: Application) : AndroidViewModel(application
                     zone = sample.hrBpm?.let { hr -> classifyZone(hr, profile.maxHrBpm) },
                 )
             }
+            // Flag whether the NDJSON had ANY HR data — older rides recorded
+            // before our HC HR pipeline integration have hrBpm=null on every
+            // sample. UI uses this to show "HR data: not captured for this ride"
+            // so the rider knows the grey polyline isn't a bug.
+            val anyHrData = zonedPoints.any { it.sample.hrBpm != null }
             _state.value = RouteMapState.Ready(
                 sessionId = sessionId,
+                summary = summary,
                 points = zonedPoints,
                 maxHrBpm = profile.maxHrBpm,
                 rideStartMs = samples.firstOrNull()?.timestampMs ?: 0L,
+                hasHrData = anyHrData,
             )
         }
     }
@@ -90,8 +102,12 @@ sealed class RouteMapState {
     data class Empty(val reason: String) : RouteMapState()
     data class Ready(
         val sessionId: String,
+        val summary: StoredRideSummary?,
         val points: List<ZonedPoint>,
         val maxHrBpm: Int,
         val rideStartMs: Long,
+        /** False when NDJSON has no HR samples — UI surfaces this so the
+         *  rider knows the grey polyline reflects missing data, not a bug. */
+        val hasHrData: Boolean,
     ) : RouteMapState()
 }
