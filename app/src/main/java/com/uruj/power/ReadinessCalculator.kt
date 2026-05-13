@@ -124,13 +124,20 @@ class ReadinessCalculator {
     private fun scoreHrv(today: Float?, baseline: Float?): Pair<Int, String>? {
         if (today == null || baseline == null || baseline < 1f) return null
         val ratio = today / baseline
+        // Buckets widened in v0.3.2 to match the sleeping HR-proxy's natural
+        // variance. Real RMSSD HRV has tight day-to-day swings (5-15% normal),
+        // so the original thresholds aggressively penalized -20% as "very low."
+        // The sleep-window std-dev proxy is noisier — 20-25% night-over-night
+        // variance is normal sleep variation, not poor recovery. Until we have
+        // real RR-interval HRV (chest strap, v1.5), these wider buckets prevent
+        // false-negative readiness scores on legitimately well-rested days.
         val score = when {
             ratio > 1.10f -> 100  // unusually high — exceptional recovery
             ratio > 1.00f -> 95
-            ratio > 0.95f -> 85
-            ratio > 0.90f -> 75
-            ratio > 0.85f -> 60
-            ratio > 0.80f -> 45
+            ratio > 0.90f -> 90
+            ratio > 0.80f -> 75
+            ratio > 0.70f -> 55
+            ratio > 0.60f -> 35
             else -> 25
         }
         val pct = ((ratio - 1f) * 100).roundToInt()

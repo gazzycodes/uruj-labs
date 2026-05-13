@@ -20,6 +20,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.Duration
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 
 /**
  * One snapshot of a readiness computation — includes the user-facing result AND
@@ -443,13 +446,23 @@ class ReadinessRepository(context: Context) {
         val rides = historyRepo.listAll()
         if (rides.size < 2) return null
 
-        val nowMs = System.currentTimeMillis()
         val ftp = rides.last().ftpWatts.coerceAtLeast(1)
+        val zone = ZoneId.systemDefault()
+        val todayDate = LocalDate.now(zone)
 
-        // Per-day TSS over last 42 days.
-        val dailyTss = LongArray(43) // index 0 = today, 42 = 42 days ago
+        // Per-CALENDAR-DAY TSS bucketing — was previously ms-diff/86_400_000
+        // which truncated to 24-hour chunks rather than calendar days. Bug
+        // surfaced 2026-05-14: ride at 2026-05-13 04:00 + check at 2026-05-14
+        // 00:32 = 20.5h elapsed = daysAgo 0 = ride bucketed as "today's TSS"
+        // → no decay applied → TSB stuck at -14 for ~24h. Calendar-day bucket
+        // puts the ride in dailyTss[1] immediately after the calendar rolls
+        // over, applying one decay step → TSB starts improving at midnight.
+        val dailyTss = LongArray(43) // index 0 = today, 42 = 42 calendar days ago
         for (ride in rides) {
-            val daysAgo = ((nowMs - ride.startedAtMs) / (24L * 3600_000)).toInt()
+            val rideDate = Instant.ofEpochMilli(ride.startedAtMs)
+                .atZone(zone)
+                .toLocalDate()
+            val daysAgo = ChronoUnit.DAYS.between(rideDate, todayDate).toInt()
             if (daysAgo !in 0..42) continue
             val hours = ride.movingTimeMs / 3_600_000f
             val intensityFactor = if (ride.averagePowerWatts > 0f) {
@@ -462,9 +475,9 @@ class ReadinessRepository(context: Context) {
         var atl = 0f
         var ctl = 0f
         for (day in 42 downTo 0) {
-            val today = dailyTss[day].toFloat()
-            atl = atl * (1f - 1f / 7f) + today * (1f / 7f)
-            ctl = ctl * (1f - 1f / 42f) + today * (1f / 42f)
+            val tss = dailyTss[day].toFloat()
+            atl = atl * (1f - 1f / 7f) + tss * (1f / 7f)
+            ctl = ctl * (1f - 1f / 42f) + tss * (1f / 42f)
         }
         return ctl - atl
     }
