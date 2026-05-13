@@ -16,7 +16,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
@@ -174,11 +177,23 @@ fun ReadinessCard(
 @Composable
 private fun DiagnosticsLine(snapshot: ReadinessSnapshot) {
     val diag = snapshot.diagnostics
-    val ageSec = ((System.currentTimeMillis() - snapshot.computedAtMs) / 1000L).coerceAtLeast(0)
+    // Live-ticking age — uses produceState to recompose every second.
+    // Keyed on computedAtMs so the ticker restarts whenever a fresh sync lands.
+    val nowMs by produceState(
+        initialValue = System.currentTimeMillis(),
+        snapshot.computedAtMs,
+    ) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(1_000L)
+        }
+    }
+    val ageSec = ((nowMs - snapshot.computedAtMs) / 1000L).coerceAtLeast(0)
     val ageLabel = when {
         ageSec < 5 -> "just now"
         ageSec < 60 -> "${ageSec}s ago"
-        else -> "${ageSec / 60}m ago"
+        ageSec < 3600 -> "${ageSec / 60}m ago"
+        else -> "${ageSec / 3600}h ago"
     }
     val anyData = diag.sleepRecords7d + diag.hrvRecords7d + diag.rhrRecords7d > 0
     val hcOk = diag.healthConnectInstalled && diag.permissionsGranted == diag.permissionsExpected
@@ -225,6 +240,7 @@ private fun DiagnosticsLine(snapshot: ReadinessSnapshot) {
         }
         val hrvLabel = when (diag.hrvSourceLabel) {
             "direct" -> "${diag.hrvRecords7d} HRV(direct)"
+            "sleep" -> "HRV(sleep) ✓"
             "proxy" -> "HRV(HR-proxy)"
             else -> "${diag.hrvRecords7d} HRV"
         }
@@ -261,48 +277,120 @@ private fun DiagnosticsLine(snapshot: ReadinessSnapshot) {
                 )
             }
         }
+        // Data-window footer — explicit about what time ranges feed the score.
+        // Surfaces methodology so the rider knows whether "today" means
+        // calendar midnight or rolling 24h, and which baselines are rolling.
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "Windows: today = local-calendar midnight → now · " +
+                "HRV/RHR baseline = rolling 7 days · Training load = rolling 42d EWMA",
+            color = UrujMuted,
+            fontWeight = FontWeight.Medium,
+            fontSize = 9.sp,
+        )
     }
 }
 
 @Composable
 private fun ComponentRow(component: ReadinessComponent) {
     val score = component.score
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = component.label.uppercase(),
-            color = UrujMuted,
-            fontWeight = FontWeight.Black,
-            fontSize = 9.sp,
-            letterSpacing = 1.5.sp,
-            modifier = Modifier.width(90.dp),
-        )
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .height(6.dp)
-                .background(UrujSurfaceHigh, RoundedCornerShape(3.dp)),
-        ) {
-            if (score != null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(score / 100f)
-                        .height(6.dp)
-                        .background(scoreColor(score), RoundedCornerShape(3.dp)),
+    // Verbose 2-line layout (v0.3.2). Top line: existing bar + value snapshot.
+    // Bottom line: score out of 100 + one-line "why" tagline. Lets the rider
+    // see WHICH component is dragging the score and WHY, not just an opaque
+    // mood bar. Blummenfelt-grade transparency without a separate detail page.
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = component.label.uppercase(),
+                color = UrujMuted,
+                fontWeight = FontWeight.Black,
+                fontSize = 9.sp,
+                letterSpacing = 1.5.sp,
+                modifier = Modifier.width(90.dp),
+            )
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(6.dp)
+                    .background(UrujSurfaceHigh, RoundedCornerShape(3.dp)),
+            ) {
+                if (score != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(score / 100f)
+                            .height(6.dp)
+                            .background(scoreColor(score), RoundedCornerShape(3.dp)),
+                    )
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = component.detail,
+                color = if (score == null) UrujMuted else UrujText,
+                fontWeight = FontWeight.Bold,
+                fontSize = 10.sp,
+                modifier = Modifier.width(110.dp),
+            )
+        }
+        // Second line — score + reason. Indent to align under the value column.
+        if (score != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 90.dp, top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "$score/100",
+                    color = scoreColor(score),
+                    fontWeight = FontWeight.Black,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.width(56.dp),
+                )
+                Text(
+                    text = reasonFor(component.label, score, component.detail),
+                    color = UrujMuted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium,
                 )
             }
         }
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = component.detail,
-            color = if (score == null) UrujMuted else UrujText,
-            fontWeight = FontWeight.Bold,
-            fontSize = 10.sp,
-            modifier = Modifier.width(110.dp),
-        )
     }
+}
+
+/**
+ * Human-readable explanation per component based on score bucket + value.
+ * Surfaces methodology without requiring a dedicated detail screen. Reads
+ * like a coach's note: short, specific, actionable when relevant.
+ */
+private fun reasonFor(label: String, score: Int, detail: String): String = when (label) {
+    "Sleep" -> when {
+        score >= 100 -> "optimal range 7-9h ✓"
+        score >= 90 -> "slightly over 7-9h optimal"
+        score >= 80 -> "below 7h target — still ok"
+        score >= 60 -> "under-slept — recovery limited"
+        else -> "severely under-slept"
+    }
+    "HRV" -> when {
+        score >= 90 -> "autonomic system primed ✓"
+        score >= 70 -> "near baseline — normal variance"
+        score >= 40 -> "below baseline — watch fatigue"
+        else -> "proxy noisier than RMSSD; chest strap (v1.5) unlocks real HRV"
+    }
+    "Resting HR" -> when {
+        score >= 100 -> "RHR below baseline → strong recovery"
+        score >= 75 -> "RHR near baseline"
+        else -> "RHR elevated — recovery limited or stress signal"
+    }
+    "Training load" -> when {
+        score >= 95 -> "fresh — peak race window"
+        score >= 90 -> "balanced load"
+        score >= 75 -> "mild fatigue — still trainable"
+        score >= 55 -> "fatigued from recent hard rides"
+        else -> "over-trained — rest before pushing"
+    }
+    else -> ""
 }
 
 private fun scoreColor(score: Int): Color = when {

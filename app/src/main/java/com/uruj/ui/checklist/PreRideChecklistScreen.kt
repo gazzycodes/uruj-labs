@@ -174,8 +174,20 @@ fun PreRideChecklistScreen(
                     onOpenBioLab = onOpenBioLab,
                 )
             }
+            // Readiness card is the primary status indicator on this screen,
+            // so it sits ABOVE the checklist title. The title introduces the
+            // pre-ride checks section that follows, not the readiness panel.
+            item("readiness") {
+                Spacer(Modifier.height(8.dp))
+                ReadinessCard(
+                    result = readiness,
+                    snapshot = readinessSnapshot,
+                    syncing = readinessSyncing,
+                    onRefresh = { viewModel.refreshReadiness() },
+                )
+            }
             item("title") {
-                Column(modifier = Modifier.padding(top = 12.dp)) {
+                Column(modifier = Modifier.padding(top = 20.dp)) {
                     Text(
                         text = "PRE-RIDE",
                         color = UrujMuted,
@@ -192,14 +204,6 @@ fun PreRideChecklistScreen(
                         fontSize = 32.sp,
                     )
                 }
-            }
-            item("readiness") {
-                ReadinessCard(
-                    result = readiness,
-                    snapshot = readinessSnapshot,
-                    syncing = readinessSyncing,
-                    onRefresh = { viewModel.refreshReadiness() },
-                )
             }
             item("checks_spacer") { Spacer(Modifier.height(4.dp)) }
             items(state.items, key = { it.id }) { item ->
