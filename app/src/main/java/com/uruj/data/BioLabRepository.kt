@@ -274,6 +274,16 @@ class BioLabRepository(context: Context) {
             hrr1Classification = hrr?.medianClassification,
             hrr1SampleCount = hrr?.samples?.size ?: 0,
             hrr1AthleteContext = hrr1AthleteContext,
+            hrr1RecentSamples = hrr?.samples
+                ?.sortedByDescending { it.sessionEnd }
+                ?.take(5)
+                ?.map {
+                    HrrSample(
+                        endTimeMs = it.sessionEnd.toEpochMilli(),
+                        hrr1Bpm = it.hrr1Bpm,
+                        peakBpm = it.effortPeakBpm,
+                    )
+                } ?: emptyList(),
 
             // Activity
             stepsToday = stepsToday,
@@ -641,6 +651,9 @@ data class BioLabSnapshot(
     val hrr1SampleCount: Int = 0,
     /** Fitness-tier-aware interpretation of the HRR1 number (athlete vs general population). */
     val hrr1AthleteContext: String? = null,
+    /** Up to 5 most recent qualifying HRR1 readings (latest first). UI shows them so
+     *  the rider sees individual ride variance, not just the smoothed median. */
+    val hrr1RecentSamples: List<HrrSample> = emptyList(),
 
     // Activity (today)
     val stepsToday: Int? = null,
@@ -649,4 +662,11 @@ data class BioLabSnapshot(
     val activeCaloriesToday: Float? = null,
     val exerciseSessionsToday: Int? = null,
     val ftpWatts: Int = 200,
+)
+
+/** A single qualifying HRR1 reading from one exercise session. */
+data class HrrSample(
+    val endTimeMs: Long,
+    val hrr1Bpm: Int,
+    val peakBpm: Int,
 )
