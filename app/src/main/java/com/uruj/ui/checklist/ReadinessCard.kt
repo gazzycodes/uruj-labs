@@ -16,7 +16,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
@@ -174,11 +177,23 @@ fun ReadinessCard(
 @Composable
 private fun DiagnosticsLine(snapshot: ReadinessSnapshot) {
     val diag = snapshot.diagnostics
-    val ageSec = ((System.currentTimeMillis() - snapshot.computedAtMs) / 1000L).coerceAtLeast(0)
+    // Live-ticking age — uses produceState to recompose every second.
+    // Keyed on computedAtMs so the ticker restarts whenever a fresh sync lands.
+    val nowMs by produceState(
+        initialValue = System.currentTimeMillis(),
+        snapshot.computedAtMs,
+    ) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(1_000L)
+        }
+    }
+    val ageSec = ((nowMs - snapshot.computedAtMs) / 1000L).coerceAtLeast(0)
     val ageLabel = when {
         ageSec < 5 -> "just now"
         ageSec < 60 -> "${ageSec}s ago"
-        else -> "${ageSec / 60}m ago"
+        ageSec < 3600 -> "${ageSec / 60}m ago"
+        else -> "${ageSec / 3600}h ago"
     }
     val anyData = diag.sleepRecords7d + diag.hrvRecords7d + diag.rhrRecords7d > 0
     val hcOk = diag.healthConnectInstalled && diag.permissionsGranted == diag.permissionsExpected
@@ -262,6 +277,17 @@ private fun DiagnosticsLine(snapshot: ReadinessSnapshot) {
                 )
             }
         }
+        // Data-window footer — explicit about what time ranges feed the score.
+        // Surfaces methodology so the rider knows whether "today" means
+        // calendar midnight or rolling 24h, and which baselines are rolling.
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "Windows: today = local-calendar midnight → now · " +
+                "HRV/RHR baseline = rolling 7 days · Training load = rolling 42d EWMA",
+            color = UrujMuted,
+            fontWeight = FontWeight.Medium,
+            fontSize = 9.sp,
+        )
     }
 }
 

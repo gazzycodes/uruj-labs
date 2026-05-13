@@ -332,13 +332,19 @@ class ReadinessRepository(context: Context) {
     private suspend fun readHrProxies(client: HealthConnectClient, now: Instant): HrProxies {
         return runCatching {
             val weekAgo = now.minus(Duration.ofDays(7))
-            val dayAgo = now.minus(Duration.ofDays(1))
+            // Calendar-day "today" — matches Bio Lab + TSB calendar-day usage so
+            // the entire app shares one definition. Was rolling 24h previously
+            // which produced subtly-different windows at hours past midnight.
+            // This only matters for the LAST-RESORT proxy (when no sleep data
+            // is available); other paths now use the SleepingHrvProxyCalculator.
+            val todayStart = LocalDate.now(ZoneId.systemDefault())
+                .atStartOfDay(ZoneId.systemDefault()).toInstant()
 
-            // Pull today's HR samples (last 24h)
+            // Pull today's HR samples (calendar-day midnight → now)
             val todayResponse = client.readRecords(
                 ReadRecordsRequest(
                     recordType = HeartRateRecord::class,
-                    timeRangeFilter = TimeRangeFilter.between(dayAgo, now),
+                    timeRangeFilter = TimeRangeFilter.between(todayStart, now),
                     ascendingOrder = false,
                     pageSize = 1000,
                 ),
