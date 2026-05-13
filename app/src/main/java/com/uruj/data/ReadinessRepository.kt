@@ -49,6 +49,13 @@ data class ReadinessDiagnostics(
      * the readiness score actually used a derived value.
      */
     val rhrSourceLabel: String? = null,
+    /**
+     * Same idea for HRV. "direct" = HeartRateVariabilityRmssdRecord existed
+     * (rare on Fit Band 3 — needs RR intervals from chest strap); "proxy" =
+     * std-dev of HR samples (Garmin/Fitbit pre-strap pattern); null = no HRV
+     * input available. Real RMSSD HRV unlocks with BLE chest strap (v1.5).
+     */
+    val hrvSourceLabel: String? = null,
 )
 
 /**
@@ -77,11 +84,14 @@ class ReadinessRepository(context: Context) {
      */
     suspend fun computeWithDiagnostics(): ReadinessSnapshot = withContext(Dispatchers.IO) {
         val diagnostics = collectDiagnostics()
-        val (inputs, rhrSource) = gatherInputsWithSource()
+        val (inputs, rhrSource, hrvSource) = gatherInputsWithSource()
         val result = calculator.compute(inputs)
         ReadinessSnapshot(
             result = result,
-            diagnostics = diagnostics.copy(rhrSourceLabel = rhrSource),
+            diagnostics = diagnostics.copy(
+                rhrSourceLabel = rhrSource,
+                hrvSourceLabel = hrvSource,
+            ),
             computedAtMs = System.currentTimeMillis(),
         )
     }
@@ -161,14 +171,14 @@ class ReadinessRepository(context: Context) {
      * The UI uses this to replace the misleading "0 RHR" diagnostics line with
      * "RHR(sleep)" when the readiness score actually had a derived value.
      */
-    private suspend fun gatherInputsWithSource(): Pair<ReadinessInputs, String?> {
+    private suspend fun gatherInputsWithSource(): Triple<ReadinessInputs, String?, String?> {
         // If Health Connect isn't available, fall back to training-load-only.
         val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
         if (!sdkOk) {
-            return ReadinessInputs(trainingStressBalance = computeTsb()) to null
+            return Triple(ReadinessInputs(trainingStressBalance = computeTsb()), null, null)
         }
         val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
-            ?: return ReadinessInputs(trainingStressBalance = computeTsb()) to null
+            ?: return Triple(ReadinessInputs(trainingStressBalance = computeTsb()), null, null)
 
         val granted = runCatching { client.permissionController.getGrantedPermissions() }
             .getOrDefault(emptySet())
@@ -187,11 +197,13 @@ class ReadinessRepository(context: Context) {
         var rhrToday: Int? = null
         var rhrBaseline: Int? = null
         var rhrSource: String? = null
+        var hrvSource: String? = null
 
         if (HealthPermission.getReadPermission(HeartRateVariabilityRmssdRecord::class) in granted) {
             val (today, baseline) = readHrvTodayAndBaseline(client, now)
             hrvToday = today
             hrvBaseline = baseline
+            if (today != null) hrvSource = "direct"
         }
         if (HealthPermission.getReadPermission(RestingHeartRateRecord::class) in granted) {
             val (today, baseline) = readRhrTodayAndBaseline(client, now)
@@ -228,17 +240,22 @@ class ReadinessRepository(context: Context) {
             if (hrvToday == null && proxies.todayHrvSd != null) {
                 hrvToday = proxies.todayHrvSd
                 hrvBaseline = proxies.baselineHrvSd
+                hrvSource = "proxy"
             }
         }
 
-        return ReadinessInputs(
-            sleepLastNightHours = sleep,
-            hrvTodayRmssd = hrvToday,
-            hrvBaseline7d = hrvBaseline,
-            restingHrToday = rhrToday,
-            restingHrBaseline7d = rhrBaseline,
-            trainingStressBalance = computeTsb(),
-        ) to rhrSource
+        return Triple(
+            ReadinessInputs(
+                sleepLastNightHours = sleep,
+                hrvTodayRmssd = hrvToday,
+                hrvBaseline7d = hrvBaseline,
+                restingHrToday = rhrToday,
+                restingHrBaseline7d = rhrBaseline,
+                trainingStressBalance = computeTsb(),
+            ),
+            rhrSource,
+            hrvSource,
+        )
     }
 
     private data class HrProxies(

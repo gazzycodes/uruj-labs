@@ -223,9 +223,14 @@ private fun DiagnosticsLine(snapshot: ReadinessSnapshot) {
             "proxy" -> "RHR(HR-proxy)"
             else -> "${diag.rhrRecords7d} RHR"
         }
+        val hrvLabel = when (diag.hrvSourceLabel) {
+            "direct" -> "${diag.hrvRecords7d} HRV(direct)"
+            "proxy" -> "HRV(HR-proxy)"
+            else -> "${diag.hrvRecords7d} HRV"
+        }
         Text(
             text = "Records (7d): ${diag.sleepRecords7d} sleep · " +
-                "${diag.hrvRecords7d} HRV · " +
+                "$hrvLabel · " +
                 "$rhrLabel · " +
                 "${diag.hrRecords7d} HR · " +
                 "${diag.rideSummariesAll} URUJ rides",
