@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.layer.drawLayer
@@ -51,7 +53,11 @@ import com.uruj.ui.theme.UrujNeonMagenta
 import com.uruj.ui.theme.UrujSurface
 import com.uruj.ui.theme.UrujSurfaceHigh
 import com.uruj.ui.theme.UrujText
+import com.uruj.ui.theme.UrujZone1
+import com.uruj.ui.theme.UrujZone2
 import com.uruj.ui.theme.UrujZone3
+import com.uruj.ui.theme.UrujZone4
+import com.uruj.ui.theme.UrujZone5
 import kotlin.math.pow
 
 @Composable
@@ -129,6 +135,14 @@ fun RideSummaryScreen(
             PowerCard(state)
             Spacer(Modifier.height(12.dp))
             HrCard(hrState)
+            // Time-in-zone breakdown — only shown when HR samples exist for the ride.
+            // Reads from HC's post-batch sync data via TimeInZoneCalculator. Polarized
+            // training compliance metric (Blummenfelt-style 80/20) included inline.
+            val tiz by viewModel.timeInZone.collectAsStateWithLifecycle()
+            if (tiz != null) {
+                Spacer(Modifier.height(12.dp))
+                TimeInZoneCard(tiz!!)
+            }
             Spacer(Modifier.height(12.dp))
             ClimbCard(state)
             Spacer(Modifier.height(12.dp))
@@ -320,6 +334,114 @@ private fun HrCard(hrState: HrEnrichmentState) {
         }
         HrEnrichmentState.NotAvailable, HrEnrichmentState.Idle -> Unit // hide card entirely
     }
+}
+
+@Composable
+private fun TimeInZoneCard(result: com.uruj.power.TimeInZoneCalculator.Result) {
+    Card("TIME IN ZONE", accent = UrujNeonMagenta) {
+        // Horizontal stacked bar — each zone takes a slice proportional to its
+        // share of the total. Visual at-a-glance "where did I spend the ride."
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .height(14.dp)
+                .clip(RoundedCornerShape(4.dp)),
+        ) {
+            val totalMs = result.totalMs.coerceAtLeast(1L)
+            val zoneColors = listOf(
+                UrujZone1, UrujZone2, UrujZone3, UrujZone4, UrujZone5,
+            )
+            for (i in 0..4) {
+                val pct = result.timeInZoneMs[i].toFloat() / totalMs
+                if (pct > 0f) {
+                    Box(
+                        modifier = Modifier
+                            .weight(pct)
+                            .fillMaxHeight()
+                            .background(zoneColors[i]),
+                    )
+                }
+            }
+        }
+        // Per-zone row with minutes + percent
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+            val labels = listOf("Z1 Recovery", "Z2 Endurance", "Z3 Tempo", "Z4 Threshold", "Z5 VO2/Sprint")
+            val zoneColors = listOf(UrujZone1, UrujZone2, UrujZone3, UrujZone4, UrujZone5)
+            for (i in 0..4) {
+                val zoneMs = result.timeInZoneMs[i]
+                val pct = if (result.totalMs > 0) zoneMs.toFloat() / result.totalMs * 100f else 0f
+                if (zoneMs > 0L || i in 1..3) {  // always show Z2-Z4 even if 0
+                    Row(
+                        modifier = Modifier.padding(vertical = 1.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(8.dp)
+                                .height(8.dp)
+                                .background(zoneColors[i], RoundedCornerShape(2.dp)),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            labels[i],
+                            color = UrujText,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "${zoneMs / 60_000}m  ${"%.0f".format(pct)}%",
+                            color = UrujMuted,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
+            }
+        }
+        // Polarized 80/20 compliance line — Blummenfelt's discipline benchmark.
+        Spacer(Modifier.height(6.dp))
+        Column(modifier = Modifier.padding(horizontal = 12.dp)) {
+            Text(
+                "POLARIZED COMPLIANCE",
+                color = UrujMuted,
+                fontWeight = FontWeight.Black,
+                fontSize = 9.sp,
+                letterSpacing = 1.5.sp,
+            )
+            Spacer(Modifier.height(2.dp))
+            val easyPct = (result.easyPct * 100).toInt()
+            val grayPct = (result.grayPct * 100).toInt()
+            val hardPct = (result.hardPct * 100).toInt()
+            Text(
+                "$easyPct% easy (Z1-Z2) · $grayPct% gray (Z3) · $hardPct% hard (Z4-Z5)",
+                color = UrujText,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = polarizedFeedback(result.easyPct, result.grayPct, result.hardPct),
+                color = UrujMuted,
+                fontSize = 11.sp,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+private fun polarizedFeedback(easy: Float, gray: Float, hard: Float): String = when {
+    easy >= 0.75f && hard >= 0.10f && gray < 0.15f ->
+        "Polarized ✓ — Blummenfelt-style 80/20 distribution. Aerobic base + threshold work both hit."
+    easy >= 0.85f && hard < 0.05f ->
+        "Endurance day — pure aerobic base, no threshold stimulus. Good for recovery weeks."
+    easy < 0.50f && gray >= 0.25f ->
+        "Gray-zone trap — too much Z3. Either drop to Z2 or push to Z4. Blummenfelt avoids the middle."
+    hard >= 0.30f ->
+        "Hard day — high threshold/VO2 stimulus. Recovery important tomorrow."
+    else ->
+        "Mixed distribution — context-dependent. Compare against weekly target."
 }
 
 @Composable
