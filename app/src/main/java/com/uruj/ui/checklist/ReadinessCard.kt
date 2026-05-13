@@ -225,6 +225,7 @@ private fun DiagnosticsLine(snapshot: ReadinessSnapshot) {
         }
         val hrvLabel = when (diag.hrvSourceLabel) {
             "direct" -> "${diag.hrvRecords7d} HRV(direct)"
+            "sleep" -> "HRV(sleep) ✓"
             "proxy" -> "HRV(HR-proxy)"
             else -> "${diag.hrvRecords7d} HRV"
         }

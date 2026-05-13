@@ -13,6 +13,7 @@ import androidx.health.connect.client.time.TimeRangeFilter
 import com.uruj.domain.ReadinessInputs
 import com.uruj.power.HrAnalyzer
 import com.uruj.power.ReadinessCalculator
+import com.uruj.power.SleepingHrvProxyCalculator
 import com.uruj.power.SleepingRhrCalculator
 import com.uruj.domain.ReadinessResult
 import kotlinx.coroutines.Dispatchers
@@ -72,6 +73,7 @@ class ReadinessRepository(context: Context) {
     private val historyRepo = RideHistoryRepository(appContext)
     private val hrAnalyzer = HrAnalyzer()
     private val sleepingRhrCalc = SleepingRhrCalculator()
+    private val sleepingHrvCalc = SleepingHrvProxyCalculator()
 
     suspend fun compute(): ReadinessResult = withContext(Dispatchers.IO) {
         val inputs = gatherInputs()
@@ -219,8 +221,16 @@ class ReadinessRepository(context: Context) {
         // cross-night median over 7d.
         val hrPermGranted = HealthPermission.getReadPermission(HeartRateRecord::class) in granted
         val sleepPermGranted = HealthPermission.getReadPermission(SleepSessionRecord::class) in granted
-        if (rhrToday == null && hrPermGranted && sleepPermGranted) {
-            val sleepingResult = readSleepingRhr(client, now)
+
+        // Pull HR samples + sleep windows ONCE for both sleeping-RHR and
+        // sleeping-HRV proxy — avoids duplicate HC reads. Skip entirely if
+        // either permission is missing.
+        val sleepingHrData = if (hrPermGranted && sleepPermGranted) {
+            readSleepingHrInputs(client, now)
+        } else null
+
+        if (rhrToday == null && sleepingHrData != null) {
+            val sleepingResult = sleepingRhrCalc.compute(sleepingHrData.first, sleepingHrData.second)
             if (sleepingResult != null) {
                 rhrToday = sleepingResult.mostRecentNightBpm
                 rhrBaseline = sleepingResult.medianBpm
@@ -228,8 +238,23 @@ class ReadinessRepository(context: Context) {
             }
         }
 
-        // Fallback: derive proxies from raw HeartRateRecord samples when dedicated
-        // records aren't available AND sleeping-RHR couldn't be computed.
+        // Sleeping-HRV proxy — preferred over the activity-confounded all-samples
+        // proxy. Same sleep+HR data we already pulled for RHR. Filters out the
+        // bug where a rest day shows "-55% HRV" because low activity = low HR
+        // variance across the 24h window. Sleep-only std-dev gives a consistent
+        // protocol across days → ratio reflects autonomic state, not activity.
+        if (hrvToday == null && sleepingHrData != null) {
+            val sleepingHrv = sleepingHrvCalc.compute(sleepingHrData.first, sleepingHrData.second)
+            if (sleepingHrv != null && sleepingHrv.baselineMs > 0f) {
+                hrvToday = sleepingHrv.todayMs
+                hrvBaseline = sleepingHrv.baselineMs
+                hrvSource = "sleep"
+            }
+        }
+
+        // Last-resort fallback: derive proxies from raw HeartRateRecord samples
+        // across all 24h windows. Used when sleep data is unavailable. Known
+        // limitation: activity-confounded (see SleepingHrvProxyCalculator docs).
         if (hrPermGranted && (hrvToday == null || rhrToday == null)) {
             val proxies = readHrProxies(client, now)
             if (rhrToday == null && proxies.todayRhr != null) {
@@ -266,15 +291,14 @@ class ReadinessRepository(context: Context) {
     )
 
     /**
-     * Pull 7d of timestamped HR samples + sleep windows and run them through
-     * the shared SleepingRhrCalculator. Returns null on any failure — caller
-     * falls back to proxy logic. Matches Bio Lab's RHR algorithm exactly so
-     * both screens display the same number.
+     * Pull 7d of timestamped HR samples + sleep windows. Shared by sleeping-RHR
+     * and sleeping-HRV-proxy calculators so we do one HC read for both metrics.
+     * Returns null on any failure — caller falls back to other proxies.
      */
-    private suspend fun readSleepingRhr(
+    private suspend fun readSleepingHrInputs(
         client: HealthConnectClient,
         now: Instant,
-    ): SleepingRhrCalculator.Result? {
+    ): Pair<List<Pair<Instant, Int>>, List<Pair<Instant, Instant>>>? {
         return runCatching {
             val weekAgo = now.minus(Duration.ofDays(7))
 
@@ -297,8 +321,8 @@ class ReadinessRepository(context: Context) {
                 ),
             ).records.map { it.startTime to it.endTime }
 
-            sleepingRhrCalc.compute(hrSamples, sleepWindows)
-        }.onFailure { Log.w("URUJ-Readiness", "sleeping RHR compute failed", it) }
+            hrSamples to sleepWindows
+        }.onFailure { Log.w("URUJ-Readiness", "sleeping HR inputs read failed", it) }
             .getOrNull()
     }
 
