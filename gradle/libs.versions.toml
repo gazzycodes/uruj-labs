@@ -14,6 +14,7 @@ healthConnect = "1.1.0-alpha10"
 datastore = "1.1.1"
 navigationCompose = "2.8.5"
 kotlinxSerialization = "1.7.3"
+osmdroid = "6.1.20"
 
 [libraries]
 # Compose + AndroidX existing
@@ -40,6 +41,10 @@ kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 kotlinx-coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "coroutines" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+
+# Route map tiles + GPS overlay (v0.3.0). OSMDroid uses free OpenStreetMap tiles,
+# bundled MapView is a regular Android View we wrap in AndroidView for Compose.
+osmdroid-android = { group = "org.osmdroid", name = "osmdroid-android", version.ref = "osmdroid" }
 
 # Test
 junit = { group = "junit", name = "junit", version.ref = "junit" }

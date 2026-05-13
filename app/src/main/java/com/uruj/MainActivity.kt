@@ -21,6 +21,7 @@ import com.uruj.ui.diagnostics.DiagnosticsScreen
 import com.uruj.ui.history.RideHistoryScreen
 import com.uruj.ui.hud.HudScreen
 import com.uruj.ui.profile.RiderProfileScreen
+import com.uruj.ui.routemap.RouteMapScreen
 import com.uruj.ui.summary.RideSummaryScreen
 import com.uruj.ui.theme.URUJTheme
 
@@ -41,6 +42,9 @@ class MainActivity : ComponentActivity() {
             val rideState by RideStateHolder.state.collectAsStateWithLifecycle()
             val completed by RideStateHolder.completedRide.collectAsStateWithLifecycle()
             var screen by remember { mutableStateOf<AppScreen>(AppScreen.Checklist) }
+            // Route map overlays whichever summary launched it. Held at top level
+            // so back from map returns to the right summary without losing state.
+            var routeMapSession by remember { mutableStateOf<String?>(null) }
 
             LaunchedEffect(rideState.isRecording) {
                 setShowWhenLocked(rideState.isRecording)
@@ -53,11 +57,17 @@ class MainActivity : ComponentActivity() {
             }
 
             URUJTheme {
+                val activeMapSession = routeMapSession
                 when {
+                    activeMapSession != null -> RouteMapScreen(
+                        sessionId = activeMapSession,
+                        onBack = { routeMapSession = null },
+                    )
                     rideState.isRecording -> HudScreen(onStopRide = ::stopRide)
                     completed != null -> RideSummaryScreen(
                         state = completed!!,
                         onDone = { RideStateHolder.dismissCompleted() },
+                        onOpenMap = { sid -> routeMapSession = sid },
                     )
                     else -> when (val current = screen) {
                         AppScreen.Checklist -> PreRideChecklistScreen(
@@ -85,6 +95,7 @@ class MainActivity : ComponentActivity() {
                         is AppScreen.ViewingPastRide -> RideSummaryScreen(
                             state = current.summary.toRideState(),
                             onDone = { screen = AppScreen.History },
+                            onOpenMap = { sid -> routeMapSession = sid },
                         )
                     }
                 }
