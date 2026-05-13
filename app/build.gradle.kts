@@ -16,8 +16,8 @@ android {
         applicationId = "com.uruj"
         minSdk = 26
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.2.12"
+        versionCode = 14
+        versionName = "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -66,6 +66,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.kotlinx.serialization.json)
+
+    // Route map (v0.3.0) — OpenStreetMap tiles, free, no API key
+    implementation(libs.osmdroid.android)
 
     // Unit tests
     testImplementation(libs.junit)

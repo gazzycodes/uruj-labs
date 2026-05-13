@@ -58,6 +58,7 @@ import kotlin.math.pow
 fun RideSummaryScreen(
     state: RideState,
     onDone: () -> Unit,
+    onOpenMap: (sessionId: String) -> Unit = {},
     viewModel: RideSummaryViewModel = viewModel(),
 ) {
     // Kick off Health Connect HR enrichment if we have a valid ride to enrich. The VM
@@ -135,13 +136,37 @@ fun RideSummaryScreen(
 
             Spacer(Modifier.height(28.dp))
 
+            // VIEW MAP — only when we have a session ID to look up the NDJSON.
+            // Placed above SHARE/DONE because the map is the primary post-ride
+            // exploration once the rider's actually curious about their route.
+            val sessionId = state.sessionId
+            if (sessionId != null) {
+                Button(
+                    onClick = { onOpenMap(sessionId) },
+                    modifier = Modifier.fillMaxWidth().height(58.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = UrujSurfaceHigh,
+                        contentColor = UrujAccent,
+                    ),
+                ) {
+                    Text(
+                        "▶ VIEW MAP",
+                        fontWeight = FontWeight.Black,
+                        fontSize = 16.sp,
+                        letterSpacing = 4.sp,
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+
             Row(modifier = Modifier.fillMaxWidth()) {
                 Button(
                     onClick = {
                         coroutineScope.launch {
                             val image = captureLayer.toImageBitmap().asAndroidBitmap()
-                            val sessionId = state.sessionId ?: "ride"
-                            val uri = ShareImage.save(context, image, sessionId)
+                            val sid = state.sessionId ?: "ride"
+                            val uri = ShareImage.save(context, image, sid)
                             ShareImage.launchShareIntent(context, uri)
                         }
                     },
