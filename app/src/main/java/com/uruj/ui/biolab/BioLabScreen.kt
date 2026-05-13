@@ -24,6 +24,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -121,13 +123,7 @@ fun BioLabScreen(
                 )
                 snapshot?.let { snap ->
                     Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Last refresh: ${relativeAge(snap.computedAtMs)}",
-                        color = UrujMuted,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 10.sp,
-                        letterSpacing = 1.sp,
-                    )
+                    LiveAgeText(thenMs = snap.computedAtMs, prefix = "Last refresh: ")
                 }
             }
 
@@ -632,8 +628,8 @@ private fun ActivityCard(s: BioLabSnapshot) {
 }
 
 /** Human-readable elapsed time since a timestamp ("12s ago" / "4m ago" / "2h ago"). */
-private fun relativeAge(thenMs: Long): String {
-    val ageMs = (System.currentTimeMillis() - thenMs).coerceAtLeast(0L)
+private fun relativeAge(thenMs: Long, nowMs: Long = System.currentTimeMillis()): String {
+    val ageMs = (nowMs - thenMs).coerceAtLeast(0L)
     val seconds = ageMs / 1000
     return when {
         seconds < 60 -> "${seconds}s ago"
@@ -641,6 +637,28 @@ private fun relativeAge(thenMs: Long): String {
         seconds < 86_400 -> "${seconds / 3600}h ago"
         else -> "${seconds / 86_400}d ago"
     }
+}
+
+/**
+ * Self-updating "Last refresh: Xs ago" label. produceState ticks `now` every
+ * second, forcing recomposition of just this Text. Restarts the ticker
+ * whenever the underlying timestamp changes (i.e., user hits REFRESH).
+ */
+@Composable
+private fun LiveAgeText(thenMs: Long, prefix: String = "") {
+    val now by produceState(initialValue = System.currentTimeMillis(), thenMs) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(1_000L)
+        }
+    }
+    Text(
+        text = "$prefix${relativeAge(thenMs, now)}",
+        color = UrujMuted,
+        fontWeight = FontWeight.Bold,
+        fontSize = 10.sp,
+        letterSpacing = 1.sp,
+    )
 }
 
 private val hrrSampleDateFmt = SimpleDateFormat("MMM d", Locale.getDefault())
