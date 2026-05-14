@@ -365,18 +365,28 @@ private fun ComponentRow(component: ReadinessComponent) {
  * like a coach's note: short, specific, actionable when relevant.
  */
 private fun reasonFor(label: String, score: Int, detail: String): String = when (label) {
-    "Sleep" -> when {
-        score >= 100 -> "optimal range 7-9h ✓"
-        score >= 90 -> "slightly over 7-9h optimal"
-        score >= 80 -> "below 7h target — still ok"
-        score >= 60 -> "under-slept — recovery limited"
-        else -> "severely under-slept"
+    "Sleep" -> {
+        // v0.4.1 fix: previous version mapped score → label, which collided
+        // 5-6h (score 60) with >10h (score 70) — both showed "under-slept" text.
+        // Now branches on actual hours from the detail string (e.g. "11.1h").
+        val hours = detail.removeSuffix("h").toFloatOrNull() ?: 0f
+        when {
+            hours >= 7f && hours <= 9f -> "optimal range 7-9h ✓"
+            hours > 12f -> "over-slept >12h — recovery flagging fatigue/illness"
+            hours > 10f -> "over-slept — catching up after deep fatigue"
+            hours > 9f -> "slightly over 7-9h optimal — still well-rested"
+            hours >= 6f -> "below 7h target — still ok"
+            hours >= 5f -> "under-slept — recovery limited"
+            hours >= 4f -> "severely under-slept"
+            hours > 0f -> "severely under-slept — rest day"
+            else -> ""
+        }
     }
     "HRV" -> when {
         score >= 90 -> "autonomic system primed ✓"
         score >= 70 -> "near baseline — normal variance"
         score >= 40 -> "below baseline — watch fatigue"
-        else -> "proxy noisier than RMSSD; chest strap (v1.5) unlocks real HRV"
+        else -> "Samsung Fit Band 3 doesn't write HRV; chest strap (v1.5) unlocks real RMSSD"
     }
     "Resting HR" -> when {
         score >= 100 -> "RHR below baseline → strong recovery"
@@ -387,7 +397,8 @@ private fun reasonFor(label: String, score: Int, detail: String): String = when 
         score >= 95 -> "fresh — peak race window"
         score >= 90 -> "balanced load"
         score >= 75 -> "mild fatigue — still trainable"
-        score >= 55 -> "fatigued from recent hard rides"
+        score >= 65 -> "productive fatigue — adaptation territory"
+        score >= 50 -> "significant fatigue from recent hard rides"
         else -> "over-trained — rest before pushing"
     }
     else -> ""
