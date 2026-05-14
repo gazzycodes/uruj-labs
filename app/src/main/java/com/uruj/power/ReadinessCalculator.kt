@@ -37,7 +37,9 @@ class ReadinessCalculator {
             weightedSum += score * 0.30f
             totalWeight += 0.30f
         } ?: components.add(
-            ReadinessComponent("HRV", null, "needs 7 days of data"),
+            // v0.4.1: honest label — Samsung Fit Band 3 doesn't write HRV
+            // records to HC. The "needs 7 days" framing was misleading.
+            ReadinessComponent("HRV", null, "chest strap unlocks (v1.5)"),
         )
 
         scoreRestingHr(inputs.restingHrToday, inputs.restingHrBaseline7d)?.let { (score, detail) ->
@@ -45,7 +47,7 @@ class ReadinessCalculator {
             weightedSum += score * 0.15f
             totalWeight += 0.15f
         } ?: components.add(
-            ReadinessComponent("Resting HR", null, "needs 7 days of data"),
+            ReadinessComponent("Resting HR", null, "needs sleep + HR data"),
         )
 
         scoreTsb(inputs.trainingStressBalance)?.let { (score, detail) ->
@@ -163,18 +165,23 @@ class ReadinessCalculator {
 
     private fun scoreTsb(tsb: Float?): Pair<Int, String>? {
         if (tsb == null) return null
+        // v0.4.1: split the wide -25..-10 bucket. TSB -10 to -15 is "productive
+        // fatigue" (where adaptation happens — pros live here mid-block); only
+        // below -15 does it cross into the genuinely-fatigued zone.
         val score = when {
             tsb > 10f -> 95     // very fresh, but possibly detraining
             tsb in 5f..10f -> 100
             tsb in -5f..5f -> 90
             tsb in -10f..-5f -> 75
-            tsb in -25f..-10f -> 55
+            tsb in -15f..-10f -> 65       // productive fatigue (NEW)
+            tsb in -25f..-15f -> 50       // significant fatigue
             tsb in -40f..-25f -> 30
             else -> 15
         }
         val detail = when {
             tsb > 5f -> "fresh (TSB +${tsb.roundToInt()})"
             abs(tsb) <= 5f -> "balanced (TSB ${tsb.roundToInt()})"
+            tsb > -15f -> "productive (TSB ${tsb.roundToInt()})"
             tsb > -25f -> "fatigued (TSB ${tsb.roundToInt()})"
             else -> "over-trained (TSB ${tsb.roundToInt()})"
         }
