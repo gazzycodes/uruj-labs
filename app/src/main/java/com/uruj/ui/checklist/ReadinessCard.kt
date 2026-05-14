@@ -699,9 +699,15 @@ private fun TrainingLoadInfo(component: ReadinessComponent?) {
             "TSB stuck below -25 for weeks → overtraining",
     )
     InfoSection(
-        "How it auto-updates",
-        "• Every ride you finish adds TSS to today's bucket → ATL spikes → " +
-            "TSB drops more negative.\n\n" +
+        "How it auto-updates (multi-sport)",
+        "• Every URUJ ride adds TSS = IF² × hours × 100, with IF = avgPower/FTP " +
+            "(power-based, the precise version).\n\n" +
+            "• Every Samsung-tracked run / HIIT / strength session also adds " +
+            "hrTSS based on HR Reserve fraction during the session (Banister-" +
+            "style, normalized to threshold = IF 1.0 at 87% HR Reserve). So " +
+            "your runs count toward TSB even though URUJ doesn't record runs.\n\n" +
+            "• Cycling sessions in Samsung that overlap a URUJ ride are skipped " +
+            "(no double-counting).\n\n" +
             "• Every calendar day at midnight, both batteries leak — fatigue " +
             "drains ~14% per rest day, fitness drains ~2.4% per rest day. So " +
             "TSB naturally drifts back toward 0 if you rest.\n\n" +

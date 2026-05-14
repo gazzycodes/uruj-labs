@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
+import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
 import androidx.health.connect.client.records.RestingHeartRateRecord
@@ -72,6 +73,7 @@ class ReadinessRepository(context: Context) {
     private val appContext = context.applicationContext
     private val calculator = ReadinessCalculator()
     private val historyRepo = RideHistoryRepository(appContext)
+    private val profileStore = RiderProfileStore(appContext)
     private val sleepingRhrCalc = SleepingRhrCalculator()
     private val lastSleepReader = LastSleepReader()
 
@@ -174,13 +176,21 @@ class ReadinessRepository(context: Context) {
      * "RHR(sleep)" when the readiness score actually had a derived value.
      */
     private suspend fun gatherInputsWithSource(): Triple<ReadinessInputs, String?, String?> {
-        // If Health Connect isn't available, fall back to training-load-only.
+        // If Health Connect isn't available, fall back to cycling-only TSB.
         val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
         if (!sdkOk) {
-            return Triple(ReadinessInputs(trainingStressBalance = computeTsb()), null, null)
+            return Triple(
+                ReadinessInputs(trainingStressBalance = computeTsb(null, emptySet(), null)),
+                null,
+                null,
+            )
         }
         val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
-            ?: return Triple(ReadinessInputs(trainingStressBalance = computeTsb()), null, null)
+            ?: return Triple(
+                ReadinessInputs(trainingStressBalance = computeTsb(null, emptySet(), null)),
+                null,
+                null,
+            )
 
         val granted = runCatching { client.permissionController.getGrantedPermissions() }
             .getOrDefault(emptySet())
@@ -243,6 +253,11 @@ class ReadinessRepository(context: Context) {
         // (rare on Fit Band 3, real when present). Real RMSSD HRV unlocks
         // with v1.5 BLE chest strap.
 
+        // For multi-sport TSB, prefer rhrBaseline (7d median, stable) — falls
+        // back to rhrToday if baseline missing. This is the personal RHR that
+        // anchors the HR Reserve fraction for running/HIIT/etc hrTSS.
+        val rhrForLoad = rhrBaseline ?: rhrToday
+
         return Triple(
             ReadinessInputs(
                 sleepLastNightHours = sleep,
@@ -250,7 +265,7 @@ class ReadinessRepository(context: Context) {
                 hrvBaseline7d = hrvBaseline,
                 restingHrToday = rhrToday,
                 restingHrBaseline7d = rhrBaseline,
-                trainingStressBalance = computeTsb(),
+                trainingStressBalance = computeTsb(client, granted, rhrForLoad),
             ),
             rhrSource,
             hrvSource,
@@ -342,50 +357,169 @@ class ReadinessRepository(context: Context) {
     }
 
     /**
-     * Training Stress Balance from URUJ's own ride history. Coggan-style EWMA:
-     *   ATL = exponentially weighted moving avg of last 7 days of TSS  (α = 1/7)
-     *   CTL = exponentially weighted moving avg of last 42 days of TSS (α = 1/42)
-     *   TSB = CTL - ATL  (positive = fresh, negative = fatigued)
+     * Training Stress Balance — Coggan-style EWMA across BOTH cycling rides AND
+     * Samsung-recorded non-cycling sessions (running, HIIT, strength etc.).
      *
-     * TSS per ride is approximated as IF² × hours × 100 = (avgPower/FTP)² × hours × 100.
+     *   ATL = EWMA of last 7 days of TSS  (α = 1/7)
+     *   CTL = EWMA of last 42 days of TSS (α = 1/42)
+     *   TSB = CTL − ATL  (positive = fresh, negative = fatigued)
+     *
+     * Cycling TSS (URUJ rides): IF² × hours × 100, IF = avgPower / FTP.
+     *
+     * Non-cycling hrTSS (Samsung exercise sessions): IF_hr² × hours × 100, where
+     *   IF_hr = ((avgHR − RHR) / (MaxHR − RHR)) / 0.87
+     *   The /0.87 normalizes "HR Reserve at lactate threshold" to IF=1.0, so a
+     *   1h run at threshold pace produces ~100 TSS, matching cycling's scale.
+     *   (0.87 = HR-Reserve fraction at ~88% maxHR LTHR, standard convention.)
+     *
+     * Cycling Samsung sessions are SKIPPED — URUJ rides are the authoritative
+     * cycling source. Sessions within ±2 min of a URUJ ride are also skipped
+     * (Samsung sometimes auto-detects what URUJ already recorded).
      */
-    private fun computeTsb(): Float? {
+    private suspend fun computeTsb(
+        client: HealthConnectClient?,
+        granted: Set<String>,
+        athleticRhr: Int?,
+    ): Float? {
         val rides = historyRepo.listAll()
-        if (rides.size < 2) return null
-
-        val ftp = rides.last().ftpWatts.coerceAtLeast(1)
         val zone = ZoneId.systemDefault()
         val todayDate = LocalDate.now(zone)
+        val dailyTss = FloatArray(43)
+        var totalLoad = 0f
+        val urujRideStarts = mutableListOf<Instant>()
 
-        // Per-CALENDAR-DAY TSS bucketing — was previously ms-diff/86_400_000
-        // which truncated to 24-hour chunks rather than calendar days. Bug
-        // surfaced 2026-05-14: ride at 2026-05-13 04:00 + check at 2026-05-14
-        // 00:32 = 20.5h elapsed = daysAgo 0 = ride bucketed as "today's TSS"
-        // → no decay applied → TSB stuck at -14 for ~24h. Calendar-day bucket
-        // puts the ride in dailyTss[1] immediately after the calendar rolls
-        // over, applying one decay step → TSB starts improving at midnight.
-        val dailyTss = LongArray(43) // index 0 = today, 42 = 42 calendar days ago
+        // 1. URUJ cycling rides (power-based TSS)
+        val ftp = rides.lastOrNull()?.ftpWatts?.coerceAtLeast(1) ?: 200
         for (ride in rides) {
-            val rideDate = Instant.ofEpochMilli(ride.startedAtMs)
-                .atZone(zone)
-                .toLocalDate()
+            val rideInstant = Instant.ofEpochMilli(ride.startedAtMs)
+            val rideDate = rideInstant.atZone(zone).toLocalDate()
             val daysAgo = ChronoUnit.DAYS.between(rideDate, todayDate).toInt()
             if (daysAgo !in 0..42) continue
             val hours = ride.movingTimeMs / 3_600_000f
             val intensityFactor = if (ride.averagePowerWatts > 0f) {
                 ride.averagePowerWatts / ftp
             } else 0f
-            val tss = (intensityFactor * intensityFactor * hours * 100f)
-            dailyTss[daysAgo] = (dailyTss[daysAgo] + tss).toLong()
+            val tss = intensityFactor * intensityFactor * hours * 100f
+            dailyTss[daysAgo] += tss
+            totalLoad += tss
+            urujRideStarts += rideInstant
         }
+
+        // 2. Samsung non-cycling sessions (HR-based hrTSS). Needs RHR + maxHR
+        //    to compute HR Reserve fraction. If RHR unknown, skip — fake hrTSS
+        //    without a personal baseline would mislead.
+        if (client != null && athleticRhr != null && athleticRhr > 0) {
+            val profile = runCatching { profileStore.current() }.getOrNull()
+            val maxHr = profile?.maxHrBpm ?: 190
+            if (maxHr > athleticRhr) {
+                val sessions = readNonCyclingSessionLoads(
+                    client = client,
+                    granted = granted,
+                    todayDate = todayDate,
+                    zone = zone,
+                    urujRideStarts = urujRideStarts,
+                    rhr = athleticRhr,
+                    maxHr = maxHr,
+                )
+                for (s in sessions) {
+                    if (s.daysAgo !in 0..42) continue
+                    dailyTss[s.daysAgo] += s.tss
+                    totalLoad += s.tss
+                }
+            }
+        }
+
+        // Below 1 TSS total: not enough load to compute a meaningful balance.
+        // 2-ride floor preserved for cycling-only riders (no non-cycling data).
+        if (totalLoad < 1f) return null
+        if (urujRideStarts.size < 2 && athleticRhr == null) return null
 
         var atl = 0f
         var ctl = 0f
         for (day in 42 downTo 0) {
-            val tss = dailyTss[day].toFloat()
+            val tss = dailyTss[day]
             atl = atl * (1f - 1f / 7f) + tss * (1f / 7f)
             ctl = ctl * (1f - 1f / 42f) + tss * (1f / 42f)
         }
         return ctl - atl
+    }
+
+    private data class SessionLoad(val daysAgo: Int, val tss: Float)
+
+    /**
+     * Reads Samsung exercise sessions from HC (last 42d), filters out cycling
+     * (URUJ owns that), filters out sessions overlapping URUJ rides within ±2min,
+     * and computes hrTSS per session.
+     */
+    private suspend fun readNonCyclingSessionLoads(
+        client: HealthConnectClient,
+        granted: Set<String>,
+        todayDate: LocalDate,
+        zone: ZoneId,
+        urujRideStarts: List<Instant>,
+        rhr: Int,
+        maxHr: Int,
+    ): List<SessionLoad> {
+        if (HealthPermission.getReadPermission(ExerciseSessionRecord::class) !in granted) return emptyList()
+        if (HealthPermission.getReadPermission(HeartRateRecord::class) !in granted) return emptyList()
+        val now = Instant.now()
+        val cutoff = now.minus(Duration.ofDays(42))
+        val sessions = runCatching {
+            client.readRecords(
+                ReadRecordsRequest(
+                    recordType = ExerciseSessionRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(cutoff, now),
+                    ascendingOrder = false,
+                    pageSize = 200,
+                ),
+            ).records
+        }.onFailure { Log.w("URUJ-Readiness", "exercise sessions read failed", it) }
+            .getOrDefault(emptyList())
+        if (sessions.isEmpty()) return emptyList()
+
+        val hrReserveRange = (maxHr - rhr).toFloat()
+        val results = mutableListOf<SessionLoad>()
+        for (session in sessions) {
+            // Skip cycling — URUJ owns it.
+            if (session.exerciseType == ExerciseSessionRecord.EXERCISE_TYPE_BIKING ||
+                session.exerciseType == ExerciseSessionRecord.EXERCISE_TYPE_BIKING_STATIONARY
+            ) continue
+            // Skip sessions overlapping URUJ rides (Samsung sometimes auto-detects
+            // a cycling workout for the same window URUJ recorded).
+            val overlapsUruj = urujRideStarts.any { urujStart ->
+                Duration.between(urujStart, session.startTime).abs() < Duration.ofMinutes(2)
+            }
+            if (overlapsUruj) continue
+
+            val durationMs = Duration.between(session.startTime, session.endTime).toMillis()
+            val durationMin = durationMs / 60_000f
+            if (durationMin < 5f) continue  // too short to count
+
+            val hrSamples = runCatching {
+                client.readRecords(
+                    ReadRecordsRequest(
+                        recordType = HeartRateRecord::class,
+                        timeRangeFilter = TimeRangeFilter.between(session.startTime, session.endTime),
+                        ascendingOrder = false,
+                        pageSize = 500,
+                    ),
+                ).records.flatMap { it.samples }.map { it.beatsPerMinute.toInt() }
+            }.getOrDefault(emptyList())
+            if (hrSamples.isEmpty()) continue
+
+            val avgHr = hrSamples.average().toInt()
+            if (avgHr <= rhr) continue  // sub-rest is invalid
+
+            // HR Reserve fraction, normalized to IF=1.0 at threshold (0.87 HRR).
+            val hrReserveFrac = (avgHr - rhr).toFloat() / hrReserveRange
+            val intensityFactor = (hrReserveFrac / 0.87f).coerceIn(0f, 1.4f)
+            val hours = durationMin / 60f
+            val hrTss = intensityFactor * intensityFactor * hours * 100f
+
+            val sessionDate = session.startTime.atZone(zone).toLocalDate()
+            val daysAgo = ChronoUnit.DAYS.between(sessionDate, todayDate).toInt()
+            results += SessionLoad(daysAgo, hrTss)
+        }
+        return results
     }
 }
