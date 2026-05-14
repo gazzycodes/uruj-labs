@@ -50,7 +50,19 @@ class HrRecoveryCalculator {
     ): Result? {
         if (exerciseSessionEndTimes.isEmpty() || hrTimedSamples.isEmpty()) return null
 
-        val samples = exerciseSessionEndTimes.mapNotNull { end ->
+        // v0.3.7: filter sessions whose recovery window overlaps another workout.
+        // User had 3 rides on 2026-05-14; recovery samples for one ride could
+        // land inside the next ride's warmup HR, inflating the drop. Skip any
+        // session where the NEXT session starts within the recovery window.
+        val sortedEnds = exerciseSessionEndTimes.sorted()
+        val cleanEnds = sortedEnds.filterIndexed { idx, end ->
+            val next = sortedEnds.getOrNull(idx + 1) ?: return@filterIndexed true
+            val gap = Duration.between(end, next)
+            gap >= MIN_SESSION_GAP
+        }
+        if (cleanEnds.isEmpty()) return null
+
+        val samples = cleanEnds.mapNotNull { end ->
             // Effort peak: highest HR in the last 5 min of the session. We don't
             // know the session start (we only get end times here) so we just look
             // back from end and trust that the peak in the closing 5 min was the
@@ -137,5 +149,10 @@ class HrRecoveryCalculator {
         // rides. Below 120 bpm the recovery curve is too shallow to be a
         // meaningful autonomic-recovery signal.
         private const val MIN_PEAK_BPM = 120
+        /** Sessions that have ANOTHER session starting within this duration are
+         *  skipped from HRR1 calc — their recovery sample would land in the
+         *  next workout's warmup HR and produce inflated drops. 3 min is wide
+         *  enough to fully clear our 180s recovery window. */
+        private val MIN_SESSION_GAP: Duration = Duration.ofMinutes(3)
     }
 }

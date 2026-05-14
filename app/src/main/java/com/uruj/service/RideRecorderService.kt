@@ -271,11 +271,18 @@ class RideRecorderService : Service() {
                     delay(30_000L)
                     val snap = RideStateHolder.state.value
                     if (snap.sessionId != null && snap.totalDistanceMeters > 0) {
-                        runCatching {
+                        val savedAt = System.currentTimeMillis()
+                        val saved = runCatching {
                             historyRepo.save(
-                                StoredRideSummary.from(snap, System.currentTimeMillis()),
+                                StoredRideSummary.from(snap, savedAt),
                             )
-                        }.onFailure { Log.w(TAG, "checkpoint save failed", it) }
+                        }.onFailure { Log.w(TAG, "checkpoint save failed", it) }.isSuccess
+                        if (saved) {
+                            // v0.3.7: surface the checkpoint heartbeat on the HUD so
+                            // the rider can see the service is alive even when the
+                            // phone is backgrounded and the notification is hidden.
+                            RideStateHolder.update { it.copy(lastCheckpointAtMs = savedAt) }
+                        }
                     }
                 }
             } catch (e: CancellationException) {
@@ -591,6 +598,7 @@ class RideRecorderService : Service() {
                         currentGradeFraction = elevSnapshot.gradeFraction,
                         vamMetersPerHour = elevSnapshot.vamMetersPerHour,
                         elevationSource = elevSnapshot.source,
+                        currentAltitudeMeters = elevSnapshot.altitudeMeters.toFloat(),
                         headwindMs = headwind,
                         latestPr = freshPr ?: current.latestPr,
                         prAnnouncedAtMs = if (freshPr != null) System.currentTimeMillis() else current.prAnnouncedAtMs,

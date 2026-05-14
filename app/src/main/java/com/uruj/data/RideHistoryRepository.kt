@@ -102,8 +102,9 @@ class RideHistoryRepository(context: Context) {
      * the trigger for adding this — 30 km of data sat orphaned on disk because
      * OxygenOS killed the foreground service after backgrounding.
      */
-    fun recoverOrphanRides() {
-        val ndjsonFiles = ridesDir.listFiles { f -> f.name.endsWith(".ndjson") } ?: return
+    fun recoverOrphanRides(): List<StoredRideSummary> {
+        val recovered = mutableListOf<StoredRideSummary>()
+        val ndjsonFiles = ridesDir.listFiles { f -> f.name.endsWith(".ndjson") } ?: return recovered
         ndjsonFiles.forEach { ndjson ->
             val sessionId = ndjson.nameWithoutExtension
             val summaryFile = File(ridesDir, "$sessionId.summary.json")
@@ -114,9 +115,13 @@ class RideHistoryRepository(context: Context) {
                 return@forEach
             }
             runCatching { rebuildSummary(ndjson, sessionId) }
-                .onSuccess { Log.d("URUJ-Recovery", "Recovered ride $sessionId: ${it.totalDistanceMeters/1000} km") }
+                .onSuccess {
+                    Log.d("URUJ-Recovery", "Recovered ride $sessionId: ${it.totalDistanceMeters/1000} km")
+                    recovered += it
+                }
                 .onFailure { Log.w("URUJ-Recovery", "Failed to recover $sessionId", it) }
         }
+        return recovered
     }
 
     private fun rebuildSummary(ndjson: File, sessionId: String): StoredRideSummary {

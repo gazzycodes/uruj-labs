@@ -50,6 +50,7 @@ class BioLabRepository(context: Context) {
     private val karvonenCalc = KarvonenZonesCalculator()
     private val hrrCalc = HrRecoveryCalculator()
     private val sleepingRhrCalc = SleepingRhrCalculator()
+    private val lastSleepReader = LastSleepReader()
 
     suspend fun snapshot(): BioLabSnapshot = withContext(Dispatchers.IO) {
         val profile = profileStore.current()
@@ -118,7 +119,8 @@ class BioLabRepository(context: Context) {
         // transparency; user shouldn't have to switch apps to compare.
         val samsungDirectRhr = readLatestRestingHr(client, granted, weekAgo, now)
 
-        val sleepLastNightHours = readLastNightSleep(client, granted, now)
+        // Unified via LastSleepReader (v0.3.7) — same source as Readiness.
+        val sleepLastNightHours = lastSleepReader.read(client, granted)?.hours
         val spo2LastValue = readLatestSpo2(client, granted, weekAgo, now)
         val stepsToday = readStepsCount(client, granted, todayStart, now)
         val distanceTodayMeters = readDistanceMeters(client, granted, todayStart, now)
@@ -385,27 +387,9 @@ class BioLabRepository(context: Context) {
             .getOrDefault(emptyList())
     }
 
-    private suspend fun readLastNightSleep(
-        client: HealthConnectClient,
-        granted: Set<String>,
-        now: Instant,
-    ): Float? {
-        if (HealthPermission.getReadPermission(SleepSessionRecord::class) !in granted) return null
-        return runCatching {
-            val start = now.minus(Duration.ofHours(24))
-            val response = client.readRecords(
-                ReadRecordsRequest(
-                    recordType = SleepSessionRecord::class,
-                    timeRangeFilter = TimeRangeFilter.between(start, now),
-                    ascendingOrder = false,
-                ),
-            )
-            val totalMs = response.records.sumOf {
-                Duration.between(it.startTime, it.endTime).toMillis()
-            }
-            if (totalMs <= 0) null else (totalMs / 3_600_000f)
-        }.onFailure { Log.w(TAG, "sleep read failed", it) }.getOrNull()
-    }
+    // readLastNightSleep removed in v0.3.7 — replaced by LastSleepReader
+    // (single source of truth shared with ReadinessRepository).
+
 
     private suspend fun readLatestSpo2(
         client: HealthConnectClient,
