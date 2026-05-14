@@ -30,6 +30,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -64,6 +67,11 @@ import kotlin.math.absoluteValue
 fun HudScreen(onStopRide: () -> Unit) {
     val state by RideStateHolder.state.collectAsStateWithLifecycle()
 
+    // Stop-ride confirmation dialog state. v0.3.7 fix — user reported
+    // pocket-touching the STOP button ended a ride accidentally. OpenTracks-
+    // style confirmation guards against this.
+    var showStopConfirm by remember { mutableStateOf(false) }
+
     // Auto-clear the PR flash 6 seconds after it appears so the HUD returns to normal.
     LaunchedEffect(state.prAnnouncedAtMs) {
         if (state.prAnnouncedAtMs != null) {
@@ -97,7 +105,18 @@ fun HudScreen(onStopRide: () -> Unit) {
             Spacer(Modifier.height(12.dp))
             StatsGrid(state, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.weight(1f))
-            StopButton(onStopRide)
+            StopButton(onClick = { showStopConfirm = true })
+        }
+
+        if (showStopConfirm) {
+            StopConfirmDialog(
+                state = state,
+                onConfirm = {
+                    showStopConfirm = false
+                    onStopRide()
+                },
+                onCancel = { showStopConfirm = false },
+            )
         }
 
         // PR flash overlay on top of everything — only when fresh.
@@ -274,7 +293,25 @@ private fun HudTopBar(state: RideState) {
         ),
         label = "rec_pulse",
     )
-    val recColor = if (state.isPaused) UrujMuted else UrujZone5
+    // v0.3.8 service-health: REC dot is now a live health indicator.
+    // Green = checkpoint within 40s (healthy), amber = 40-90s (degraded),
+    // red = >90s or never (likely dead). Pulse animation only applies when
+    // healthy — a frozen-coloured dot is a clearer "something is wrong" signal.
+    val checkpoint = state.lastCheckpointAtMs
+    val checkpointAgeMs = checkpoint?.let { (System.currentTimeMillis() - it).coerceAtLeast(0L) }
+    val health = serviceHealth(state.isPaused, checkpointAgeMs)
+    val (recColor, recLabel) = when (health) {
+        ServiceHealth.PAUSED -> UrujMuted to "PAUSED"
+        ServiceHealth.STARTING -> UrujZone3 to "REC · STARTING"
+        ServiceHealth.HEALTHY -> UrujZone2 to "REC"
+        ServiceHealth.DEGRADED -> UrujZone3 to "REC · DEGRADED"
+        ServiceHealth.STALE -> UrujZone5 to "REC · STALE"
+    }
+    val dotAlpha = when (health) {
+        ServiceHealth.PAUSED -> 0.6f
+        ServiceHealth.HEALTHY, ServiceHealth.STARTING -> pulse
+        ServiceHealth.DEGRADED, ServiceHealth.STALE -> 1f
+    }
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -284,11 +321,11 @@ private fun HudTopBar(state: RideState) {
             modifier = Modifier
                 .size(10.dp)
                 .clip(CircleShape)
-                .background(recColor.copy(alpha = if (state.isPaused) 0.6f else pulse)),
+                .background(recColor.copy(alpha = dotAlpha)),
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            text = if (state.isPaused) "PAUSED" else "REC",
+            text = recLabel,
             color = recColor,
             fontWeight = FontWeight.Black,
             fontSize = 12.sp,
@@ -469,14 +506,46 @@ private fun StatsGrid(state: RideState, modifier: Modifier = Modifier) {
         )
         Divider()
         StatRow(
-            left = Stat("ELEV ↑", state.totalElevGainMeters.toInt().toString(), "m"),
-            right = Stat(
+            // v0.3.7: surface CURRENT altitude (ticks every sample) alongside
+            // total gain. Rider can see live altitude feedback during climbs
+            // instead of only the slow-accumulating total.
+            left = Stat("ALT", state.currentAltitudeMeters.toInt().toString(), "m"),
+            right = Stat("ELEV ↑", state.totalElevGainMeters.toInt().toString(), "m"),
+        )
+        Divider()
+        StatRow(
+            left = Stat(
                 label = "HEART RATE",
                 value = hr?.toString() ?: "—",
                 unit = if (hr != null) freshnessLabel(hrAge) else "no live source",
                 accent = if (hr != null) UrujNeonMagenta else UrujMuted,
             ),
+            // v0.3.7: 30s-checkpoint heartbeat. Lets the rider verify the
+            // service is alive even when the phone is backgrounded (the
+            // foreground notification can be hidden by aggressive OEM ROMs).
+            right = Stat(
+                label = "LAST SAVE",
+                value = state.lastCheckpointAtMs?.let { lastSavedSecondsAgo(it).toString() } ?: "—",
+                unit = if (state.lastCheckpointAtMs != null) "s ago" else "no save yet",
+                accent = UrujAccent,
+            ),
         )
+    }
+}
+
+private fun lastSavedSecondsAgo(lastCheckpointMs: Long): Long {
+    return ((System.currentTimeMillis() - lastCheckpointMs) / 1000L).coerceAtLeast(0L)
+}
+
+private enum class ServiceHealth { PAUSED, STARTING, HEALTHY, DEGRADED, STALE }
+
+private fun serviceHealth(isPaused: Boolean, checkpointAgeMs: Long?): ServiceHealth {
+    if (isPaused) return ServiceHealth.PAUSED
+    if (checkpointAgeMs == null) return ServiceHealth.STARTING
+    return when {
+        checkpointAgeMs < 40_000L -> ServiceHealth.HEALTHY
+        checkpointAgeMs < 90_000L -> ServiceHealth.DEGRADED
+        else -> ServiceHealth.STALE
     }
 }
 
@@ -551,6 +620,66 @@ private fun StatCell(stat: Stat, modifier: Modifier = Modifier) {
             }
         }
     }
+}
+
+@Composable
+private fun StopConfirmDialog(
+    state: RideState,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val distanceKm = "%.2f".format(state.totalDistanceMeters / 1000)
+    val moving = formatDuration(state.movingTimeMs)
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onCancel,
+        title = {
+            Text(
+                "End ride?",
+                color = UrujText,
+                fontWeight = FontWeight.Black,
+                fontSize = 20.sp,
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    "You've ridden $distanceKm km in $moving.",
+                    color = UrujText,
+                    fontSize = 14.sp,
+                )
+                if (state.totalDistanceMeters < 500) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "⚠ This ride is very short — confirm you really want to end it.",
+                        color = UrujZone3,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = onConfirm) {
+                Text(
+                    "END RIDE",
+                    color = UrujZone5,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 2.sp,
+                )
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onCancel) {
+                Text(
+                    "KEEP GOING",
+                    color = UrujAccent,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 2.sp,
+                )
+            }
+        },
+        containerColor = UrujSurface,
+    )
 }
 
 @Composable

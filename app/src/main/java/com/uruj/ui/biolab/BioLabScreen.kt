@@ -155,6 +155,9 @@ fun BioLabScreen(
 
             item("recovery_header") { SectionHeader("Recovery") }
             item("recovery_card") { RecoveryCard(s) }
+            if (s.stressLoad != null) {
+                item("stress_card") { StressLoadCard(s) }
+            }
 
             item("body_header") { SectionHeader("Body Composition") }
             item("body_card") { BodyCompositionCard(s) }
@@ -591,6 +594,64 @@ private fun RecoveryCard(s: BioLabSnapshot) {
             "SpO₂",
             value = s.spo2Percent?.let { "${it.toInt()}%" } ?: "—",
             subtitle = "overnight pulse-oximetry",
+        )
+    }
+}
+
+@Composable
+private fun StressLoadCard(s: BioLabSnapshot) {
+    val stress = s.stressLoad ?: return
+    val accent = when (stress.band) {
+        com.uruj.power.StressScoreCalculator.Band.Calm -> UrujZone2
+        com.uruj.power.StressScoreCalculator.Band.Moderate -> UrujZone3
+        com.uruj.power.StressScoreCalculator.Band.Elevated -> UrujZone4
+        com.uruj.power.StressScoreCalculator.Band.High -> UrujZone5
+    }
+    BioCard("Stress Load — cortisol-axis proxy", accentColor = accent) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                stress.score.toString(),
+                color = accent,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Black,
+                fontSize = 56.sp,
+                letterSpacing = (-2).sp,
+            )
+            Spacer(Modifier.width(6.dp))
+            Column(modifier = Modifier.padding(bottom = 14.dp)) {
+                Text(
+                    "/100 · ${stress.band.label}",
+                    color = accent,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 12.sp,
+                    letterSpacing = 2.sp,
+                )
+                Text(
+                    "higher = more stress",
+                    color = UrujMuted,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 10.sp,
+                )
+            }
+        }
+        Text(
+            stress.tagline,
+            color = UrujText, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+        )
+        Spacer(Modifier.height(10.dp))
+        stress.components.forEach { c ->
+            MetricRow(
+                label = c.label,
+                value = c.score?.toString() ?: "—",
+                subtitle = c.detail,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        val confidencePct = (stress.dataConfidence * 100f).toInt()
+        Text(
+            text = "Confidence ${confidencePct}% — based on what's available in HC + ride history. " +
+                "≈ proxy, NOT blood cortisol. Real cortisol = blood/saliva test.",
+            color = UrujMuted, fontSize = 10.sp,
         )
     }
 }

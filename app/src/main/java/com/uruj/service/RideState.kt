@@ -41,7 +41,14 @@ data class RideState(
     val currentGradeFraction: Float = 0f,
     val vamMetersPerHour: Float = 0f,
     val elevationSource: ElevationTracker.Source = ElevationTracker.Source.NONE,
+    /** Current smoothed altitude from the elevation tracker (best available source). */
+    val currentAltitudeMeters: Float = 0f,
     val maxSpeedMs: Float = 0f,
+
+    /** Wall-clock timestamp of the last 30s checkpoint save. HUD shows
+     *  "saved Xs ago" so the rider can confirm the service is alive even when
+     *  the phone is backgrounded and the notification might be hidden. */
+    val lastCheckpointAtMs: Long? = null,
 
     // GPS quality gating — when accuracy is poor (indoors / urban canyon / cold start)
     // we mark this false and refuse to trust speed / distance / power. Saves NDJSON

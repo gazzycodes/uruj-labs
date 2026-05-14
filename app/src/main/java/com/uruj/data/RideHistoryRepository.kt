@@ -102,8 +102,51 @@ class RideHistoryRepository(context: Context) {
      * the trigger for adding this — 30 km of data sat orphaned on disk because
      * OxygenOS killed the foreground service after backgrounding.
      */
-    fun recoverOrphanRides() {
-        val ndjsonFiles = ridesDir.listFiles { f -> f.name.endsWith(".ndjson") } ?: return
+    /**
+     * Rides whose `.active` marker still exists — process was killed mid-recording.
+     * These are candidates for RESUME (v0.3.8) rather than silent finalization.
+     * Returns sessionIds (caller can load the partial summary to display).
+     *
+     * Differs from recoverOrphanRides: this returns ACTIVE orphans (user intent
+     * was still recording when killed), recoverOrphanRides handles any orphan
+     * including ones from pre-v0.3.8 (no marker file).
+     */
+    fun findActiveOrphans(): List<StoredRideSummary> {
+        val markers = ridesDir.listFiles { f -> f.name.endsWith(".active") } ?: return emptyList()
+        return markers.mapNotNull { marker ->
+            val sessionId = marker.nameWithoutExtension
+            // The 30s checkpoint should have saved a summary by now. If there's
+            // no summary at all (very short kill), the legacy orphan recovery
+            // will rebuild from NDJSON when user picks End-and-save.
+            load(sessionId)
+        }
+    }
+
+    /** Discard an interrupted ride entirely — delete marker, NDJSON, summary. */
+    fun discardActiveOrphan(sessionId: String) {
+        runCatching {
+            File(ridesDir, "$sessionId.active").delete()
+            File(ridesDir, "$sessionId.ndjson").delete()
+            File(ridesDir, "$sessionId.summary.json").delete()
+        }
+    }
+
+    /** Finalize an interrupted ride — keep its data, just mark it ended.
+     *  Deletes the .active marker so it's no longer offered for resume. */
+    fun finalizeActiveOrphan(sessionId: String) {
+        runCatching {
+            File(ridesDir, "$sessionId.active").delete()
+            // Rebuild summary from NDJSON to ensure totals are fresh
+            val ndjson = File(ridesDir, "$sessionId.ndjson")
+            if (ndjson.exists() && ndjson.length() >= 1024) {
+                rebuildSummary(ndjson, sessionId)
+            }
+        }
+    }
+
+    fun recoverOrphanRides(): List<StoredRideSummary> {
+        val recovered = mutableListOf<StoredRideSummary>()
+        val ndjsonFiles = ridesDir.listFiles { f -> f.name.endsWith(".ndjson") } ?: return recovered
         ndjsonFiles.forEach { ndjson ->
             val sessionId = ndjson.nameWithoutExtension
             val summaryFile = File(ridesDir, "$sessionId.summary.json")
@@ -114,9 +157,13 @@ class RideHistoryRepository(context: Context) {
                 return@forEach
             }
             runCatching { rebuildSummary(ndjson, sessionId) }
-                .onSuccess { Log.d("URUJ-Recovery", "Recovered ride $sessionId: ${it.totalDistanceMeters/1000} km") }
+                .onSuccess {
+                    Log.d("URUJ-Recovery", "Recovered ride $sessionId: ${it.totalDistanceMeters/1000} km")
+                    recovered += it
+                }
                 .onFailure { Log.w("URUJ-Recovery", "Failed to recover $sessionId", it) }
         }
+        return recovered
     }
 
     private fun rebuildSummary(ndjson: File, sessionId: String): StoredRideSummary {

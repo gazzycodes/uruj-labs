@@ -77,6 +77,7 @@ class ReadinessRepository(context: Context) {
     private val hrAnalyzer = HrAnalyzer()
     private val sleepingRhrCalc = SleepingRhrCalculator()
     private val sleepingHrvCalc = SleepingHrvProxyCalculator()
+    private val lastSleepReader = LastSleepReader()
 
     suspend fun compute(): ReadinessResult = withContext(Dispatchers.IO) {
         val inputs = gatherInputs()
@@ -190,9 +191,10 @@ class ReadinessRepository(context: Context) {
 
         val now = Instant.now()
 
-        val sleep = if (HealthPermission.getReadPermission(SleepSessionRecord::class) in granted) {
-            readLastNightSleepHours(client, now)
-        } else null
+        // Unified LastSleepReader — same source of truth as Bio Lab. Fixes the
+        // v0.3.6 mismatch where Readiness showed 5.3h while Bio Lab showed 9.2h
+        // on the same user's data because the two summed different windows.
+        val sleep = lastSleepReader.read(client, granted)?.hours
 
         // Try direct record first. If Samsung Fit Band 3 doesn't write HRV (varies by
         // firmware) we fall back to a proxy computed from the HR samples it DOES write —
@@ -378,22 +380,8 @@ class ReadinessRepository(context: Context) {
             .getOrDefault(HrProxies(null, null, null, null))
     }
 
-    private suspend fun readLastNightSleepHours(client: HealthConnectClient, now: Instant): Float? {
-        return runCatching {
-            val start = now.minus(Duration.ofHours(20))
-            val response = client.readRecords(
-                ReadRecordsRequest(
-                    recordType = SleepSessionRecord::class,
-                    timeRangeFilter = TimeRangeFilter.between(start, now),
-                    ascendingOrder = false,
-                ),
-            )
-            val totalMs = response.records.sumOf {
-                Duration.between(it.startTime, it.endTime).toMillis()
-            }
-            if (totalMs <= 0) null else (totalMs / (3600.0 * 1000)).toFloat()
-        }.onFailure { Log.w("URUJ-Readiness", "sleep read failed", it) }.getOrNull()
-    }
+    // readLastNightSleepHours removed in v0.3.7 — replaced by LastSleepReader
+    // (single source of truth used by both ReadinessRepository and BioLabRepository).
 
     private suspend fun readHrvTodayAndBaseline(
         client: HealthConnectClient,

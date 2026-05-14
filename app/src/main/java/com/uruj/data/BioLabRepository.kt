@@ -21,7 +21,9 @@ import com.uruj.power.CardiovascularAgeCalculator
 import com.uruj.power.HrAnalyzer
 import com.uruj.power.HrRecoveryCalculator
 import com.uruj.power.KarvonenZonesCalculator
+import com.uruj.power.SleepingHrvProxyCalculator
 import com.uruj.power.SleepingRhrCalculator
+import com.uruj.power.StressScoreCalculator
 import com.uruj.power.VO2MaxCalculator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -29,6 +31,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 import kotlin.reflect.KClass
 
 /**
@@ -50,6 +53,9 @@ class BioLabRepository(context: Context) {
     private val karvonenCalc = KarvonenZonesCalculator()
     private val hrrCalc = HrRecoveryCalculator()
     private val sleepingRhrCalc = SleepingRhrCalculator()
+    private val sleepingHrvCalc = SleepingHrvProxyCalculator()
+    private val stressCalc = StressScoreCalculator()
+    private val lastSleepReader = LastSleepReader()
 
     suspend fun snapshot(): BioLabSnapshot = withContext(Dispatchers.IO) {
         val profile = profileStore.current()
@@ -102,6 +108,9 @@ class BioLabRepository(context: Context) {
         // genuine deep-rest HR that elite-endurance athletes show.
         val sleepWindows30d = readSleepWindows(client, granted, monthAgo, now)
         val sleepingRhr = sleepingRhrCalc.compute(hrTimed30d, sleepWindows30d)
+        // Sleeping-HRV proxy — feeds the stress score. Same sleep+HR data we
+        // already pulled, no extra HC reads.
+        val sleepingHrv = sleepingHrvCalc.compute(hrTimed30d, sleepWindows30d)
 
         // Today's absolute minimum HR — direct ground-truth match to Samsung
         // Health's "min today" display. Useful as a cross-check next to our
@@ -118,7 +127,8 @@ class BioLabRepository(context: Context) {
         // transparency; user shouldn't have to switch apps to compare.
         val samsungDirectRhr = readLatestRestingHr(client, granted, weekAgo, now)
 
-        val sleepLastNightHours = readLastNightSleep(client, granted, now)
+        // Unified via LastSleepReader (v0.3.7) — same source as Readiness.
+        val sleepLastNightHours = lastSleepReader.read(client, granted)?.hours
         val spo2LastValue = readLatestSpo2(client, granted, weekAgo, now)
         val stepsToday = readStepsCount(client, granted, todayStart, now)
         val distanceTodayMeters = readDistanceMeters(client, granted, todayStart, now)
@@ -231,6 +241,23 @@ class BioLabRepository(context: Context) {
         val hrr = hrrCalc.compute(combinedSessionEnds, hrTimed30d)
         val hrr1AthleteContext = computeHrr1AthleteContext(hrr?.medianHrr1, vo2.classification)
 
+        // Derived: stress load score — cortisol-axis PROXY. Inverse of readiness,
+        // weighted toward sympathetic markers. Reuses inputs we've already
+        // gathered: sleeping HRV/RHR, sleep hours, plus TSB from ride history.
+        val tsb = computeTsbFromRides()
+        val consecutiveHardDays = countConsecutiveHardDays()
+        val stressResult = stressCalc.compute(
+            StressScoreCalculator.Inputs(
+                hrvToday = sleepingHrv?.todayMs,
+                hrvBaseline7d = sleepingHrv?.baselineMs,
+                rhrToday = sleepingRhr?.mostRecentNightBpm,
+                rhrBaseline7d = sleepingRhr?.medianBpm,
+                sleepLastNightHours = sleepLastNightHours,
+                trainingStressBalance = tsb,
+                consecutiveHardDays = consecutiveHardDays,
+            ),
+        )
+
         BioLabSnapshot(
             computedAtMs = System.currentTimeMillis(),
             healthConnectAvailable = true,
@@ -295,7 +322,76 @@ class BioLabRepository(context: Context) {
             activeCaloriesToday = activeCalsToday,
             exerciseSessionsToday = exerciseToday,
             ftpWatts = profile.ftpWatts,
+
+            // Stress load (cortisol proxy)
+            stressLoad = stressResult,
+            consecutiveHardDays = consecutiveHardDays,
         )
+    }
+
+    /**
+     * Coggan TSB (CTL − ATL) from URUJ's own ride history. Mirrors the
+     * ReadinessRepository implementation (calendar-day bucketing fixed in
+     * v0.3.2). Duplicated here so Bio Lab can compute stress load without
+     * cross-package coupling — a shared util would help if the algorithm
+     * starts drifting between callers.
+     */
+    private fun computeTsbFromRides(): Float? {
+        val rides = rideHistory.listAll()
+        if (rides.size < 2) return null
+        val ftp = rides.last().ftpWatts.coerceAtLeast(1)
+        val zone = ZoneId.systemDefault()
+        val todayDate = LocalDate.now(zone)
+        val dailyTss = LongArray(43)
+        for (ride in rides) {
+            val rideDate = Instant.ofEpochMilli(ride.startedAtMs).atZone(zone).toLocalDate()
+            val daysAgo = ChronoUnit.DAYS.between(rideDate, todayDate).toInt()
+            if (daysAgo !in 0..42) continue
+            val hours = ride.movingTimeMs / 3_600_000f
+            val intensityFactor = if (ride.averagePowerWatts > 0f) ride.averagePowerWatts / ftp else 0f
+            val tss = intensityFactor * intensityFactor * hours * 100f
+            dailyTss[daysAgo] = (dailyTss[daysAgo] + tss).toLong()
+        }
+        var atl = 0f
+        var ctl = 0f
+        for (day in 42 downTo 0) {
+            val tss = dailyTss[day].toFloat()
+            atl = atl * (1f - 1f / 7f) + tss * (1f / 7f)
+            ctl = ctl * (1f - 1f / 42f) + tss * (1f / 42f)
+        }
+        return ctl - atl
+    }
+
+    /**
+     * Counts consecutive recent calendar days (ending today or yesterday) where a
+     * "hard" ride was logged. Hard = IF ≥ 0.80 OR moving time ≥ 90 min. Streak
+     * breaks on the first calendar day without a qualifying ride. The "today or
+     * yesterday" lenience accounts for rides not yet started today.
+     */
+    private fun countConsecutiveHardDays(): Int {
+        val rides = rideHistory.listAll()
+        if (rides.isEmpty()) return 0
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val hardDates = rides.mapNotNull { ride ->
+            val ftp = ride.ftpWatts.coerceAtLeast(1)
+            val intensityFactor = if (ride.averagePowerWatts > 0f) ride.averagePowerWatts / ftp else 0f
+            val movingMin = ride.movingTimeMs / 60_000f
+            if (intensityFactor >= 0.80f || movingMin >= 90f) {
+                Instant.ofEpochMilli(ride.startedAtMs).atZone(zone).toLocalDate()
+            } else null
+        }.toSet()
+        if (hardDates.isEmpty()) return 0
+        // Streak walks backwards from today. If today is missing but yesterday is
+        // present, start the streak at yesterday (rider hasn't ridden YET today).
+        var cursor = if (today in hardDates) today else today.minusDays(1)
+        if (cursor !in hardDates) return 0
+        var streak = 0
+        while (cursor in hardDates) {
+            streak++
+            cursor = cursor.minusDays(1)
+        }
+        return streak
     }
 
     private fun computeBmi(weightKg: Float, heightCm: Int): Float? {
@@ -385,27 +481,9 @@ class BioLabRepository(context: Context) {
             .getOrDefault(emptyList())
     }
 
-    private suspend fun readLastNightSleep(
-        client: HealthConnectClient,
-        granted: Set<String>,
-        now: Instant,
-    ): Float? {
-        if (HealthPermission.getReadPermission(SleepSessionRecord::class) !in granted) return null
-        return runCatching {
-            val start = now.minus(Duration.ofHours(24))
-            val response = client.readRecords(
-                ReadRecordsRequest(
-                    recordType = SleepSessionRecord::class,
-                    timeRangeFilter = TimeRangeFilter.between(start, now),
-                    ascendingOrder = false,
-                ),
-            )
-            val totalMs = response.records.sumOf {
-                Duration.between(it.startTime, it.endTime).toMillis()
-            }
-            if (totalMs <= 0) null else (totalMs / 3_600_000f)
-        }.onFailure { Log.w(TAG, "sleep read failed", it) }.getOrNull()
-    }
+    // readLastNightSleep removed in v0.3.7 — replaced by LastSleepReader
+    // (single source of truth shared with ReadinessRepository).
+
 
     private suspend fun readLatestSpo2(
         client: HealthConnectClient,
@@ -665,6 +743,13 @@ data class BioLabSnapshot(
     val activeCaloriesToday: Float? = null,
     val exerciseSessionsToday: Int? = null,
     val ftpWatts: Int = 200,
+
+    /** Derived "stress load" — cortisol-axis proxy, 0-100 (HIGHER = MORE STRESS).
+     *  NOT blood cortisol. Combines HRV trend, RHR delta, sleep, TSB, consecutive
+     *  hard days. UI must label honestly. */
+    val stressLoad: StressScoreCalculator.Result? = null,
+    /** Days in a row (ending today/yesterday) with a hard ride logged. */
+    val consecutiveHardDays: Int = 0,
 )
 
 /** A single qualifying HRR1 reading from one exercise session. */
