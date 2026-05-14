@@ -11,9 +11,7 @@ import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import com.uruj.domain.ReadinessInputs
-import com.uruj.power.HrAnalyzer
 import com.uruj.power.ReadinessCalculator
-import com.uruj.power.SleepingHrvProxyCalculator
 import com.uruj.power.SleepingRhrCalculator
 import com.uruj.domain.ReadinessResult
 import kotlinx.coroutines.Dispatchers
@@ -74,9 +72,7 @@ class ReadinessRepository(context: Context) {
     private val appContext = context.applicationContext
     private val calculator = ReadinessCalculator()
     private val historyRepo = RideHistoryRepository(appContext)
-    private val hrAnalyzer = HrAnalyzer()
     private val sleepingRhrCalc = SleepingRhrCalculator()
-    private val sleepingHrvCalc = SleepingHrvProxyCalculator()
     private val lastSleepReader = LastSleepReader()
 
     suspend fun compute(): ReadinessResult = withContext(Dispatchers.IO) {
@@ -219,60 +215,33 @@ class ReadinessRepository(context: Context) {
             if (today != null) rhrSource = "direct"
         }
 
-        // Sleeping-RHR via shared calculator — preferred over proxy when sleep
-        // data + HR samples align. Uses the same logic as Bio Lab so RHR matches
-        // across both screens (was the v0.2.9 inconsistency: Bio Lab 50 vs
-        // Readiness 55). Today = most recent sleep night's min; baseline =
-        // cross-night median over 7d.
+        // Sleeping-RHR via shared calculator — preferred over Samsung's direct
+        // record when sleep data + HR samples align. Same logic as Bio Lab so
+        // RHR matches across both screens. v0.4.0 dropped the proxy fallback
+        // (activity-confounded last-resort 5th-percentile estimate) — if we
+        // don't have sleep + HR samples, we don't fake RHR for readiness.
         val hrPermGranted = HealthPermission.getReadPermission(HeartRateRecord::class) in granted
         val sleepPermGranted = HealthPermission.getReadPermission(SleepSessionRecord::class) in granted
 
-        // Pull HR samples + sleep windows ONCE for both sleeping-RHR and
-        // sleeping-HRV proxy — avoids duplicate HC reads. Skip entirely if
-        // either permission is missing.
-        val sleepingHrData = if (hrPermGranted && sleepPermGranted) {
-            readSleepingHrInputs(client, now)
-        } else null
-
-        if (rhrToday == null && sleepingHrData != null) {
-            val sleepingResult = sleepingRhrCalc.compute(sleepingHrData.first, sleepingHrData.second)
-            if (sleepingResult != null) {
-                rhrToday = sleepingResult.mostRecentNightBpm
-                rhrBaseline = sleepingResult.medianBpm
-                rhrSource = "sleep"
+        if (rhrToday == null && hrPermGranted && sleepPermGranted) {
+            val sleepingHrData = readSleepingHrInputs(client, now)
+            if (sleepingHrData != null) {
+                val sleepingResult = sleepingRhrCalc.compute(sleepingHrData.first, sleepingHrData.second)
+                if (sleepingResult != null) {
+                    rhrToday = sleepingResult.mostRecentNightBpm
+                    rhrBaseline = sleepingResult.medianBpm
+                    rhrSource = "sleep"
+                }
             }
         }
 
-        // Sleeping-HRV proxy — preferred over the activity-confounded all-samples
-        // proxy. Same sleep+HR data we already pulled for RHR. Filters out the
-        // bug where a rest day shows "-55% HRV" because low activity = low HR
-        // variance across the 24h window. Sleep-only std-dev gives a consistent
-        // protocol across days → ratio reflects autonomic state, not activity.
-        if (hrvToday == null && sleepingHrData != null) {
-            val sleepingHrv = sleepingHrvCalc.compute(sleepingHrData.first, sleepingHrData.second)
-            if (sleepingHrv != null && sleepingHrv.baselineMs > 0f) {
-                hrvToday = sleepingHrv.todayMs
-                hrvBaseline = sleepingHrv.baselineMs
-                hrvSource = "sleep"
-            }
-        }
-
-        // Last-resort fallback: derive proxies from raw HeartRateRecord samples
-        // across all 24h windows. Used when sleep data is unavailable. Known
-        // limitation: activity-confounded (see SleepingHrvProxyCalculator docs).
-        if (hrPermGranted && (hrvToday == null || rhrToday == null)) {
-            val proxies = readHrProxies(client, now)
-            if (rhrToday == null && proxies.todayRhr != null) {
-                rhrToday = proxies.todayRhr
-                rhrBaseline = proxies.baselineRhr
-                rhrSource = "proxy"
-            }
-            if (hrvToday == null && proxies.todayHrvSd != null) {
-                hrvToday = proxies.todayHrvSd
-                hrvBaseline = proxies.baselineHrvSd
-                hrvSource = "proxy"
-            }
-        }
+        // v0.4.0: HRV proxy fallback REMOVED. SleepingHrvProxyCalculator was
+        // std-dev of HR samples in sleep windows — directionally correlated
+        // with RMSSD but NOT real HRV. Per [[feedback_no_samsung_proxy]] +
+        // [[reference_lab_level_uruj]] rule #4 (no fake numbers). HRV column
+        // only populates when Samsung writes HeartRateVariabilityRmssdRecord
+        // (rare on Fit Band 3, real when present). Real RMSSD HRV unlocks
+        // with v1.5 BLE chest strap.
 
         return Triple(
             ReadinessInputs(
@@ -288,17 +257,10 @@ class ReadinessRepository(context: Context) {
         )
     }
 
-    private data class HrProxies(
-        val todayRhr: Int?,
-        val baselineRhr: Int?,
-        val todayHrvSd: Float?,
-        val baselineHrvSd: Float?,
-    )
-
     /**
-     * Pull 7d of timestamped HR samples + sleep windows. Shared by sleeping-RHR
-     * and sleeping-HRV-proxy calculators so we do one HC read for both metrics.
-     * Returns null on any failure — caller falls back to other proxies.
+     * Pull 7d of timestamped HR samples + sleep windows. Feeds the sleeping-RHR
+     * calculator only (v0.4.0 dropped the sleeping-HRV-proxy consumer). Returns
+     * null on any failure — caller treats RHR as unavailable.
      */
     private suspend fun readSleepingHrInputs(
         client: HealthConnectClient,
@@ -329,55 +291,6 @@ class ReadinessRepository(context: Context) {
             hrSamples to sleepWindows
         }.onFailure { Log.w("URUJ-Readiness", "sleeping HR inputs read failed", it) }
             .getOrNull()
-    }
-
-    private suspend fun readHrProxies(client: HealthConnectClient, now: Instant): HrProxies {
-        return runCatching {
-            val weekAgo = now.minus(Duration.ofDays(7))
-            // Calendar-day "today" — matches Bio Lab + TSB calendar-day usage so
-            // the entire app shares one definition. Was rolling 24h previously
-            // which produced subtly-different windows at hours past midnight.
-            // This only matters for the LAST-RESORT proxy (when no sleep data
-            // is available); other paths now use the SleepingHrvProxyCalculator.
-            val todayStart = LocalDate.now(ZoneId.systemDefault())
-                .atStartOfDay(ZoneId.systemDefault()).toInstant()
-
-            // Pull today's HR samples (calendar-day midnight → now)
-            val todayResponse = client.readRecords(
-                ReadRecordsRequest(
-                    recordType = HeartRateRecord::class,
-                    timeRangeFilter = TimeRangeFilter.between(todayStart, now),
-                    ascendingOrder = false,
-                    pageSize = 1000,
-                ),
-            )
-            val todaySamples = todayResponse.records
-                .flatMap { it.samples }
-                .map { it.beatsPerMinute.toInt() }
-
-            // Pull last 7 days for baseline
-            val weekResponse = client.readRecords(
-                ReadRecordsRequest(
-                    recordType = HeartRateRecord::class,
-                    timeRangeFilter = TimeRangeFilter.between(weekAgo, now),
-                    ascendingOrder = false,
-                    pageSize = 5_000,
-                ),
-            )
-            val weekSamples = weekResponse.records
-                .flatMap { it.samples }
-                .map { it.beatsPerMinute.toInt() }
-
-            val todayAnalysis = hrAnalyzer.analyze(todaySamples)
-            val weekAnalysis = hrAnalyzer.analyze(weekSamples)
-            HrProxies(
-                todayRhr = todayAnalysis.proxyRestingHrBpm,
-                baselineRhr = weekAnalysis.proxyRestingHrBpm,
-                todayHrvSd = todayAnalysis.proxyHrvSdMs,
-                baselineHrvSd = weekAnalysis.proxyHrvSdMs,
-            )
-        }.onFailure { Log.w("URUJ-Readiness", "HR proxy compute failed", it) }
-            .getOrDefault(HrProxies(null, null, null, null))
     }
 
     // readLastNightSleepHours removed in v0.3.7 — replaced by LastSleepReader
