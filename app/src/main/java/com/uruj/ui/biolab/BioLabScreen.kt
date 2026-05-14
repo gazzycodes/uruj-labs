@@ -1,5 +1,7 @@
 package com.uruj.ui.biolab
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -44,7 +47,6 @@ import java.util.Date
 import java.util.Locale
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujMuted
-import com.uruj.ui.theme.UrujNeonMagenta
 import com.uruj.ui.theme.UrujSurface
 import com.uruj.ui.theme.UrujSurfaceHigh
 import com.uruj.ui.theme.UrujText
@@ -111,13 +113,14 @@ fun BioLabScreen(
                     }
                 }
                 Text(
-                    "Your Lab",
+                    "Cycling Lab",
                     color = UrujText,
                     fontWeight = FontWeight.Black,
                     fontSize = 32.sp,
                 )
                 Text(
-                    "Every biomarker we can compute from what you've shared. Updated on each refresh.",
+                    "Cycling-training metrics derived from your rides + Samsung Fit Band 3. " +
+                        "Wellness data (sleep staging, activity, body comp, live stress) stays in Samsung Health.",
                     color = UrujMuted,
                     fontSize = 12.sp,
                 )
@@ -140,9 +143,8 @@ fun BioLabScreen(
                 return@LazyColumn
             }
 
-            // Hero cards: the biohacker flex numbers
+            // Cycling-training metrics — what URUJ uniquely computes
             item("vo2") { Vo2MaxCard(s) }
-            item("cv_age") { CardiovascularAgeCard(s) }
             if (s.hrr1Median != null) {
                 item("hrr1") { HrRecoveryCard(s) }
             }
@@ -153,17 +155,10 @@ fun BioLabScreen(
                 item("zones_card") { KarvonenZonesCard(s.karvonenZones) }
             }
 
-            item("recovery_header") { SectionHeader("Recovery") }
-            item("recovery_card") { RecoveryCard(s) }
-            if (s.stressLoad != null) {
-                item("stress_card") { StressLoadCard(s) }
-            }
-
-            item("body_header") { SectionHeader("Body Composition") }
-            item("body_card") { BodyCompositionCard(s) }
-
-            item("activity_header") { SectionHeader("Activity Today") }
-            item("activity_card") { ActivityCard(s) }
+            // Everything else lives in Samsung Health where it's shown better.
+            // We do NOT proxy. We deep-link.
+            item("external_header") { SectionHeader("External — see Samsung Health") }
+            item("samsung_link") { SamsungHealthDeepLinkCard() }
         }
     }
 }
@@ -230,7 +225,9 @@ private fun MetricRow(label: String, value: String, subtitle: String? = null) {
 @Composable
 private fun Vo2MaxCard(s: BioLabSnapshot) {
     BioCard("VO₂ Max — aerobic capacity", accentColor = UrujZone2) {
-        if (s.vo2MaxConsensus == null) {
+        val urujVo2 = s.vo2MaxConsensus
+        val samsungVo2 = s.vo2MaxFromSamsung
+        if (urujVo2 == null && samsungVo2 == null) {
             Text(
                 "Need HR data + a few rides to estimate. Wear band more, ride more.",
                 color = UrujMuted,
@@ -238,9 +235,14 @@ private fun Vo2MaxCard(s: BioLabSnapshot) {
             )
             return@BioCard
         }
+        // Hero number — prefer Samsung's band-measured if it exists (more
+        // authoritative); otherwise show URUJ's HR-formula estimate.
+        val heroValue = samsungVo2 ?: urujVo2!!
+        val heroSourceLabel = if (samsungVo2 != null) "Samsung Health (band-measured)"
+        else "URUJ estimate (Uth-Sørensen HR-based)"
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
-                "%.1f".format(s.vo2MaxConsensus),
+                "%.1f".format(heroValue),
                 color = UrujZone2,
                 fontFamily = FontFamily.SansSerif,
                 fontWeight = FontWeight.Black,
@@ -248,13 +250,19 @@ private fun Vo2MaxCard(s: BioLabSnapshot) {
                 letterSpacing = (-2).sp,
             )
             Spacer(Modifier.width(6.dp))
-            Text(
-                "mL/kg/min",
-                color = UrujMuted,
-                fontWeight = FontWeight.Bold,
-                fontSize = 12.sp,
-                modifier = Modifier.padding(bottom = 14.dp),
-            )
+            Column(modifier = Modifier.padding(bottom = 12.dp)) {
+                Text(
+                    "mL/kg/min",
+                    color = UrujMuted,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                )
+                Text(
+                    heroSourceLabel,
+                    color = UrujMuted,
+                    fontSize = 10.sp,
+                )
+            }
         }
         Text(
             s.vo2MaxClassification,
@@ -263,103 +271,57 @@ private fun Vo2MaxCard(s: BioLabSnapshot) {
             fontSize = 13.sp,
         )
         Spacer(Modifier.height(8.dp))
+        // Side-by-side: show both sources when both exist (transparency moat).
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(UrujSurfaceHigh.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
                 .padding(horizontal = 10.dp, vertical = 8.dp),
         ) {
-            if (s.vo2MaxFromSamsung) {
+            Text(
+                "SOURCES",
+                color = UrujMuted,
+                fontWeight = FontWeight.Black,
+                fontSize = 9.sp,
+                letterSpacing = 1.sp,
+            )
+            Spacer(Modifier.height(2.dp))
+            if (samsungVo2 != null) {
                 Text(
-                    "Source: Samsung Health (band-measured)",
+                    "Samsung Health: ${"%.1f".format(samsungVo2)} mL/kg/min (band-measured)",
+                    color = UrujText, fontSize = 11.sp,
+                )
+            }
+            if (s.vo2MaxHrBased != null) {
+                Text(
+                    "URUJ Uth-Sørensen (HR-based): ${"%.1f".format(s.vo2MaxHrBased)} mL/kg/min",
+                    color = UrujText, fontSize = 11.sp,
+                )
+            }
+            if (s.vo2MaxPowerBased != null) {
+                Text(
+                    "URUJ Power-based (FTP/weight): ${"%.1f".format(s.vo2MaxPowerBased)} mL/kg/min",
+                    color = UrujText, fontSize = 11.sp,
+                )
+            } else if (s.ftpIsLikelyUntested) {
+                Text(
+                    "URUJ Power-based: omitted — FTP at 200W placeholder. " +
+                        "20-min all-out test → set FTP in Profile → unlocks cross-validation.",
                     color = UrujMuted, fontSize = 10.sp,
                 )
-            } else {
-                Text(
-                    if (s.ftpIsLikelyUntested) "Estimate (HR-only — FTP untested):"
-                    else "Estimates (cross-validated):",
-                    color = UrujMuted,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 9.sp,
-                    letterSpacing = 1.sp,
-                )
-                Spacer(Modifier.height(2.dp))
-                if (s.vo2MaxHrBased != null) {
-                    Text(
-                        "Uth–Sørensen (HR-based): ${"%.1f".format(s.vo2MaxHrBased)} mL/kg/min",
-                        color = UrujText, fontSize = 11.sp,
-                    )
-                }
-                if (s.vo2MaxPowerBased != null) {
-                    Text(
-                        "Power-based (FTP/weight): ${"%.1f".format(s.vo2MaxPowerBased)} mL/kg/min",
-                        color = UrujText, fontSize = 11.sp,
-                    )
-                } else if (s.ftpIsLikelyUntested) {
-                    Text(
-                        "Power-based: omitted — FTP at default 200W placeholder. " +
-                            "Do a 20-min all-out test, set FTP in Profile, unlock cross-validation.",
-                        color = UrujMuted,
-                        fontSize = 10.sp,
-                    )
-                }
             }
-        }
-    }
-}
-
-@Composable
-private fun CardiovascularAgeCard(s: BioLabSnapshot) {
-    val bio = s.biologicalAge
-    val delta = s.biologicalAgeDelta
-    BioCard("Fitness Age Estimate", accentColor = UrujNeonMagenta) {
-        if (bio == null) {
-            Text(
-                "Need RHR + VO₂ max to compute fitness age.",
-                color = UrujMuted, fontSize = 12.sp,
-            )
-            return@BioCard
-        }
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                bio.toString(),
-                color = UrujNeonMagenta,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.Black,
-                fontSize = 64.sp,
-                letterSpacing = (-2).sp,
-            )
-            Spacer(Modifier.width(8.dp))
-            Column(modifier = Modifier.padding(bottom = 12.dp)) {
+            if (samsungVo2 == null) {
                 Text(
-                    "vs your ${s.chronologicalAge}",
-                    color = UrujMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                    "Samsung Health: not in Health Connect yet — wear band during workouts to seed it.",
+                    color = UrujMuted, fontSize = 10.sp,
                 )
-                if (delta != null) {
-                    val sign = if (delta >= 0) "+" else ""
-                    val color = when {
-                        delta >= 5 -> UrujZone2
-                        delta >= 0 -> UrujZone3
-                        else -> UrujZone5
-                    }
-                    Text(
-                        "$sign$delta years " + if (delta >= 0) "younger" else "older",
-                        color = color,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 13.sp,
-                    )
-                }
             }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Formula: 15 × (HRmax / HRrest). Cooper classification table. ≈ estimate, not lab measurement.",
+                color = UrujMuted, fontSize = 9.sp,
+            )
         }
-        Text(
-            s.biologicalAgeVerdict,
-            color = UrujText, fontSize = 12.sp, fontWeight = FontWeight.Medium,
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "Estimate from RHR + VO₂ max fitness markers. NOT a cardiovascular risk metric — real CV age needs blood pressure, lipids, family history.",
-            color = UrujMuted, fontSize = 10.sp,
-        )
     }
 }
 
@@ -480,53 +442,39 @@ private fun HrRecoveryCard(s: BioLabSnapshot) {
 
 @Composable
 private fun HeartRateCard(s: BioLabSnapshot) {
+    // v0.4.0 slim — 4 cycling-training-relevant rows only.
+    // Cut: today min/max (Samsung mirror), Samsung Direct RHR (same), HRV proxy
+    // (misleading fake number). See [[reference_cut_features_v0_4]].
     BioCard("Heart Rate") {
-        MetricRow(
-            "RESTING HR",
-            value = s.restingHrBpm?.let { "$it bpm" } ?: "—",
-            subtitle = s.restingHrSourceLabel.takeIf { it.isNotBlank() && s.restingHrBpm != null },
-        )
-        if (s.lowestHrToday != null) {
-            MetricRow(
-                "MIN TODAY",
-                value = "${s.lowestHrToday} bpm",
-                subtitle = "lowest sample recorded today (matches Samsung Health)",
-            )
-        }
-        if (s.samsungDirectRhrBpm != null) {
-            MetricRow(
-                "SAMSUNG RHR",
-                value = "${s.samsungDirectRhrBpm} bpm",
-                subtitle = "Samsung Health's own daily RHR (different definition — includes daytime rest)",
-            )
-        }
         MetricRow(
             "MAX HR (effective)",
             value = "${s.maxHrBpm} bpm",
             subtitle = if (s.maxHrAutoDetected) "auto-detected from your rides — high confidence"
             else "220−age estimate, ±10-12 bpm. Hit ≥${s.maxHrBpm + 1} bpm in a ride to auto-bump.",
         )
-        if (s.highestHrToday != null) {
-            MetricRow(
-                "MAX HR TODAY",
-                value = "${s.highestHrToday} bpm",
-                subtitle = "highest sample observed today (matches Samsung's max)",
-            )
-        }
         if (s.highestHr30d != null) {
             MetricRow(
-                "MAX HR 30d",
+                "30d PEAK",
                 value = "${s.highestHr30d} bpm",
-                subtitle = "your hardest observed effort in 30 days — true max likely higher",
+                subtitle = "hardest observed effort in 30d — athletic ceiling",
             )
         }
         if (s.restingHrBpm != null) {
-            MetricRow("HR RESERVE", value = "${s.maxHrBpm - s.restingHrBpm} bpm")
+            MetricRow(
+                "HR RESERVE",
+                value = "${s.maxHrBpm - s.restingHrBpm} bpm",
+                subtitle = "max − resting — powers Karvonen zone math",
+            )
+            MetricRow(
+                "ATHLETIC RHR",
+                value = "${s.restingHrBpm} bpm",
+                subtitle = s.restingHrSourceLabel + " · for Samsung's daily RHR open Samsung Health",
+            )
         }
-        MetricRow(
-            "HR VARIABILITY (proxy)",
-            value = s.hrvProxyMs?.let { "%.1f".format(it) } ?: "—",
-            subtitle = "std dev of HR samples — NOT true HRV. Real HRV needs RR-intervals from a chest strap (v1.5).",
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Today's HR min/max and live HRV moved to Samsung Health. Their band firmware sees more.",
+            color = UrujMuted, fontSize = 9.sp,
         )
     }
 }
@@ -583,119 +531,55 @@ private fun ZoneRow(zone: KarvonenZonesCalculator.Zone) {
 }
 
 @Composable
-private fun RecoveryCard(s: BioLabSnapshot) {
-    BioCard("Recovery") {
-        MetricRow(
-            "SLEEP LAST NIGHT",
-            value = s.sleepLastNightHours?.let { "%.1fh".format(it) } ?: "—",
-            subtitle = s.sleepLastNightHours?.let { if (it >= 7f) "in optimal range" else "below 7h target" },
-        )
-        MetricRow(
-            "SpO₂",
-            value = s.spo2Percent?.let { "${it.toInt()}%" } ?: "—",
-            subtitle = "overnight pulse-oximetry",
-        )
-    }
-}
-
-@Composable
-private fun StressLoadCard(s: BioLabSnapshot) {
-    val stress = s.stressLoad ?: return
-    val accent = when (stress.band) {
-        com.uruj.power.StressScoreCalculator.Band.Calm -> UrujZone2
-        com.uruj.power.StressScoreCalculator.Band.Moderate -> UrujZone3
-        com.uruj.power.StressScoreCalculator.Band.Elevated -> UrujZone4
-        com.uruj.power.StressScoreCalculator.Band.High -> UrujZone5
-    }
-    BioCard("Stress Load — cortisol-axis proxy", accentColor = accent) {
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                stress.score.toString(),
-                color = accent,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.Black,
-                fontSize = 56.sp,
-                letterSpacing = (-2).sp,
-            )
-            Spacer(Modifier.width(6.dp))
-            Column(modifier = Modifier.padding(bottom = 14.dp)) {
-                Text(
-                    "/100 · ${stress.band.label}",
-                    color = accent,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 12.sp,
-                    letterSpacing = 2.sp,
-                )
-                Text(
-                    "higher = more stress",
-                    color = UrujMuted,
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 10.sp,
-                )
-            }
-        }
+private fun SamsungHealthDeepLinkCard() {
+    val ctx = LocalContext.current
+    BioCard("Open in Samsung Health", accentColor = UrujMuted) {
         Text(
-            stress.tagline,
-            color = UrujText, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+            "These metrics live in Samsung Health with full depth — sleep stages, breathing rate, " +
+                "live stress, daily activity, body composition. URUJ does NOT proxy them with worse inputs.",
+            color = UrujMuted, fontSize = 11.sp,
         )
         Spacer(Modifier.height(10.dp))
-        stress.components.forEach { c ->
-            MetricRow(
-                label = c.label,
-                value = c.score?.toString() ?: "—",
-                subtitle = c.detail,
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        val confidencePct = (stress.dataConfidence * 100f).toInt()
-        Text(
-            text = "Confidence ${confidencePct}% — based on what's available in HC + ride history. " +
-                "≈ proxy, NOT blood cortisol. Real cortisol = blood/saliva test.",
-            color = UrujMuted, fontSize = 10.sp,
+        val items = listOf(
+            "Sleep" to "stages, score, breathing rate",
+            "Stress" to "live stress score (band-measured)",
+            "Activity" to "steps, distance, calories today",
+            "Body" to "weight, BMI, body comp",
         )
-    }
-}
-
-@Composable
-private fun BodyCompositionCard(s: BioLabSnapshot) {
-    BioCard("Body Composition") {
-        MetricRow(
-            "WEIGHT",
-            value = "%.1f kg".format(s.bodyWeightKg),
-            subtitle = "logged in Samsung Health",
-        )
-        if (s.bmi != null) {
-            val bmiCategory = when {
-                s.bmi < 18.5f -> "underweight"
-                s.bmi < 25f -> "normal range"
-                s.bmi < 30f -> "overweight"
-                else -> "obese"
+        items.forEach { (label, desc) ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        label,
+                        color = UrujText,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                    )
+                    Text(desc, color = UrujMuted, fontSize = 10.sp)
+                }
+                TextButton(onClick = { launchSamsungHealth(ctx) }) {
+                    Text(
+                        "OPEN →",
+                        color = UrujAccent,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 10.sp,
+                        letterSpacing = 1.sp,
+                    )
+                }
             }
-            MetricRow("BMI", value = "%.1f".format(s.bmi), subtitle = bmiCategory)
         }
-        MetricRow("HEIGHT", value = "${s.heightCm} cm")
     }
 }
 
-@Composable
-private fun ActivityCard(s: BioLabSnapshot) {
-    BioCard("Activity Today") {
-        if (s.stepsToday != null) {
-            MetricRow("STEPS", value = "%,d".format(s.stepsToday))
-        }
-        if (s.distanceTodayMeters != null) {
-            MetricRow("DISTANCE", value = "%.2f km".format(s.distanceTodayMeters / 1000f))
-        }
-        if (s.totalCaloriesToday != null) {
-            MetricRow("TOTAL CALORIES", value = "${s.totalCaloriesToday.toInt()} kcal")
-        }
-        if (s.activeCaloriesToday != null) {
-            MetricRow("ACTIVE CALORIES", value = "${s.activeCaloriesToday.toInt()} kcal")
-        }
-        if (s.exerciseSessionsToday != null) {
-            MetricRow("EXERCISE SESSIONS", value = s.exerciseSessionsToday.toString())
-        }
-    }
+private fun launchSamsungHealth(ctx: android.content.Context) {
+    val pkg = "com.sec.android.app.shealth"
+    val launch = ctx.packageManager.getLaunchIntentForPackage(pkg)
+    val intent = launch ?: Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$pkg"))
+    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+    runCatching { ctx.startActivity(intent) }
 }
 
 /** Human-readable elapsed time since a timestamp ("12s ago" / "4m ago" / "2h ago"). */
