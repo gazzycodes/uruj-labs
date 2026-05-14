@@ -113,14 +113,16 @@ fun BioLabScreen(
                     }
                 }
                 Text(
-                    "Cycling Lab",
+                    "Training Lab",
                     color = UrujText,
                     fontWeight = FontWeight.Black,
                     fontSize = 32.sp,
                 )
                 Text(
-                    "Cycling-training metrics derived from your rides + Samsung Fit Band 3. " +
-                        "Wellness data (sleep staging, activity, body comp, live stress) stays in Samsung Health.",
+                    "Multi-sport training metrics — power-based load for cycling, " +
+                        "HR-based load (Banister-style) for runs + other sessions tracked " +
+                        "by your Samsung Fit Band 3. Wellness data (sleep staging, activity, " +
+                        "body comp, live stress) stays in Samsung Health.",
                     color = UrujMuted,
                     fontSize = 12.sp,
                 )
