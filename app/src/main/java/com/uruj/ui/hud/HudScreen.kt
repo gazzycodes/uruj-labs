@@ -293,7 +293,25 @@ private fun HudTopBar(state: RideState) {
         ),
         label = "rec_pulse",
     )
-    val recColor = if (state.isPaused) UrujMuted else UrujZone5
+    // v0.3.8 service-health: REC dot is now a live health indicator.
+    // Green = checkpoint within 40s (healthy), amber = 40-90s (degraded),
+    // red = >90s or never (likely dead). Pulse animation only applies when
+    // healthy — a frozen-coloured dot is a clearer "something is wrong" signal.
+    val checkpoint = state.lastCheckpointAtMs
+    val checkpointAgeMs = checkpoint?.let { (System.currentTimeMillis() - it).coerceAtLeast(0L) }
+    val health = serviceHealth(state.isPaused, checkpointAgeMs)
+    val (recColor, recLabel) = when (health) {
+        ServiceHealth.PAUSED -> UrujMuted to "PAUSED"
+        ServiceHealth.STARTING -> UrujZone3 to "REC · STARTING"
+        ServiceHealth.HEALTHY -> UrujZone2 to "REC"
+        ServiceHealth.DEGRADED -> UrujZone3 to "REC · DEGRADED"
+        ServiceHealth.STALE -> UrujZone5 to "REC · STALE"
+    }
+    val dotAlpha = when (health) {
+        ServiceHealth.PAUSED -> 0.6f
+        ServiceHealth.HEALTHY, ServiceHealth.STARTING -> pulse
+        ServiceHealth.DEGRADED, ServiceHealth.STALE -> 1f
+    }
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -303,11 +321,11 @@ private fun HudTopBar(state: RideState) {
             modifier = Modifier
                 .size(10.dp)
                 .clip(CircleShape)
-                .background(recColor.copy(alpha = if (state.isPaused) 0.6f else pulse)),
+                .background(recColor.copy(alpha = dotAlpha)),
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            text = if (state.isPaused) "PAUSED" else "REC",
+            text = recLabel,
             color = recColor,
             fontWeight = FontWeight.Black,
             fontSize = 12.sp,
@@ -517,6 +535,18 @@ private fun StatsGrid(state: RideState, modifier: Modifier = Modifier) {
 
 private fun lastSavedSecondsAgo(lastCheckpointMs: Long): Long {
     return ((System.currentTimeMillis() - lastCheckpointMs) / 1000L).coerceAtLeast(0L)
+}
+
+private enum class ServiceHealth { PAUSED, STARTING, HEALTHY, DEGRADED, STALE }
+
+private fun serviceHealth(isPaused: Boolean, checkpointAgeMs: Long?): ServiceHealth {
+    if (isPaused) return ServiceHealth.PAUSED
+    if (checkpointAgeMs == null) return ServiceHealth.STARTING
+    return when {
+        checkpointAgeMs < 40_000L -> ServiceHealth.HEALTHY
+        checkpointAgeMs < 90_000L -> ServiceHealth.DEGRADED
+        else -> ServiceHealth.STALE
+    }
 }
 
 @Composable

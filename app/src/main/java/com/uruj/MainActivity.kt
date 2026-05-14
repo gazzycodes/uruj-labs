@@ -10,6 +10,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.uruj.data.RideHistoryRepository
@@ -17,6 +18,7 @@ import com.uruj.data.StoredRideSummary
 import com.uruj.service.RideRecorderService
 import com.uruj.service.RideStateHolder
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.uruj.ui.biolab.BioLabScreen
 import com.uruj.ui.checklist.PreRideChecklistScreen
@@ -27,6 +29,63 @@ import com.uruj.ui.profile.RiderProfileScreen
 import com.uruj.ui.routemap.RouteMapScreen
 import com.uruj.ui.summary.RideSummaryScreen
 import com.uruj.ui.theme.URUJTheme
+
+@androidx.compose.runtime.Composable
+private fun ActiveOrphanDialog(
+    summary: StoredRideSummary,
+    onResume: () -> Unit,
+    onEndAndSave: () -> Unit,
+    onDiscard: () -> Unit,
+) {
+    val km = "%.2f".format(summary.totalDistanceMeters / 1000)
+    val minutes = summary.movingTimeMs / 60_000
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { /* no-op — user must pick an action */ },
+        title = {
+            androidx.compose.material3.Text(
+                "Ride in progress detected",
+                color = com.uruj.ui.theme.UrujText,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Black,
+            )
+        },
+        text = {
+            androidx.compose.material3.Text(
+                "Your last ride ($km km · ${minutes}m) was interrupted before you " +
+                    "tapped STOP. The recording is intact. What do you want to do?\n\n" +
+                    "RESUME — continue from where it stopped.\n" +
+                    "END & SAVE — finalize as-is, add to RIDES history.\n" +
+                    "DISCARD — delete everything from this session.",
+                color = com.uruj.ui.theme.UrujText,
+            )
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = onResume) {
+                androidx.compose.material3.Text(
+                    "RESUME",
+                    color = com.uruj.ui.theme.UrujAccent,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Black,
+                )
+            }
+        },
+        dismissButton = {
+            androidx.compose.foundation.layout.Row {
+                androidx.compose.material3.TextButton(onClick = onEndAndSave) {
+                    androidx.compose.material3.Text(
+                        "END & SAVE",
+                        color = com.uruj.ui.theme.UrujText,
+                    )
+                }
+                androidx.compose.material3.TextButton(onClick = onDiscard) {
+                    androidx.compose.material3.Text(
+                        "DISCARD",
+                        color = com.uruj.ui.theme.UrujMuted,
+                    )
+                }
+            }
+        },
+        containerColor = com.uruj.ui.theme.UrujSurface,
+    )
+}
 
 @androidx.compose.runtime.Composable
 private fun OrphanRecoveryDialog(
@@ -94,16 +153,21 @@ class MainActivity : ComponentActivity() {
             // Route map overlays whichever summary launched it. Held at top level
             // so back from map returns to the right summary without losing state.
             var routeMapSession by remember { mutableStateOf<String?>(null) }
-            // Orphan-ride recovery banner. Runs once on cold-start to detect rides
-            // whose NDJSON exists but summary doesn't — typically from OS killing
-            // the service mid-ride. v0.3.7 fix — user reported app killed on
-            // backgrounding + opening URUJ showed blank state. Now we auto-finalize
-            // those rides and surface a banner so the user sees their data is safe.
+            // v0.3.7: passive orphan recovery (NDJSON without summary, e.g. pre-marker rides).
+            // v0.3.8: ACTIVE orphan detection (sessions with `.active` marker still on disk).
+            //         These get a Resume/End/Discard dialog BEFORE the passive recovery runs.
             var recoveredRide by remember { mutableStateOf<StoredRideSummary?>(null) }
+            var activeOrphan by remember { mutableStateOf<StoredRideSummary?>(null) }
+            val ioScope = rememberCoroutineScope()
             LaunchedEffect(Unit) {
-                val recovered = withContext(Dispatchers.IO) {
-                    RideHistoryRepository(this@MainActivity).recoverOrphanRides()
+                val repo = RideHistoryRepository(this@MainActivity)
+                val active = withContext(Dispatchers.IO) { repo.findActiveOrphans() }
+                if (active.isNotEmpty()) {
+                    activeOrphan = active.maxByOrNull { it.endedAtMs }
+                    // Don't run passive recovery yet — let user choose first.
+                    return@LaunchedEffect
                 }
+                val recovered = withContext(Dispatchers.IO) { repo.recoverOrphanRides() }
                 recoveredRide = recovered.maxByOrNull { it.endedAtMs }
             }
 
@@ -118,9 +182,37 @@ class MainActivity : ComponentActivity() {
             }
 
             URUJTheme {
-                // Surface the orphan-ride recovery banner once before normal nav.
+                // ACTIVE orphan: ride was interrupted, .active marker still present.
+                // Offer the rider a choice before any auto-recovery.
+                val active = activeOrphan
+                if (active != null) {
+                    ActiveOrphanDialog(
+                        summary = active,
+                        onResume = {
+                            startRideResume(active.sessionId)
+                            activeOrphan = null
+                        },
+                        onEndAndSave = {
+                            ioScope.launch(Dispatchers.IO) {
+                                RideHistoryRepository(this@MainActivity)
+                                    .finalizeActiveOrphan(active.sessionId)
+                            }
+                            activeOrphan = null
+                            recoveredRide = active
+                        },
+                        onDiscard = {
+                            ioScope.launch(Dispatchers.IO) {
+                                RideHistoryRepository(this@MainActivity)
+                                    .discardActiveOrphan(active.sessionId)
+                            }
+                            activeOrphan = null
+                        },
+                    )
+                }
+                // PASSIVE recovery banner — only shown when there were NO active orphans
+                // requiring user choice (or after End-and-save converted one into recovered).
                 val recovered = recoveredRide
-                if (recovered != null) {
+                if (recovered != null && activeOrphan == null) {
                     OrphanRecoveryDialog(
                         summary = recovered,
                         onDismiss = { recoveredRide = null },
@@ -179,6 +271,14 @@ class MainActivity : ComponentActivity() {
     private fun startRide() {
         val intent = Intent(this, RideRecorderService::class.java).apply {
             action = RideRecorderService.ACTION_START
+        }
+        startForegroundService(intent)
+    }
+
+    private fun startRideResume(sessionId: String) {
+        val intent = Intent(this, RideRecorderService::class.java).apply {
+            action = RideRecorderService.ACTION_RESUME
+            putExtra(RideRecorderService.EXTRA_RESUME_SESSION_ID, sessionId)
         }
         startForegroundService(intent)
     }

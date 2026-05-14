@@ -76,13 +76,18 @@ class RideRecorderService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startRecording()
+            ACTION_START -> startRecording(resumeSessionId = null)
+            ACTION_RESUME -> {
+                val sid = intent.getStringExtra(EXTRA_RESUME_SESSION_ID)
+                if (sid != null) startRecording(resumeSessionId = sid)
+                else Log.w(TAG, "ACTION_RESUME without session id, ignoring")
+            }
             ACTION_STOP -> stopRecording()
         }
         return START_NOT_STICKY
     }
 
-    private fun startRecording() {
+    private fun startRecording(resumeSessionId: String? = null) {
         if (recordingJob?.isActive == true) return
 
         // Acquire a partial wake lock so the CPU stays awake during the ride even when
@@ -92,16 +97,48 @@ class RideRecorderService : Service() {
         acquireWakeLock()
 
         try {
-            val sessionId = UUID.randomUUID().toString()
-            val startedAtMs = System.currentTimeMillis()
             val ridesDir = File(getExternalFilesDir(null), "rides").apply { mkdirs() }
+            // True ride resume (v0.3.8): if a resumeSessionId is provided, we
+            // restore from the existing summary's accumulators instead of
+            // starting from zero. NDJSON file already exists; FileWriter
+            // append=true means new samples extend the existing stream.
+            val sessionId = resumeSessionId ?: UUID.randomUUID().toString()
+            val existingSummary = if (resumeSessionId != null) historyRepo.load(sessionId) else null
+            val startedAtMs = existingSummary?.startedAtMs ?: System.currentTimeMillis()
             val samplesFile = File(ridesDir, "$sessionId.ndjson")
 
-            val initialState = RideState(
-                isRecording = true,
-                sessionId = sessionId,
-                startedAtMs = startedAtMs,
-            )
+            // .active marker — proof that this session is being actively recorded.
+            // Service writes on start, deletes on clean stop. If marker persists
+            // when no service is alive, the process was killed mid-ride → cold-
+            // start dialog offers Resume / End / Discard.
+            activeMarkerFile(ridesDir, sessionId).createNewFile()
+
+            val initialState = if (existingSummary != null) {
+                // Resume: seed accumulators from the existing summary so the new
+                // samples extend the totals rather than starting from zero.
+                Log.d(TAG, "Resuming session $sessionId: ${existingSummary.totalDistanceMeters / 1000} km already logged")
+                RideState(
+                    isRecording = true,
+                    sessionId = sessionId,
+                    startedAtMs = startedAtMs,
+                    totalDistanceMeters = existingSummary.totalDistanceMeters,
+                    movingTimeMs = existingSummary.movingTimeMs,
+                    totalElapsedMs = existingSummary.totalElapsedMs,
+                    averagePowerWatts = existingSummary.averagePowerWatts,
+                    maxPowerWatts = existingSummary.maxPowerWatts,
+                    totalWorkKj = existingSummary.totalWorkKj,
+                    totalElevGainMeters = existingSummary.totalElevGainMeters,
+                    totalElevLossMeters = existingSummary.totalElevLossMeters,
+                    maxSpeedMs = existingSummary.maxSpeedKph / 3.6f,
+                    ftpWatts = existingSummary.ftpWatts,
+                )
+            } else {
+                RideState(
+                    isRecording = true,
+                    sessionId = sessionId,
+                    startedAtMs = startedAtMs,
+                )
+            }
             RideStateHolder.update { initialState }
 
             startInForeground(initialState)
@@ -151,6 +188,12 @@ class RideRecorderService : Service() {
                 )
                 Log.d(TAG, "Saved ride summary: ${snapshot.sessionId}")
             }.onFailure { Log.w(TAG, "save summary failed", it) }
+            // v0.3.8: clean shutdown → delete the .active marker so cold-start
+            // doesn't try to offer a resume for a finished ride.
+            runCatching {
+                val ridesDir = File(getExternalFilesDir(null), "rides")
+                activeMarkerFile(ridesDir, snapshot.sessionId).delete()
+            }.onFailure { Log.w(TAG, "active-marker delete failed", it) }
         }
 
         // Ride-end profile write-backs — both max HR and FTP auto-update from
@@ -630,5 +673,13 @@ class RideRecorderService : Service() {
         private const val GPS_ACCURACY_THRESHOLD_M = 25f
         const val ACTION_START = "com.uruj.action.START_RIDE"
         const val ACTION_STOP = "com.uruj.action.STOP_RIDE"
+        /** Resume an interrupted ride. Must be paired with EXTRA_RESUME_SESSION_ID. */
+        const val ACTION_RESUME = "com.uruj.action.RESUME_RIDE"
+        const val EXTRA_RESUME_SESSION_ID = "com.uruj.extra.RESUME_SESSION_ID"
+
+        /** Marker file written on service start, deleted on clean stop. Cold-start
+         *  scanner looks for these to detect rides that were killed mid-recording. */
+        fun activeMarkerFile(ridesDir: File, sessionId: String): File =
+            File(ridesDir, "$sessionId.active")
     }
 }
