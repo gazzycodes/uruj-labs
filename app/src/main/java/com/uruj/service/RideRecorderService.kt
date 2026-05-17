@@ -300,8 +300,22 @@ class RideRecorderService : Service() {
         // Tracking max across the ride lets us auto-update profile.ftpWatts at
         // ride end without needing the rider to do a dedicated test.
         val power20min = RollingAverage(windowSeconds = 1200)
-        var best20MinPowerWatts = 0f
-        var maxHrBpmObserved = 0
+        // v0.4.4 fix: seed local accumulators from the holder. On a RESUME,
+        // startRecording() has already populated RideStateHolder with prior
+        // ride totals via the existing summary. The buggy original initialized
+        // these locals to zero, then on the first GPS sample wrote the locals
+        // back to the holder via .update — clobbering the seeded values.
+        // 2026-05-17 ride: 55km actual → only 6km recorded after 2 resumes.
+        // Each resume reset distance + work + max power + elev to ~0 and the
+        // 30s checkpoint cemented that loss to disk. Seeding the locals now
+        // makes resume genuinely additive instead of destructive.
+        val seed = RideStateHolder.state.value
+        var best20MinPowerWatts = seed.best20MinPowerWatts
+        var maxHrBpmObserved = seed.maxHrBpmObserved
+        elevation.seed(
+            initialGainMeters = seed.totalElevGainMeters.toDouble(),
+            initialLossMeters = seed.totalElevLossMeters.toDouble(),
+        )
 
         runCatching { prTracker.load() }.onFailure { Log.w(TAG, "PR load failed", it) }
 
@@ -339,13 +353,25 @@ class RideRecorderService : Service() {
         var latestAccel: AccelerometerSample? = null
         var latestHr: HrSample? = null
         var latestDemElevation: Float? = null
-        var totalDistanceMeters = 0.0
-        var totalWorkJoules = 0.0
-        var maxPowerWatts = 0f
-        var powerSampleCount = 0
-        var powerSum = 0.0
+        // v0.4.4 fix continued — seed the running accumulators so resume extends
+        // prior totals instead of restarting from zero. See note above.
+        // For power-average reconstruction: powerSum + powerSampleCount aren't
+        // persisted in StoredRideSummary, so we approximate from the average
+        // × an effective sample count derived from movingTimeMs (power samples
+        // arrive at ~1Hz when GPS-accurate-and-moving). This will be slightly
+        // off (zero-power samples weren't counted in the original live sum) but
+        // keeps the rolling average continuous across resume — far better than
+        // zeroing it and re-averaging from scratch.
+        var totalDistanceMeters = seed.totalDistanceMeters
+        var totalWorkJoules = seed.totalWorkKj.toDouble() * 1000.0
+        var maxPowerWatts = seed.maxPowerWatts
+        var powerSampleCount = if (seed.averagePowerWatts > 0f) {
+            (seed.movingTimeMs / 1000L).toInt().coerceAtLeast(1)
+        } else 0
+        var powerSum = seed.averagePowerWatts.toDouble() * powerSampleCount
         var lastPowerSampleMs: Long? = null
-        var lastKmAnnounced = 0
+        // Don't re-announce km callouts the rider already heard pre-resume.
+        var lastKmAnnounced = (seed.totalDistanceMeters / 1_000.0).toInt()
 
         // DEM elevation lookup — when no barometer is present this is our canonical
         // altitude source (what Strava uses for power estimation post-ride). Polls every
