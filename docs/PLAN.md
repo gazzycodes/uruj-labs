@@ -686,6 +686,64 @@ weather + wind, route map with HR-zone coloring, time-in-zone polarized
 
 ---
 
+## 🆚 Competitive landscape (2026-05-17 — why URUJ exists)
+
+Honest answer to "isn't this what Whoop/Oura/EliteHRV/Garmin already do?"
+
+Each consumer app shows 20-50% of what URUJ targets, but each is a slice in a
+black box with subscriptions and ecosystem lock-in. URUJ's edge is
+**integration + transparency + hardware-agnostic + free + sovereign data**.
+
+### What each consumer app does and doesn't do
+
+| App | Does well | Doesn't (vs URUJ) |
+|---|---|---|
+| **Magene Utility** | Strap firmware, basic HR, workout recording, battery | No training context, no HRV trends, no cycling-specific zones, no biohacker tests |
+| **EliteHRV** (free) | Morning HRV reading, RMSSD trends, tagging, CSV export | No continuous, no cycling integration, no orthostatic/CAR/postprandial, no training load |
+| **HRV4Training** (~₹2k/yr) | Best research-flavored HRV app, has orthostatic mode, camera-based no-strap | No 24/7, no cycling power/zones, no rides, no time-in-zone |
+| **Kubios HRV** (subscription) | Best frequency-domain HRV (LF/HF, DFA) available consumer-side | No training context, research-tool not athlete-tool, no rides |
+| **Welltory** | Continuous HRV + stress, daily readiness | Opaque proprietary scores, iOS-stronger, no cycling, no transparency |
+| **Whoop** (~₹2k/month) | Continuous PPG HRV 24/7, sleep, "Strain" + "Recovery" | PPG not ECG, closed ecosystem, opaque scores, subscription, locked to their strap, no cycling power |
+| **Oura ring** (~₹4k/yr) | Sleep stages, HRV trend, skin temp, polished UX | PPG-based, proprietary "Readiness", no cycling integration, ring-only |
+| **Polar Flow** | Recovery Pro, Nightly Recharge, ANS Recovery, Training Load Pro | Polar ecosystem only, needs Polar watch for some features, no biohacker stuff |
+| **Garmin Connect** | Body Battery (genuinely good), Stress, HRV Status, sleep | Garmin ecosystem only, needs Garmin watch, closed scores |
+| **Bryan Johnson's setup** | Aggregates 20+ apps + lab tests + custom dashboard | Costs ~$2M/year, requires research team, not reproducible solo |
+
+### URUJ's defensible edges
+
+| Edge | Why it matters |
+|---|---|
+| **One integrated brain** | Each app above is a slice. URUJ pulls cycling + HRV + training load + biohacker tests into one model. |
+| **Cycling-specific + biohacker depth in same app** | HRV apps don't care about cycling. Cycling apps don't care about HRV. URUJ marries them. |
+| **Source provenance + verbose math** (lab-level rule 8) | Every other app is a black box. URUJ shows you formulas + sources. Whoop's "Recovery 67" tells you nothing. URUJ's "Readiness 67/100 = Sleep 70 + RHR 100 + TSB 50 + (HRV missing)" tells you everything. |
+| **Hardware-agnostic** | Any future sensor slots in via priority registry. Whoop locks you to Whoop. URUJ doesn't lock you to anything. |
+| **Free + your data stays yours** | NDJSON on your device. No subscription. No cloud lock-in. Export anytime. |
+| **Honest about limitations** | We refuse to fake HRV from PPG. Whoop fakes it. We say "chest strap unlocks" until the chest strap is connected. |
+| **Tier B tests integrated** | Some apps have orthostatic (HRV4Training). Some have CAR. NONE have CAR + orthostatic + postprandial + caffeine + alcohol + meditation all in one place correlated with your training data. |
+| **Athletic + biohacker dual identity** | The other apps pick one. URUJ does both. |
+| **Custom personal regressions** (v1.6+) | As baseline data accumulates → patterns specific to YOUR body. No black-box "Recovery 67"-style scores. |
+| **Hardware-additive v∞ path** | Custom sensors when consumer hardware caps out. Impossible with closed ecosystems. |
+
+### Honest gaps URUJ has (what they have we don't)
+
+- **Whoop's longitudinal cohort data** (millions of users → normalized scores). URUJ has population of 1.
+- **Oura's UX polish** — they have a real design team. URUJ is a solo build.
+- **Continuous PPG when off-strap** (Whoop, Oura) — we lose data when Magene is off. Wrist-worn devices keep tracking.
+- **Polar's clinical research validation** — Polar H10 has hundreds of published papers. Magene H613 is consumer-grade (still excellent, less peer-reviewed).
+- **Cohort comparison** ("how does my VO2 compare to other 26yo cyclists?") — these apps have answers, we don't yet.
+
+### The synthesis
+
+If you only wanted morning HRV + a recovery score → EliteHRV does that, free, simpler.
+If you only wanted cycling training → Strava + power meter does that, paywall.
+If you want **one thing** that does both, with verbose math, your data, hardware-agnostic, free, growing toward Bryan-Johnson-tier biohacker depth → **that doesn't exist**. That's URUJ's niche.
+
+Most of what URUJ targets exists piecemeal. URUJ's bet is on **integration + transparency + sovereignty + hardware-additive growth**. That's a real and defensible position. Plus the v∞ custom-sensors path means future-URUJ can do things current consumer ecosystems literally cannot.
+
+URUJ isn't duplicating Whoop. URUJ is the thing Whoop would be if it were open, ECG-based, cycling-aware, biohacker-deep, and let you see the math.
+
+---
+
 ## 🗺️ Lab-level URUJ roadmap forward
 
 ### v0.4.4 — Resume state-clobber fix (CRITICAL, shipped 2026-05-17)
