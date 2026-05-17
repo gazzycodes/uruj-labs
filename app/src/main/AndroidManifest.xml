@@ -42,6 +42,19 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- v0.5.0 — BLE for chest strap (Magene H613). Android 12+ permissions:
+         BLUETOOTH_SCAN with neverForLocation flag (we don't want location-from-BLE,
+         we already have GPS) and BLUETOOTH_CONNECT. Legacy BLUETOOTH/BLUETOOTH_ADMIN
+         needed for pre-12 devices but app's minSdk=26 so we cover both eras. -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
     <!-- Health Connect resolves via this package query -->
     <queries>
         <package android:name="com.google.android.apps.healthdata" />
@@ -50,9 +63,10 @@
         </intent>
     </queries>
 
-    <!-- Hardware features: GPS required, barometer preferred (used for elevation refinement) -->
+    <!-- Hardware features: GPS required, barometer + BLE preferred -->
     <uses-feature android:name="android.hardware.location.gps" android:required="true" />
     <uses-feature android:name="android.hardware.sensor.barometer" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <application
         android:allowBackup="true"

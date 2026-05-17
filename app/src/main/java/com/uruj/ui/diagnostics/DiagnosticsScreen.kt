@@ -205,6 +205,13 @@ fun DiagnosticsScreen(
             Spacer(Modifier.height(12.dp))
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // v0.5.0 — BLE chest strap test panel at top so it's the first
+                // thing the rider sees in Diagnostics. Self-contained: holds
+                // its own BleHrSource lifecycle scoped to composition.
+                item(key = "ble_strap_test") {
+                    StrapTestCard()
+                    Spacer(Modifier.height(8.dp))
+                }
                 HcCategory.entries.forEach { cat ->
                     val items = byCategory[cat].orEmpty()
                     if (items.isNotEmpty()) {

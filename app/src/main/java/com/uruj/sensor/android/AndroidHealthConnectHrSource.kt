@@ -100,6 +100,8 @@ class AndroidHealthConnectHrSource(context: Context) : HealthConnectHrSource {
                             receivedAtMs = System.currentTimeMillis(),
                             measuredAtMs = measuredMs,
                             bpm = newest.beatsPerMinute.toInt(),
+                            // HC doesn't expose RR intervals from Samsung Fit Band 3.
+                            source = HrSample.Source.HC_BATCHED,
                         )
                     )
                     lastEmittedMeasuredMs = measuredMs
