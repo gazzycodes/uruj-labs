@@ -67,6 +67,23 @@ class ElevationTracker {
         NONE,
     }
 
+    /**
+     * Seed the gain/loss accumulators with prior totals — used when a ride is
+     * RESUMED after the service was killed. Without seeding, the dual trackers
+     * would restart at zero and the post-resume update would clobber prior
+     * elevation totals via RideStateHolder writes. Smoothing windows stay
+     * fresh (only the first few samples post-resume have a less stable grade,
+     * which is acceptable). Seeds both primary and GPS trackers so the
+     * MAX-merge picks up where it left off regardless of which source is
+     * primary after resume.
+     */
+    fun seed(initialGainMeters: Double, initialLossMeters: Double) {
+        primaryGain = initialGainMeters
+        primaryLoss = initialLossMeters
+        gpsGain = initialGainMeters
+        gpsLoss = initialLossMeters
+    }
+
     fun update(
         timestampMs: Long,
         pressureHpa: Float?,
