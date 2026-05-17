@@ -89,16 +89,27 @@ class BleHrSource(context: Context) {
     }
 
     /**
-     * Returns a flow of HR samples streaming from the first standards-compliant
-     * BLE HR strap found in range. Starts scanning when collected, cancels and
-     * disconnects when the consumer cancels.
+     * Hook fired when the first successful pairing produces all device info
+     * (manufacturer + model + firmware). RideRecorderService / Diagnostics
+     * supply this so they can persist via BleSettingsStore — no scan needed
+     * on the next ride start. Set once after callbackFlow begins streaming.
+     */
+    var onPaired: ((DeviceInfo) -> Unit)? = null
+
+    /**
+     * Returns a flow of HR samples streaming from a BLE chest strap.
+     *
+     * @param directAddress when non-null, skip the scan and connect directly
+     *   to this MAC. Used after first pairing — saves seconds of scan time
+     *   and works even when the strap doesn't broadcast the HR Service UUID
+     *   while already connected to another consumer.
      *
      * Permission gate: if BLUETOOTH_SCAN / BLUETOOTH_CONNECT (Android 12+) or
      * ACCESS_FINE_LOCATION (Android <12) is missing, the flow closes immediately
      * with the state set to ERROR.
      */
     @SuppressLint("MissingPermission") // Permissions checked at flow entry
-    fun samples(): Flow<HrSample> = callbackFlow {
+    fun samples(directAddress: String? = null): Flow<HrSample> = callbackFlow {
         if (!hasPermissions()) {
             Log.w(TAG, "BLE permissions not granted; closing flow")
             _state.value = State.ERROR
@@ -114,6 +125,33 @@ class BleHrSource(context: Context) {
             return@callbackFlow
         }
 
+        var activeGatt: BluetoothGatt? = null
+
+        // Fast path: known device address from previous pairing. Skip scan.
+        if (directAddress != null) {
+            val remote = runCatching { adapter.getRemoteDevice(directAddress) }.getOrNull()
+            if (remote != null) {
+                Log.d(TAG, "[scan] direct-connect path to $directAddress (skipping scan)")
+                _state.value = State.CONNECTING
+                activeGatt = connectAndSubscribe(
+                    device = remote,
+                    onDisconnect = { close() },
+                    onSample = { sample -> trySend(sample) },
+                )
+                awaitClose {
+                    Log.d(TAG, "[direct] consumer cancelled — cleaning up GATT")
+                    activeGatt?.let {
+                        runCatching { it.disconnect() }
+                        runCatching { it.close() }
+                    }
+                    _state.value = State.IDLE
+                }
+                return@callbackFlow
+            } else {
+                Log.w(TAG, "[scan] adapter.getRemoteDevice($directAddress) returned null — falling back to scan")
+            }
+        }
+
         val scanner = adapter.bluetoothLeScanner
         if (scanner == null) {
             Log.w(TAG, "BLE scanner unavailable; closing flow")
@@ -122,7 +160,6 @@ class BleHrSource(context: Context) {
             return@callbackFlow
         }
 
-        var activeGatt: BluetoothGatt? = null
         var hasFoundDevice = false
 
         val scanCallback = object : ScanCallback() {
@@ -134,9 +171,11 @@ class BleHrSource(context: Context) {
                 Log.d(TAG, "[scan] found $deviceName ${device.address} RSSI=${result.rssi}")
                 runCatching { scanner.stopScan(this) }
                 _state.value = State.CONNECTING
-                activeGatt = connectAndSubscribe(device) { sample ->
-                    trySend(sample)
-                }
+                activeGatt = connectAndSubscribe(
+                    device = device,
+                    onDisconnect = { close() },
+                    onSample = { sample -> trySend(sample) },
+                )
             }
 
             override fun onScanFailed(errorCode: Int) {
@@ -180,11 +219,17 @@ class BleHrSource(context: Context) {
      * subscribe) one at a time. Each completes via callback which advances
      * stage and submits the next op via `requestNextStep`.
      *
+     * @param onDisconnect fired when the GATT connection drops (peripheral out
+     *   of range, peripheral powered off, etc.). The consumer should re-call
+     *   samples() with back-off to reconnect. v0.5.2 — enables mid-ride
+     *   auto-reconnect.
+     *
      * Returns the active BluetoothGatt so the caller can disconnect on flow cancel.
      */
     @SuppressLint("MissingPermission")
     private fun connectAndSubscribe(
         device: BluetoothDevice,
+        onDisconnect: () -> Unit,
         onSample: (HrSample) -> Unit,
     ): BluetoothGatt? {
         var stage: Stage = Stage.IDLE
@@ -304,6 +349,11 @@ class BleHrSource(context: Context) {
                         Log.w(TAG, "[gatt] disconnected")
                         _state.value = State.DISCONNECTED
                         runCatching { gatt.close() }
+                        // Signal upstream so the consumer (RideRecorderService
+                        // while-loop) can retry with back-off. The flow closes
+                        // here; the consumer's collector terminates normally
+                        // and the while-loop schedules a reconnect.
+                        onDisconnect()
                     }
                 }
             }
@@ -413,6 +463,10 @@ class BleHrSource(context: Context) {
                     HR_MEASUREMENT -> {
                         stage = Stage.READY
                         Log.d(TAG, "[gatt] setup chain complete — notifications active")
+                        // Surface the fully-populated DeviceInfo so the caller
+                        // (Diagnostics card / RideRecorderService) can persist
+                        // via BleSettingsStore for next-time direct-connect.
+                        _deviceInfo.value?.let { info -> onPaired?.invoke(info) }
                     }
                 }
             }

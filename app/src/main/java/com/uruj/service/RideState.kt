@@ -64,6 +64,23 @@ data class RideState(
     // Live PR alert — UI checks (now - prAnnouncedAtMs) < 6s to flash the overlay.
     val latestPr: NewPr? = null,
     val prAnnouncedAtMs: Long? = null,
+
+    // v0.5.1 — BLE chest strap (Magene H613 etc.) state surfaced to HUD top bar.
+    /** True while the BLE chest strap is connected and streaming HR. */
+    val bleConnected: Boolean = false,
+    /** Strap battery level 0-100, null when unread. */
+    val bleBatteryPct: Int? = null,
+    /** Contact-detected flag from HR Measurement bit 1. Null = strap doesn't
+     *  report status. True = electrodes seated. False = wet electrodes/tighten. */
+    val bleContactDetected: Boolean? = null,
+    /** Display name for the strap on the HUD (model/firmware/MAC fallback). */
+    val bleStrapName: String? = null,
+    /** v0.5.2 — beat-by-beat live HR from the strap. Updated on EVERY BLE
+     *  notification (sub-100ms latency) rather than every GPS tick (1s).
+     *  HUD's STRAP row + main HEART RATE display read this when present,
+     *  falling back to latestSample.hrBpm (HC-batched). Null when strap
+     *  disconnected — UI shows OFFLINE state. */
+    val bleLiveBpm: Int? = null,
 ) {
     val averageSpeedMovingKph: Float
         get() = if (movingTimeMs > 0) {

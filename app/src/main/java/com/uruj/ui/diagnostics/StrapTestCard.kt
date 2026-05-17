@@ -36,8 +36,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.uruj.data.BleSettingsStore
+import com.uruj.data.PairedStrap
 import com.uruj.sensor.HrSample
 import com.uruj.sensor.android.BleHrSource
+import kotlinx.coroutines.launch
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujSurface
@@ -67,10 +70,35 @@ import androidx.compose.runtime.rememberCoroutineScope
 fun StrapTestCard() {
     val context = LocalContext.current
     val source = remember { BleHrSource(context) }
+    val bleStore = remember { BleSettingsStore(context) }
     val state by source.state.collectAsStateWithLifecycle()
     val battery by source.battery.collectAsStateWithLifecycle()
     val deviceInfo by source.deviceInfo.collectAsStateWithLifecycle()
     val coScope = rememberCoroutineScope()
+
+    // v0.5.1 — current paired-strap snapshot for FORGET button + "previously
+    // paired" display. Re-collects when bleStore.paired emits a new value
+    // (after pair / forget).
+    val paired by bleStore.paired.collectAsStateWithLifecycle(initialValue = null)
+
+    // v0.5.1 — persist the paired strap on first successful pairing so the
+    // next ride start can skip scan and direct-connect via saved MAC address.
+    LaunchedEffect(source) {
+        source.onPaired = { info ->
+            coScope.launch {
+                bleStore.save(
+                    PairedStrap(
+                        address = info.address,
+                        name = info.name,
+                        manufacturer = info.manufacturer,
+                        model = info.model,
+                        firmware = info.firmware,
+                        lastConnectedAtMs = System.currentTimeMillis(),
+                    )
+                )
+            }
+        }
+    }
     var streaming by remember { mutableStateOf(false) }
     var latest by remember { mutableStateOf<HrSample?>(null) }
     var samplesSeen by remember { mutableStateOf(0) }
@@ -116,6 +144,73 @@ fun StrapTestCard() {
             StateBadge(state)
         }
         Spacer(Modifier.height(8.dp))
+
+        // v0.5.1 — show paired-device summary + FORGET button when a strap is
+        // saved. RideRecorderService uses this saved MAC for direct-connect at
+        // ride start (no scan), so this row is the rider's view of "what gets
+        // auto-connected for my next ride."
+        val pairedSnapshot = paired
+        if (pairedSnapshot != null && !streaming) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(UrujSurfaceHigh.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                    .padding(10.dp),
+            ) {
+                Text(
+                    "PAIRED — AUTO-CONNECTS ON RIDE START",
+                    color = UrujMuted,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 9.sp,
+                    letterSpacing = 1.5.sp,
+                )
+                Spacer(Modifier.height(4.dp))
+                val displayName = pairedSnapshot.model
+                    ?: pairedSnapshot.name
+                    ?: pairedSnapshot.address
+                Text(
+                    text = displayName,
+                    color = UrujText,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                )
+                Text(
+                    text = "MAC: ${pairedSnapshot.address}",
+                    color = UrujMuted,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                )
+                pairedSnapshot.firmware?.let {
+                    Text(
+                        text = "Firmware: $it",
+                        color = UrujMuted,
+                        fontSize = 10.sp,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row {
+                    Button(
+                        onClick = {
+                            coScope.launch { bleStore.forget() }
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = UrujSurfaceHigh,
+                            contentColor = UrujZone5,
+                        ),
+                    ) {
+                        Text(
+                            "FORGET STRAP",
+                            fontWeight = FontWeight.Black,
+                            fontSize = 11.sp,
+                            letterSpacing = 1.5.sp,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+        }
 
         if (!streaming) {
             Text(
