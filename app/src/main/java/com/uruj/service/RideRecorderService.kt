@@ -497,40 +497,58 @@ class RideRecorderService : Service() {
         // first ride after pairing uses the saved MAC for direct connect (no
         // scan). Auto-reconnects via BleHrSource's internal retry on drop.
         launch {
-            try {
-                val paired: PairedStrap? = bleSettings.current()
-                if (paired == null) {
-                    Log.d(TAG, "[ble] no paired strap — skipping BLE HR source for this ride")
-                    return@launch
+            // v0.5.2 — retry loop with exponential back-off. BleHrSource closes
+            // its flow when the GATT disconnects; this loop catches the
+            // completion, marks bleConnected=false on HUD, waits with growing
+            // back-off (5s → 10s → 20s → 40s → 60s cap), and re-opens the flow.
+            // Cancelled cleanly when the ride ends (recordingJob.cancel).
+            val paired: PairedStrap? = bleSettings.current()
+            if (paired == null) {
+                Log.d(TAG, "[ble] no paired strap — skipping BLE HR source for this ride")
+                return@launch
+            }
+            val seedLabel = paired.model ?: paired.name ?: paired.address
+            RideStateHolder.update { it.copy(bleStrapName = seedLabel) }
+            Log.d(TAG, "[ble] direct-connecting to paired strap ${paired.address} ($seedLabel)")
+            bleSource.onPaired = { info ->
+                scope.launch { runCatching { bleSettings.touchLastConnected() } }
+                RideStateHolder.update { it.copy(
+                    bleStrapName = info.model ?: info.name ?: paired.address,
+                ) }
+            }
+
+            var retryDelayMs = 5_000L
+            while (isActive) {
+                try {
+                    bleSource.samples(directAddress = paired.address).collect { sample ->
+                        // BLE always wins — fresh by definition.
+                        latestHr = sample
+                        // v0.5.2 — push beat-by-beat live BPM directly to HUD
+                        // (instead of waiting for the GPS-tick latestSample update).
+                        // Also surface state + battery + contact for the STRAP row.
+                        RideStateHolder.update { it.copy(
+                            bleConnected = true,
+                            bleLiveBpm = sample.bpm,
+                            bleBatteryPct = bleSource.battery.value,
+                            bleContactDetected = sample.contactDetected,
+                        ) }
+                        // Reset back-off as soon as a sample arrives — we're stable.
+                        retryDelayMs = 5_000L
+                    }
+                    Log.w(TAG, "[ble] flow ended (disconnect) — reconnect in ${retryDelayMs}ms")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    Log.w(TAG, "[ble] flow errored — reconnect in ${retryDelayMs}ms", e)
                 }
-                // Seed the HUD badge label so the rider sees "STRAP · OFFLINE"
-                // (with name) immediately on ride start, even before BLE connects.
-                // Once samples arrive, bleConnected flips true.
-                val seedLabel = paired.model ?: paired.name ?: paired.address
-                RideStateHolder.update { it.copy(bleStrapName = seedLabel) }
-                Log.d(TAG, "[ble] direct-connecting to paired strap ${paired.address} ($seedLabel)")
-                bleSource.onPaired = { info ->
-                    // Touch last-connected on each successful (re)pairing.
-                    scope.launch { runCatching { bleSettings.touchLastConnected() } }
-                    // Make device info visible on HUD via RideState.
-                    RideStateHolder.update { it.copy(
-                        bleStrapName = info.model ?: info.name ?: paired.address,
-                    ) }
-                }
-                bleSource.samples(directAddress = paired.address).collectLatest { sample ->
-                    // BLE always wins — fresh by definition.
-                    latestHr = sample
-                    // Surface BLE state + battery on the HUD via RideState
-                    RideStateHolder.update { it.copy(
-                        bleConnected = true,
-                        bleBatteryPct = bleSource.battery.value,
-                        bleContactDetected = sample.contactDetected,
-                    ) }
-                }
-            } catch (e: CancellationException) { throw e
-            } catch (e: Throwable) {
-                Log.w(TAG, "BLE HR flow died — falling back to HC only", e)
-                RideStateHolder.update { it.copy(bleConnected = false) }
+                // Mark disconnected on HUD so STRAP row turns red OFFLINE.
+                RideStateHolder.update { it.copy(
+                    bleConnected = false,
+                    bleLiveBpm = null,
+                ) }
+                delay(retryDelayMs)
+                // Exponential back-off, capped at 60s. Reset on next success.
+                retryDelayMs = (retryDelayMs * 2).coerceAtMost(60_000L)
             }
         }
 

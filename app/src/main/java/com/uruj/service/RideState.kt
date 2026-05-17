@@ -75,6 +75,12 @@ data class RideState(
     val bleContactDetected: Boolean? = null,
     /** Display name for the strap on the HUD (model/firmware/MAC fallback). */
     val bleStrapName: String? = null,
+    /** v0.5.2 — beat-by-beat live HR from the strap. Updated on EVERY BLE
+     *  notification (sub-100ms latency) rather than every GPS tick (1s).
+     *  HUD's STRAP row + main HEART RATE display read this when present,
+     *  falling back to latestSample.hrBpm (HC-batched). Null when strap
+     *  disconnected — UI shows OFFLINE state. */
+    val bleLiveBpm: Int? = null,
 ) {
     val averageSpeedMovingKph: Float
         get() = if (movingTimeMs > 0) {

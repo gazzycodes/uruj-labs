@@ -133,9 +133,11 @@ class BleHrSource(context: Context) {
             if (remote != null) {
                 Log.d(TAG, "[scan] direct-connect path to $directAddress (skipping scan)")
                 _state.value = State.CONNECTING
-                activeGatt = connectAndSubscribe(remote) { sample ->
-                    trySend(sample)
-                }
+                activeGatt = connectAndSubscribe(
+                    device = remote,
+                    onDisconnect = { close() },
+                    onSample = { sample -> trySend(sample) },
+                )
                 awaitClose {
                     Log.d(TAG, "[direct] consumer cancelled — cleaning up GATT")
                     activeGatt?.let {
@@ -169,9 +171,11 @@ class BleHrSource(context: Context) {
                 Log.d(TAG, "[scan] found $deviceName ${device.address} RSSI=${result.rssi}")
                 runCatching { scanner.stopScan(this) }
                 _state.value = State.CONNECTING
-                activeGatt = connectAndSubscribe(device) { sample ->
-                    trySend(sample)
-                }
+                activeGatt = connectAndSubscribe(
+                    device = device,
+                    onDisconnect = { close() },
+                    onSample = { sample -> trySend(sample) },
+                )
             }
 
             override fun onScanFailed(errorCode: Int) {
@@ -215,11 +219,17 @@ class BleHrSource(context: Context) {
      * subscribe) one at a time. Each completes via callback which advances
      * stage and submits the next op via `requestNextStep`.
      *
+     * @param onDisconnect fired when the GATT connection drops (peripheral out
+     *   of range, peripheral powered off, etc.). The consumer should re-call
+     *   samples() with back-off to reconnect. v0.5.2 — enables mid-ride
+     *   auto-reconnect.
+     *
      * Returns the active BluetoothGatt so the caller can disconnect on flow cancel.
      */
     @SuppressLint("MissingPermission")
     private fun connectAndSubscribe(
         device: BluetoothDevice,
+        onDisconnect: () -> Unit,
         onSample: (HrSample) -> Unit,
     ): BluetoothGatt? {
         var stage: Stage = Stage.IDLE
@@ -339,6 +349,11 @@ class BleHrSource(context: Context) {
                         Log.w(TAG, "[gatt] disconnected")
                         _state.value = State.DISCONNECTED
                         runCatching { gatt.close() }
+                        // Signal upstream so the consumer (RideRecorderService
+                        // while-loop) can retry with back-off. The flow closes
+                        // here; the consumer's collector terminates normally
+                        // and the while-loop schedules a reconnect.
+                        onDisconnect()
                     }
                 }
             }

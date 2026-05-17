@@ -148,8 +148,10 @@ private fun StrapRow(state: RideState) {
         contact == false -> "STRAP · NO CONTACT" to UrujZone3
         else -> "STRAP" to UrujZone2
     }
-    val live = state.latestSample?.takeIf { connected }
-    val bpm = if (connected) live?.hrBpm?.toString() ?: "—" else null
+    // v0.5.2 — read the beat-by-beat field updated on every BLE notification
+    // (not the 1Hz-throttled latestSample). HUD now reflects strap pulse in
+    // real time.
+    val bpm = if (connected) state.bleLiveBpm?.toString() ?: "—" else null
     val battery = state.bleBatteryPct
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Box(
@@ -562,8 +564,11 @@ private fun ZoneBar(currentZone: PowerZone?) {
 
 @Composable
 private fun StatsGrid(state: RideState, modifier: Modifier = Modifier) {
-    val hr = state.latestSample?.hrBpm
-    val hrAge = state.latestSample?.hrAgeMs
+    // v0.5.2 — prefer the BLE live BPM (beat-by-beat, sub-100ms latency)
+    // when a chest strap is streaming. Fall back to HC-batched HR otherwise.
+    val hr = state.bleLiveBpm ?: state.latestSample?.hrBpm
+    val hrAge = if (state.bleLiveBpm != null) 0L else state.latestSample?.hrAgeMs
+    val hrFromBle = state.bleLiveBpm != null
 
     Column(
         modifier = modifier
@@ -594,7 +599,13 @@ private fun StatsGrid(state: RideState, modifier: Modifier = Modifier) {
             left = Stat(
                 label = "HEART RATE",
                 value = hr?.toString() ?: "—",
-                unit = if (hr != null) freshnessLabel(hrAge) else "no live source",
+                // BLE samples are real-time, no need for "Xs ago" — show the
+                // source instead. HC samples keep the freshness label.
+                unit = when {
+                    hr == null -> "no live source"
+                    hrFromBle -> "strap"
+                    else -> freshnessLabel(hrAge) ?: "live"
+                },
                 accent = if (hr != null) UrujNeonMagenta else UrujMuted,
             ),
             // v0.3.7: 30s-checkpoint heartbeat. Lets the rider verify the
