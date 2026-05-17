@@ -17,6 +17,7 @@ import com.uruj.data.RideHistoryRepository
 import com.uruj.data.StoredRideSummary
 import com.uruj.service.RideRecorderService
 import com.uruj.service.RideStateHolder
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -146,6 +147,16 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // v0.6.0 — start 24/7 biometric service on app launch if user has
+        // toggled it on. Service is foreground + sticky, so once running it
+        // survives app close, screen off, and most OEM Doze. Reboot doesn't
+        // auto-resume (Android limit); next launch of URUJ re-starts it.
+        lifecycleScope.launch(Dispatchers.IO) {
+            val settings = com.uruj.data.BiometricSettingsStore(this@MainActivity).current()
+            if (settings.enabled) {
+                com.uruj.service.BiometricService.start(this@MainActivity)
+            }
+        }
         setContent {
             val rideState by RideStateHolder.state.collectAsStateWithLifecycle()
             val completed by RideStateHolder.completedRide.collectAsStateWithLifecycle()

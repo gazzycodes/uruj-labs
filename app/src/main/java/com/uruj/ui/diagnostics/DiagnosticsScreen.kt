@@ -205,9 +205,15 @@ fun DiagnosticsScreen(
             Spacer(Modifier.height(12.dp))
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                // v0.5.0 — BLE chest strap test panel at top so it's the first
-                // thing the rider sees in Diagnostics. Self-contained: holds
-                // its own BleHrSource lifecycle scoped to composition.
+                // v0.6.0 — 24/7 continuous monitoring toggle at the top.
+                // Sleep with strap on → wake with overnight data.
+                item(key = "continuous_monitor") {
+                    ContinuousMonitorCard()
+                    Spacer(Modifier.height(8.dp))
+                }
+                // v0.5.0 — BLE chest strap test panel below the 24/7 toggle.
+                // Self-contained: holds its own BleHrSource lifecycle scoped
+                // to composition.
                 item(key = "ble_strap_test") {
                     StrapTestCard()
                     Spacer(Modifier.height(8.dp))
