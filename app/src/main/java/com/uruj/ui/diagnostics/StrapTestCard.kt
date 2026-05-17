@@ -245,8 +245,18 @@ fun StrapTestCard() {
             Spacer(Modifier.height(10.dp))
         }
 
-        // Hide the redundant SCAN & PAIR section entirely when a strap is
-        // already paired — the TEST LIVE STREAM button above does the same job.
+        // v0.6.1 bug fix — when paired-but-not-streaming, the streaming view
+        // below would fall through and render the IDLE "..." placeholder.
+        // Now: hide everything below entirely unless actively streaming OR
+        // (unpaired AND showing the SCAN & PAIR prompt).
+        if (!streaming) {
+            if (pairedSnapshot != null) {
+                // Paired + not streaming → already showed everything in the
+                // PAIRED section above. Nothing more to render here.
+                return@Column
+            }
+            // Unpaired → show the SCAN & PAIR onboarding section below.
+        }
         if (!streaming && pairedSnapshot == null) {
             Text(
                 "Pair + subscribe to your chest strap (Magene H613 / Polar / Wahoo / CooSpo). " +
