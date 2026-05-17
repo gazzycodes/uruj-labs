@@ -23,6 +23,9 @@ URUJ Labs is a **sovereign-data Android app for serious endurance cyclists** who
 
 Built solo over a 36-hour push from 2026-05-10 to 2026-05-12. Validated on a 101 km century ride and a 45 km Kolkata loop, cross-checked against Strava + Samsung Health for accuracy.
 
+> **Full roadmap + version log + biohacker vision**: [`docs/PLAN.md`](docs/PLAN.md)
+> — every shipped version with rationale, queued versions (workout BLE → continuous biometric service → CAR / orthostatic / postprandial → power meter → CGM → custom sensors), data-fusion architecture, hardware ladder with costs. This is the actual build log — public, unredacted, no marketing.
+
 ---
 
 ## Three-tier user model
