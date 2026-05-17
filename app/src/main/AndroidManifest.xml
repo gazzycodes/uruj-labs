@@ -10,6 +10,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
+    <!-- v0.6.0: 24/7 continuous biometric service (BLE chest strap). Android 14+
+         requires this specific foreground service type for ongoing connections
+         to external devices. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
     <!-- Persistent ride notification on lock screen / AOD -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -110,6 +115,14 @@
             android:name=".service.RideRecorderService"
             android:exported="false"
             android:foregroundServiceType="location" />
+
+        <!-- v0.6.0: 24/7 continuous biometric foreground service. Maintains a
+             persistent BLE connection to the chest strap for sleep HRV, CAR,
+             postprandial response, stress events, etc. Independent of rides. -->
+        <service
+            android:name=".service.BiometricService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <!-- FileProvider for shareable summary images. Generates content:// URIs so
              WhatsApp / Instagram / etc. can read the JPG without us granting raw

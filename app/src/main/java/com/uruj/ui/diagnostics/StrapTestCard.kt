@@ -40,6 +40,7 @@ import com.uruj.data.BleSettingsStore
 import com.uruj.data.PairedStrap
 import com.uruj.sensor.HrSample
 import com.uruj.sensor.android.BleHrSource
+import com.uruj.sensor.android.StrapModels
 import kotlinx.coroutines.launch
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujMuted
@@ -165,9 +166,12 @@ fun StrapTestCard() {
                     letterSpacing = 1.5.sp,
                 )
                 Spacer(Modifier.height(4.dp))
-                val displayName = pairedSnapshot.model
-                    ?: pairedSnapshot.name
-                    ?: pairedSnapshot.address
+                // v0.6.0 — show friendly model name (e.g. "H613 (Magene)")
+                // instead of the cryptic internal SKU "340" the strap reports.
+                val displayName = StrapModels.friendlyName(
+                    manufacturer = pairedSnapshot.manufacturer,
+                    model = pairedSnapshot.model,
+                ) ?: pairedSnapshot.name ?: pairedSnapshot.address
                 Text(
                     text = displayName,
                     color = UrujText,
@@ -189,7 +193,36 @@ fun StrapTestCard() {
                     )
                 }
                 Spacer(Modifier.height(8.dp))
+                // v0.6.0 — when paired, replace the "SCAN & PAIR" button with
+                // "TEST LIVE STREAM" (direct-connect via saved MAC) + FORGET.
                 Row {
+                    Button(
+                        onClick = {
+                            // Permission gate same as fresh-pair flow.
+                            val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                arrayOf(
+                                    Manifest.permission.BLUETOOTH_SCAN,
+                                    Manifest.permission.BLUETOOTH_CONNECT,
+                                )
+                            } else {
+                                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+                            }
+                            permLauncher.launch(perms)
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = UrujAccent,
+                            contentColor = Color.Black,
+                        ),
+                    ) {
+                        Text(
+                            "TEST LIVE STREAM",
+                            fontWeight = FontWeight.Black,
+                            fontSize = 11.sp,
+                            letterSpacing = 1.5.sp,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
                     Button(
                         onClick = {
                             coScope.launch { bleStore.forget() }
@@ -212,7 +245,9 @@ fun StrapTestCard() {
             Spacer(Modifier.height(10.dp))
         }
 
-        if (!streaming) {
+        // Hide the redundant SCAN & PAIR section entirely when a strap is
+        // already paired — the TEST LIVE STREAM button above does the same job.
+        if (!streaming && pairedSnapshot == null) {
             Text(
                 "Pair + subscribe to your chest strap (Magene H613 / Polar / Wahoo / CooSpo). " +
                     "Tap below — URUJ will scan for any standards-compliant Bluetooth Heart Rate " +
