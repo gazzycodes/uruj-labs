@@ -42,17 +42,13 @@ import java.util.UUID
  * heartbeats since the last notification. RR intervals are the lab-grade signal
  * for true RMSSD HRV computation (per [[reference_magene_h613_capabilities]]).
  *
- * Behaviour:
- *   - Scan filters on 0x180D service UUID — only finds HR-capable devices
- *   - First device that responds becomes the active connection (manual pairing UI
- *     comes in v0.5.1 when there might be multiple straps available)
- *   - Connection auto-recovers on disconnect (5s back-off retry)
- *   - All BLE traffic logged verbose at Log.d level (lab-level rule 8 source
- *     provenance — every byte from the strap is traceable)
- *
- * The emitted samples carry source=BLE_CHEST_STRAP and contactDetected flag, so
- * downstream consumers (RideRecorderService, HRV calculators) can prioritize this
- * source over HC and surface contact-quality on the HUD.
+ * **Android BLE one-op-at-a-time quirk** — the Android Bluetooth stack only
+ * allows ONE outstanding GATT operation at a time; subsequent operations submitted
+ * while another is in flight silently return false. This source uses a chained
+ * state machine (Stage enum) where each GATT op completes via its callback and
+ * triggers the next via `requestNextStep`. Order:
+ *   onServicesDiscovered → READING_MANUFACTURER → READING_MODEL → READING_FIRMWARE
+ *   → READING_BATTERY_LEVEL → SUBSCRIBING_BATTERY → SUBSCRIBING_HR → READY
  */
 class BleHrSource(context: Context) {
 
@@ -80,6 +76,18 @@ class BleHrSource(context: Context) {
         val firmware: String? = null,
     )
 
+    /** Stages of the chained-setup state machine. */
+    private enum class Stage {
+        IDLE,
+        READING_MANUFACTURER,
+        READING_MODEL,
+        READING_FIRMWARE,
+        READING_BATTERY_LEVEL,
+        SUBSCRIBING_BATTERY,
+        SUBSCRIBING_HR,
+        READY,
+    }
+
     /**
      * Returns a flow of HR samples streaming from the first standards-compliant
      * BLE HR strap found in range. Starts scanning when collected, cancels and
@@ -87,8 +95,7 @@ class BleHrSource(context: Context) {
      *
      * Permission gate: if BLUETOOTH_SCAN / BLUETOOTH_CONNECT (Android 12+) or
      * ACCESS_FINE_LOCATION (Android <12) is missing, the flow closes immediately
-     * with the state set to ERROR. Pre-ride checklist surfaces this in the FIX
-     * action so the user grants and re-tries.
+     * with the state set to ERROR.
      */
     @SuppressLint("MissingPermission") // Permissions checked at flow entry
     fun samples(): Flow<HrSample> = callbackFlow {
@@ -140,7 +147,6 @@ class BleHrSource(context: Context) {
         }
 
         // Filter on standard HR Service UUID — only HR-capable devices show up.
-        // Any strap that exposes 0x180D will match: Magene, Polar, Wahoo, CooSpo, etc.
         val filter = ScanFilter.Builder()
             .setServiceUuid(ParcelUuid(HR_SERVICE))
             .build()
@@ -169,9 +175,10 @@ class BleHrSource(context: Context) {
     }
 
     /**
-     * Connects to the discovered device, walks Service Discovery, reads device
-     * info + battery, subscribes to HR Measurement notifications. Each parsed
-     * sample is delivered via `onSample`.
+     * Connects to the discovered device, walks Service Discovery, then chains
+     * GATT ops (device info reads → battery read → battery subscribe → HR
+     * subscribe) one at a time. Each completes via callback which advances
+     * stage and submits the next op via `requestNextStep`.
      *
      * Returns the active BluetoothGatt so the caller can disconnect on flow cancel.
      */
@@ -180,6 +187,110 @@ class BleHrSource(context: Context) {
         device: BluetoothDevice,
         onSample: (HrSample) -> Unit,
     ): BluetoothGatt? {
+        var stage: Stage = Stage.IDLE
+
+        fun requestNextStep(gatt: BluetoothGatt) {
+            when (stage) {
+                Stage.READING_MANUFACTURER -> {
+                    val c = gatt.getService(DEVICE_INFO_SERVICE)
+                        ?.getCharacteristic(MANUFACTURER_NAME)
+                    if (c == null) {
+                        Log.d(TAG, "[gatt] manufacturer characteristic missing, skip")
+                        stage = Stage.READING_MODEL
+                        requestNextStep(gatt)
+                        return
+                    }
+                    val ok = runCatching { gatt.readCharacteristic(c) }.getOrDefault(false)
+                    Log.d(TAG, "[gatt] readCharacteristic(MANUFACTURER) ok=$ok")
+                    if (!ok) { stage = Stage.READING_MODEL; requestNextStep(gatt) }
+                }
+                Stage.READING_MODEL -> {
+                    val c = gatt.getService(DEVICE_INFO_SERVICE)
+                        ?.getCharacteristic(MODEL_NUMBER)
+                    if (c == null) {
+                        stage = Stage.READING_FIRMWARE
+                        requestNextStep(gatt)
+                        return
+                    }
+                    val ok = runCatching { gatt.readCharacteristic(c) }.getOrDefault(false)
+                    Log.d(TAG, "[gatt] readCharacteristic(MODEL) ok=$ok")
+                    if (!ok) { stage = Stage.READING_FIRMWARE; requestNextStep(gatt) }
+                }
+                Stage.READING_FIRMWARE -> {
+                    val c = gatt.getService(DEVICE_INFO_SERVICE)
+                        ?.getCharacteristic(FIRMWARE_REV)
+                    if (c == null) {
+                        stage = Stage.READING_BATTERY_LEVEL
+                        requestNextStep(gatt)
+                        return
+                    }
+                    val ok = runCatching { gatt.readCharacteristic(c) }.getOrDefault(false)
+                    Log.d(TAG, "[gatt] readCharacteristic(FIRMWARE) ok=$ok")
+                    if (!ok) { stage = Stage.READING_BATTERY_LEVEL; requestNextStep(gatt) }
+                }
+                Stage.READING_BATTERY_LEVEL -> {
+                    val c = gatt.getService(BATTERY_SERVICE)
+                        ?.getCharacteristic(BATTERY_LEVEL)
+                    if (c == null) {
+                        Log.d(TAG, "[bat] battery service/characteristic missing")
+                        stage = Stage.SUBSCRIBING_HR
+                        requestNextStep(gatt)
+                        return
+                    }
+                    val ok = runCatching { gatt.readCharacteristic(c) }.getOrDefault(false)
+                    Log.d(TAG, "[gatt] readCharacteristic(BATTERY_LEVEL) ok=$ok")
+                    if (!ok) { stage = Stage.SUBSCRIBING_HR; requestNextStep(gatt) }
+                }
+                Stage.SUBSCRIBING_BATTERY -> {
+                    val c = gatt.getService(BATTERY_SERVICE)
+                        ?.getCharacteristic(BATTERY_LEVEL)
+                    if (c == null) {
+                        stage = Stage.SUBSCRIBING_HR
+                        requestNextStep(gatt)
+                        return
+                    }
+                    val cccd = c.getDescriptor(CCCD_UUID)
+                    if (cccd == null) {
+                        // Some straps expose battery as read-only — that's fine.
+                        Log.d(TAG, "[bat] no CCCD on battery — read-only ok")
+                        stage = Stage.SUBSCRIBING_HR
+                        requestNextStep(gatt)
+                        return
+                    }
+                    runCatching {
+                        gatt.setCharacteristicNotification(c, true)
+                        cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        gatt.writeDescriptor(cccd)
+                    }.onFailure {
+                        Log.w(TAG, "[bat] battery NOTIFY subscribe failed", it)
+                        stage = Stage.SUBSCRIBING_HR
+                        requestNextStep(gatt)
+                    }
+                }
+                Stage.SUBSCRIBING_HR -> {
+                    val service = gatt.getService(HR_SERVICE)
+                    val measurement = service?.getCharacteristic(HR_MEASUREMENT)
+                    if (measurement == null) {
+                        Log.w(TAG, "[gatt] HR Measurement char missing — bail")
+                        stage = Stage.READY
+                        return
+                    }
+                    val notifyOk = gatt.setCharacteristicNotification(measurement, true)
+                    Log.d(TAG, "[gatt] setCharacteristicNotification HR ok=$notifyOk")
+                    val cccd = measurement.getDescriptor(CCCD_UUID)
+                    if (cccd == null) {
+                        Log.w(TAG, "[gatt] CCCD missing on HR Measurement")
+                        stage = Stage.READY
+                        return
+                    }
+                    cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    val written = runCatching { gatt.writeDescriptor(cccd) }.getOrDefault(false)
+                    Log.d(TAG, "[gatt] HR CCCD write submitted=$written")
+                }
+                Stage.READY, Stage.IDLE -> { /* nothing to do */ }
+            }
+        }
+
         val callback = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                 Log.d(TAG, "[gatt] connection state change status=$status newState=$newState")
@@ -203,20 +314,15 @@ class BleHrSource(context: Context) {
                     Log.w(TAG, "[gatt] service discovery failed")
                     return
                 }
-
-                // Read Device Information (0x180A) — async via gatt callbacks.
-                readDeviceInfo(gatt)
-                // Read Battery Level (0x180F).
-                readBatteryLevel(gatt)
-                // Subscribe to HR Measurement notifications.
-                subscribeHrNotifications(gatt)
+                // Kick off the chained setup state machine.
+                stage = Stage.READING_MANUFACTURER
+                requestNextStep(gatt)
             }
 
             override fun onCharacteristicChanged(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic,
             ) {
-                // 0x2A37 notification — parse HR + RR intervals.
                 if (characteristic.uuid == HR_MEASUREMENT) {
                     val value = characteristic.value ?: return
                     val sample = parseHrMeasurement(value) ?: return
@@ -228,7 +334,7 @@ class BleHrSource(context: Context) {
                     onSample(sample)
                 } else if (characteristic.uuid == BATTERY_LEVEL) {
                     val level = characteristic.value?.firstOrNull()?.toInt()?.and(0xFF)
-                    Log.d(TAG, "[bat] battery level $level%")
+                    Log.d(TAG, "[bat] battery NOTIFY level=$level%")
                     _battery.value = level
                 }
             }
@@ -238,35 +344,53 @@ class BleHrSource(context: Context) {
                 characteristic: BluetoothGattCharacteristic,
                 status: Int,
             ) {
-                if (status != BluetoothGatt.GATT_SUCCESS) return
-                val v = characteristic.value ?: return
+                val ok = status == BluetoothGatt.GATT_SUCCESS
+                val v = characteristic.value
                 when (characteristic.uuid) {
-                    BATTERY_LEVEL -> {
-                        val level = v.firstOrNull()?.toInt()?.and(0xFF)
-                        Log.d(TAG, "[bat] initial battery $level%")
-                        _battery.value = level
-                        // Subscribe to battery NOTIFY if supported so we get updates.
-                        runCatching {
-                            gatt.setCharacteristicNotification(characteristic, true)
-                            val cccd = characteristic.getDescriptor(CCCD_UUID) ?: return@runCatching
-                            cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                            gatt.writeDescriptor(cccd)
-                        }
-                    }
                     MANUFACTURER_NAME -> {
-                        val s = v.toString(Charsets.UTF_8).trim(' ')
-                        Log.d(TAG, "[dev] manufacturer=$s")
-                        _deviceInfo.update { (it ?: DeviceInfo(device.nameSafe(), device.address)).copy(manufacturer = s) }
+                        if (ok && v != null) {
+                            val s = v.toString(Charsets.UTF_8).trim(' ')
+                            Log.d(TAG, "[dev] manufacturer=$s")
+                            _deviceInfo.update {
+                                (it ?: DeviceInfo(device.nameSafe(), device.address))
+                                    .copy(manufacturer = s)
+                            }
+                        }
+                        stage = Stage.READING_MODEL
+                        requestNextStep(gatt)
                     }
                     MODEL_NUMBER -> {
-                        val s = v.toString(Charsets.UTF_8).trim(' ')
-                        Log.d(TAG, "[dev] model=$s")
-                        _deviceInfo.update { (it ?: DeviceInfo(device.nameSafe(), device.address)).copy(model = s) }
+                        if (ok && v != null) {
+                            val s = v.toString(Charsets.UTF_8).trim(' ')
+                            Log.d(TAG, "[dev] model=$s")
+                            _deviceInfo.update {
+                                (it ?: DeviceInfo(device.nameSafe(), device.address))
+                                    .copy(model = s)
+                            }
+                        }
+                        stage = Stage.READING_FIRMWARE
+                        requestNextStep(gatt)
                     }
                     FIRMWARE_REV -> {
-                        val s = v.toString(Charsets.UTF_8).trim(' ')
-                        Log.d(TAG, "[dev] firmware=$s")
-                        _deviceInfo.update { (it ?: DeviceInfo(device.nameSafe(), device.address)).copy(firmware = s) }
+                        if (ok && v != null) {
+                            val s = v.toString(Charsets.UTF_8).trim(' ')
+                            Log.d(TAG, "[dev] firmware=$s")
+                            _deviceInfo.update {
+                                (it ?: DeviceInfo(device.nameSafe(), device.address))
+                                    .copy(firmware = s)
+                            }
+                        }
+                        stage = Stage.READING_BATTERY_LEVEL
+                        requestNextStep(gatt)
+                    }
+                    BATTERY_LEVEL -> {
+                        if (ok && v != null) {
+                            val level = v.firstOrNull()?.toInt()?.and(0xFF)
+                            Log.d(TAG, "[bat] initial battery $level%")
+                            _battery.value = level
+                        }
+                        stage = Stage.SUBSCRIBING_BATTERY
+                        requestNextStep(gatt)
                     }
                 }
             }
@@ -280,6 +404,17 @@ class BleHrSource(context: Context) {
                     TAG,
                     "[gatt] descriptor write ${descriptor.characteristic.uuid} status=$status",
                 )
+                // Advance state machine based on which CCCD write completed.
+                when (descriptor.characteristic.uuid) {
+                    BATTERY_LEVEL -> {
+                        stage = Stage.SUBSCRIBING_HR
+                        requestNextStep(gatt)
+                    }
+                    HR_MEASUREMENT -> {
+                        stage = Stage.READY
+                        Log.d(TAG, "[gatt] setup chain complete — notifications active")
+                    }
+                }
             }
         }
 
@@ -292,50 +427,6 @@ class BleHrSource(context: Context) {
         }.getOrNull()
     }
 
-    @SuppressLint("MissingPermission")
-    private fun subscribeHrNotifications(gatt: BluetoothGatt) {
-        val service = gatt.getService(HR_SERVICE)
-        if (service == null) {
-            Log.w(TAG, "[gatt] HR service 0x180D not found on connected device")
-            return
-        }
-        val measurement = service.getCharacteristic(HR_MEASUREMENT)
-        if (measurement == null) {
-            Log.w(TAG, "[gatt] HR Measurement 0x2A37 not found")
-            return
-        }
-        val ok = gatt.setCharacteristicNotification(measurement, true)
-        Log.d(TAG, "[gatt] setCharacteristicNotification HR ok=$ok")
-
-        val cccd = measurement.getDescriptor(CCCD_UUID)
-        if (cccd == null) {
-            Log.w(TAG, "[gatt] CCCD descriptor not found on 0x2A37")
-            return
-        }
-        cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-        val written = gatt.writeDescriptor(cccd)
-        Log.d(TAG, "[gatt] CCCD write for HR notifications submitted=$written")
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun readBatteryLevel(gatt: BluetoothGatt) {
-        val service = gatt.getService(BATTERY_SERVICE) ?: run {
-            Log.d(TAG, "[bat] battery service not exposed by device")
-            return
-        }
-        val level = service.getCharacteristic(BATTERY_LEVEL) ?: return
-        runCatching { gatt.readCharacteristic(level) }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun readDeviceInfo(gatt: BluetoothGatt) {
-        val service = gatt.getService(DEVICE_INFO_SERVICE) ?: return
-        listOf(MANUFACTURER_NAME, MODEL_NUMBER, FIRMWARE_REV).forEach { uuid ->
-            val c = service.getCharacteristic(uuid) ?: return@forEach
-            runCatching { gatt.readCharacteristic(c) }
-        }
-    }
-
     private fun hasPermissions(): Boolean {
         val ctx = appContext
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -344,8 +435,6 @@ class BleHrSource(context: Context) {
                 ContextCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_CONNECT) ==
                 PackageManager.PERMISSION_GRANTED
         } else {
-            // Pre-12 needs fine-location for BLE scanning + legacy bluetooth perms
-            // (declared in manifest with maxSdkVersion=30, granted at install).
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
         }
@@ -388,8 +477,6 @@ class BleHrSource(context: Context) {
          *   bytes 1..N: HR value (1 or 2 bytes)
          *   optional: Energy Expended (uint16 LE)
          *   optional: 1+ RR intervals as uint16 LE, units of 1/1024 seconds
-         *
-         * Returns null if buffer is malformed.
          */
         fun parseHrMeasurement(value: ByteArray): HrSample? {
             if (value.isEmpty()) return null
@@ -415,8 +502,7 @@ class BleHrSource(context: Context) {
             if (eePresent) idx += 2  // skip Energy Expended uint16
 
             val rrIntervalsMs = mutableListOf<Int>()
-            while (rrPresent && idx + 1 < value.size + 1 && idx + 1 < value.size) {
-                if (value.size < idx + 2) break
+            while (rrPresent && idx + 1 < value.size) {
                 val raw = (value[idx + 1].toInt() and 0xFF) shl 8 or (value[idx].toInt() and 0xFF)
                 // RR intervals are in 1/1024 second units. Convert to ms.
                 rrIntervalsMs += (raw * 1000) / 1024
@@ -426,7 +512,7 @@ class BleHrSource(context: Context) {
             val now = System.currentTimeMillis()
             return HrSample(
                 receivedAtMs = now,
-                measuredAtMs = now, // BLE notifications are real-time, no separate "measured at"
+                measuredAtMs = now,
                 bpm = hr,
                 rrIntervalsMs = rrIntervalsMs.toList(),
                 source = HrSample.Source.BLE_CHEST_STRAP,
