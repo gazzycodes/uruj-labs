@@ -23,4 +23,18 @@ data class RideSample(
     val hrBpm: Int? = null,
     val hrAgeMs: Long? = null,
     val isPaused: Boolean = false,
+    /**
+     * Beat-to-beat RR intervals (ms) from a BLE chest strap during this sample
+     * window. Empty when HR source is HC-batched or no HR available. Preserved
+     * here so post-ride / on-device RMSSD HRV computation can replay the
+     * authoritative per-beat data later. v0.5.1 introduction.
+     */
+    val rrIntervalsMs: List<Int> = emptyList(),
+    /**
+     * Source of the HR data for this sample (BLE_CHEST_STRAP / HC_BATCHED / null).
+     * Lets per-ride analysis know whether HRV is computable + how to weight
+     * accuracy. Stored as the string form of HrSample.Source for forward-compat
+     * if more sources are added later. v0.5.1 introduction.
+     */
+    val hrSource: String? = null,
 )

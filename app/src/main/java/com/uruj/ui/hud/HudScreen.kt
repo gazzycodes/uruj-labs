@@ -94,6 +94,12 @@ fun HudScreen(onStopRide: () -> Unit) {
                 .padding(horizontal = 20.dp, vertical = 12.dp),
         ) {
             HudTopBar(state)
+            // v0.5.1 — BLE chest strap row, only shown when a paired strap exists
+            // for this ride. Off-screen otherwise so non-strap users don't see clutter.
+            if (state.bleStrapName != null) {
+                Spacer(Modifier.height(2.dp))
+                StrapRow(state)
+            }
             Spacer(Modifier.height(4.dp))
             GpsRow(state)
             Spacer(Modifier.height(2.dp))
@@ -124,6 +130,77 @@ fun HudScreen(onStopRide: () -> Unit) {
         val announcedAt = state.prAnnouncedAtMs
         if (pr != null && announcedAt != null) {
             PrFlashOverlay(label = pr.label, watts = pr.watts.toInt())
+        }
+    }
+}
+
+@Composable
+private fun StrapRow(state: RideState) {
+    // v0.5.1 — BLE chest strap status. Shown only when a paired strap is
+    // configured. Three visual states:
+    //   CONNECTED + contact ✓ → green, shows BPM + battery
+    //   CONNECTED but no contact → amber, prompts "wet electrodes"
+    //   DISCONNECTED (paired but no live samples) → red, "OFFLINE"
+    val connected = state.bleConnected
+    val contact = state.bleContactDetected
+    val (label, color) = when {
+        !connected -> "STRAP · OFFLINE" to UrujZone5
+        contact == false -> "STRAP · NO CONTACT" to UrujZone3
+        else -> "STRAP" to UrujZone2
+    }
+    val live = state.latestSample?.takeIf { connected }
+    val bpm = if (connected) live?.hrBpm?.toString() ?: "—" else null
+    val battery = state.bleBatteryPct
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(color),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = label,
+            color = color,
+            fontWeight = FontWeight.Black,
+            fontSize = 9.sp,
+            letterSpacing = 1.5.sp,
+            maxLines = 1,
+        )
+        if (bpm != null) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = "$bpm bpm",
+                color = UrujText,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = 10.sp,
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        state.bleStrapName?.let {
+            Text(
+                text = it,
+                color = UrujMuted,
+                fontWeight = FontWeight.Medium,
+                fontSize = 9.sp,
+                maxLines = 1,
+            )
+        }
+        if (battery != null) {
+            Spacer(Modifier.width(6.dp))
+            val batColor = when {
+                battery >= 30 -> UrujMuted
+                battery >= 15 -> UrujZone3
+                else -> UrujZone5
+            }
+            Text(
+                text = "${battery}%",
+                color = batColor,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = 10.sp,
+            )
         }
     }
 }

@@ -29,7 +29,10 @@ import com.uruj.sensor.AccelerometerSample
 import com.uruj.sensor.BarometerSample
 import com.uruj.sensor.HrSample
 import com.uruj.sensor.LocationSample
+import com.uruj.data.BleSettingsStore
+import com.uruj.data.PairedStrap
 import com.uruj.sensor.android.AndroidHealthConnectHrSource
+import com.uruj.sensor.android.BleHrSource
 import com.uruj.sensor.android.FusedLocationSource
 import com.uruj.sensor.android.LinearAccelSource
 import com.uruj.sensor.android.PressureBarometerSource
@@ -59,6 +62,8 @@ class RideRecorderService : Service() {
     private val barometerSource by lazy { PressureBarometerSource(this) }
     private val accelSource by lazy { LinearAccelSource(this) }
     private val hrSource by lazy { AndroidHealthConnectHrSource(this) }
+    private val bleSource by lazy { BleHrSource(this) }
+    private val bleSettings by lazy { BleSettingsStore(this) }
     private val profileStore by lazy { RiderProfileStore(this) }
     private val historyRepo by lazy { RideHistoryRepository(this) }
     private val weatherClient by lazy { WeatherClient() }
@@ -464,11 +469,69 @@ class RideRecorderService : Service() {
             } catch (e: CancellationException) { throw e
             } catch (e: Throwable) { Log.w(TAG, "accel flow died", e) }
         }
+        // v0.5.1 — HR source priority registry. Both sources stream concurrently;
+        // BLE chest strap (ECG-precision, ~1Hz, real-time) WINS over Health
+        // Connect (batched, ~5s poll) whenever it has a sample within the
+        // freshness window. If BLE drops mid-ride, HC takes over within ~10s.
+        //
+        //   BLE_FRESHNESS_MS = 10s — BLE samples older than this lose priority.
+        //   On reconnect, BLE immediately resumes winning.
         launch {
             try {
-                hrSource.samples().collectLatest { latestHr = it }
+                hrSource.samples().collectLatest { sample ->
+                    val current = latestHr
+                    val now = System.currentTimeMillis()
+                    val bleFresh = current != null &&
+                        current.source == HrSample.Source.BLE_CHEST_STRAP &&
+                        (now - current.receivedAtMs) < BLE_FRESHNESS_MS
+                    if (!bleFresh) {
+                        // HC wins when BLE is absent or stale.
+                        latestHr = sample
+                    }
+                    // else: keep BLE — ignore this HC sample
+                }
             } catch (e: CancellationException) { throw e
-            } catch (e: Throwable) { Log.w(TAG, "HR flow died", e) }
+            } catch (e: Throwable) { Log.w(TAG, "HC HR flow died", e) }
+        }
+        // BLE flow — only starts if a paired strap exists in DataStore. The
+        // first ride after pairing uses the saved MAC for direct connect (no
+        // scan). Auto-reconnects via BleHrSource's internal retry on drop.
+        launch {
+            try {
+                val paired: PairedStrap? = bleSettings.current()
+                if (paired == null) {
+                    Log.d(TAG, "[ble] no paired strap — skipping BLE HR source for this ride")
+                    return@launch
+                }
+                // Seed the HUD badge label so the rider sees "STRAP · OFFLINE"
+                // (with name) immediately on ride start, even before BLE connects.
+                // Once samples arrive, bleConnected flips true.
+                val seedLabel = paired.model ?: paired.name ?: paired.address
+                RideStateHolder.update { it.copy(bleStrapName = seedLabel) }
+                Log.d(TAG, "[ble] direct-connecting to paired strap ${paired.address} ($seedLabel)")
+                bleSource.onPaired = { info ->
+                    // Touch last-connected on each successful (re)pairing.
+                    scope.launch { runCatching { bleSettings.touchLastConnected() } }
+                    // Make device info visible on HUD via RideState.
+                    RideStateHolder.update { it.copy(
+                        bleStrapName = info.model ?: info.name ?: paired.address,
+                    ) }
+                }
+                bleSource.samples(directAddress = paired.address).collectLatest { sample ->
+                    // BLE always wins — fresh by definition.
+                    latestHr = sample
+                    // Surface BLE state + battery on the HUD via RideState
+                    RideStateHolder.update { it.copy(
+                        bleConnected = true,
+                        bleBatteryPct = bleSource.battery.value,
+                        bleContactDetected = sample.contactDetected,
+                    ) }
+                }
+            } catch (e: CancellationException) { throw e
+            } catch (e: Throwable) {
+                Log.w(TAG, "BLE HR flow died — falling back to HC only", e)
+                RideStateHolder.update { it.copy(bleConnected = false) }
+            }
         }
 
         val notificationManager = getSystemService(NotificationManager::class.java)
@@ -612,6 +675,11 @@ class RideRecorderService : Service() {
                     hrBpm = latestHr?.bpm,
                     hrAgeMs = hrAgeMs,
                     isPaused = isPaused,
+                    // v0.5.1 — capture RR intervals + source provenance for HRV
+                    // computation. Empty list when source is HC (Fit Band 3
+                    // doesn't expose RR via Health Connect).
+                    rrIntervalsMs = latestHr?.rrIntervalsMs ?: emptyList(),
+                    hrSource = latestHr?.source?.name,
                 )
                 recorder.append(sample)
 
@@ -697,6 +765,8 @@ class RideRecorderService : Service() {
         // bound (Wahoo Roam uses similar). Tune if your real rides show consistent
         // genuine motion getting rejected at the wrong threshold.
         private const val GPS_ACCURACY_THRESHOLD_M = 25f
+        /** BLE HR samples older than this lose priority to Health Connect. v0.5.1. */
+        private const val BLE_FRESHNESS_MS = 10_000L
         const val ACTION_START = "com.uruj.action.START_RIDE"
         const val ACTION_STOP = "com.uruj.action.STOP_RIDE"
         /** Resume an interrupted ride. Must be paired with EXTRA_RESUME_SESSION_ID. */
