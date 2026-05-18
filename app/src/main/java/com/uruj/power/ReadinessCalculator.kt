@@ -146,8 +146,14 @@ class ReadinessCalculator {
      *   80+ ms = elite parasympathetic dominance
      *   50-80 ms = trained athlete range
      *   30-50 ms = average healthy adult
-     *   20-30 ms = below average — watch fatigue
-     *   <20 ms = severely suppressed (illness, overtraining)
+     *   20-30 ms = below athletic average
+     *   <20 ms = below athletic average — check trend
+     *
+     * IMPORTANT: these thresholds reference NATURAL-BREATHING overnight RMSSD.
+     * Paced-breathing morning readings (Elite HRV, HRV4Training) typically run
+     * 1.5-3× higher for the same person because forced ~5 breaths/min maximizes
+     * RSA amplitude. Don't cross-reference URUJ's number against a paced-breathing
+     * benchmark without that scaling. See methodology footer in Bio Lab.
      */
     private fun scoreHrv(today: Float?, baseline: Float?, daysOfData: Int): Pair<Int, String>? {
         if (today == null) return null

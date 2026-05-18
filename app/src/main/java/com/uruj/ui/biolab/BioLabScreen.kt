@@ -664,8 +664,8 @@ private fun AutonomicHealthCard(s: BioLabSnapshot) {
         rmssd >= 80f -> "Elite parasympathetic dominance ✓"
         rmssd >= 50f -> "Trained athlete range ✓"
         rmssd >= 30f -> "Average healthy adult range"
-        rmssd >= 20f -> "Below average — watch fatigue"
-        else -> "Severely suppressed — illness/overtraining likely"
+        rmssd >= 20f -> "Below athletic average"
+        else -> "Below athletic average — check trend"
     }
     BioCard("Autonomic HRV — beat-to-beat parasympathetic", accentColor = accent) {
         Row(verticalAlignment = Alignment.Bottom) {
@@ -762,11 +762,17 @@ private fun AutonomicHealthCard(s: BioLabSnapshot) {
         Spacer(Modifier.height(8.dp))
         Text(
             "RMSSD = √(mean of squared consecutive RR diffs). 5-min windowed " +
-                "(Task Force 1996 standard), median-aggregated. Filters: 300–2000 ms " +
-                "physiological range + timestamp-aware consecutive-beat check + 20% " +
-                "ectopic delta cap (Kubios). Real ECG data from Magene H613, NOT a " +
-                "PPG proxy. Athletic norms: <20 severe / 20-30 low / 30-50 average / " +
-                "50-80 trained / 80+ elite (Plews et al., Shaffer & Ginsberg 2017).",
+                "(Task Force 1996 standard), median-aggregated across natural " +
+                "overnight breathing. Filters: 300–2000 ms physiological range + " +
+                "timestamp-aware consecutive-beat check + 20% ectopic delta cap " +
+                "(Kubios). Real ECG data from Magene H613, NOT a PPG proxy. " +
+                "Athletic norms: <20 below / 20-30 low / 30-50 average / 50-80 " +
+                "trained / 80+ elite (Plews et al., Shaffer & Ginsberg 2017).\n\n" +
+                "Why this can differ from Elite HRV / morning seated readings: " +
+                "those use paced breathing (~5 breaths/min) which maximizes RSA " +
+                "and inflates RMSSD 1.5-3× over natural breathing. URUJ measures " +
+                "your actual overnight autonomic state, not a paced-breathing peak. " +
+                "Both are valid — they answer different questions.",
             color = UrujMuted, fontSize = 10.sp,
         )
     }

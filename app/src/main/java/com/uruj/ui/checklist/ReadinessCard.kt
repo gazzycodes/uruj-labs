@@ -445,8 +445,8 @@ private fun reasonFor(label: String, score: Int, detail: String): String = when 
                 score >= 100 -> "elite parasympathetic dominance ✓"
                 score >= 90 -> "trained athlete range ✓"
                 score >= 75 -> "average healthy adult range"
-                score >= 50 -> "below average — watch fatigue"
-                else -> "severely suppressed — illness/overtraining likely"
+                score >= 50 -> "below athletic average"
+                else -> "below athletic average — check trend after a week"
             }
             else -> when {
                 score >= 90 -> "autonomic system primed ✓"
@@ -636,18 +636,32 @@ private fun HrvInfo(component: ReadinessComponent?) {
             "1. Reconstruct beat timestamps from each BLE notification\n" +
             "2. Split data into 5-minute windows (Task Force 1996 standard)\n" +
             "3. Per window: filter physiological 300-2000 ms RR, drop pairs " +
-            "with >20% delta (ectopic), require ≥60 clean consecutive-pair diffs\n" +
+            "with >20% delta (ectopic), require ≥30 clean consecutive-pair diffs\n" +
             "4. Compute RMSSD per window, take median across valid windows\n\n" +
             "Same methodology Polar / Kubios / EliteHRV / HRV4Training use. " +
-            "NOT a PPG proxy. NOT a std-dev hack.",
+            "NOT a PPG proxy. NOT a std-dev hack. Natural overnight breathing — " +
+            "not a paced-breathing peak measurement.",
     )
     InfoSection(
         "Reference ranges (athletic norms)",
         "80+ ms — Elite parasympathetic dominance\n" +
             "50-80 ms — Trained athlete range\n" +
             "30-50 ms — Average healthy adult\n" +
-            "20-30 ms — Below average, watch fatigue\n" +
-            "<20 ms — Severely suppressed (illness / overtraining likely)",
+            "20-30 ms — Below athletic average\n" +
+            "<20 ms — Below athletic average — check trend",
+    )
+    InfoSection(
+        "Why this differs from Elite HRV / morning readings",
+        "Apps that measure morning seated HRV (Elite HRV, HRV4Training, Whoop " +
+            "spot reads) use PACED BREATHING — they tell you 'breathe in / breathe " +
+            "out' at ~5 breaths per minute. That maximizes Respiratory Sinus " +
+            "Arrhythmia and inflates RMSSD 1.5-3× over natural breathing for the " +
+            "SAME person.\n\n" +
+            "URUJ measures your actual overnight autonomic state with natural " +
+            "breathing during sleep. If Elite HRV gives you 25 ms and URUJ gives " +
+            "you 12 ms on the same body — neither is wrong. They answer different " +
+            "questions: 'maximum vagal capacity when forced' vs 'autonomic state " +
+            "while you sleep.'",
     )
     InfoSection(
         "Baseline building period",
