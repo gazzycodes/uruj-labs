@@ -340,7 +340,7 @@ class BioLabRepository(context: Context) {
             sorted[sorted.size / 2]
         }
         val medianHrrClassification: String? = medianHrr1Bpm?.let { classifyHrr1Bpm(it) }
-        val hrrSourceBreakdown: Map<SensorSource, Int> =
+        val hrrSourceBreakdown: Map<com.uruj.domain.SensorSource, Int> =
             allHrrSamples.groupingBy { it.source }.eachCount()
 
         val hrr1AthleteContext = computeHrr1AthleteContext(medianHrr1Bpm, vo2.classification)
