@@ -140,6 +140,7 @@ private sealed interface AppScreen {
     data object History : AppScreen
     data object Diagnostics : AppScreen
     data object BioLab : AppScreen
+    data object OrthostaticTest : AppScreen
     data class ViewingPastRide(val summary: StoredRideSummary) : AppScreen
 }
 
@@ -267,6 +268,10 @@ class MainActivity : ComponentActivity() {
                         )
                         AppScreen.BioLab -> BioLabScreen(
                             onBack = { screen = AppScreen.Checklist },
+                            onOpenOrthostatic = { screen = AppScreen.OrthostaticTest },
+                        )
+                        AppScreen.OrthostaticTest -> com.uruj.ui.orthostatic.OrthostaticTestScreen(
+                            onBack = { screen = AppScreen.BioLab },
                         )
                         is AppScreen.ViewingPastRide -> RideSummaryScreen(
                             state = current.summary.toRideState(),

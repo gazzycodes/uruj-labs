@@ -26,8 +26,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.produceState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,6 +63,7 @@ import com.uruj.ui.theme.UrujZone5
 @Composable
 fun BioLabScreen(
     onBack: () -> Unit,
+    onOpenOrthostatic: () -> Unit = {},
     viewModel: BioLabViewModel = viewModel(),
 ) {
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -162,6 +167,14 @@ fun BioLabScreen(
             if (s.autonomicRmssdMs != null) {
                 item("autonomic_header") { SectionHeader("Autonomic Health") }
                 item("autonomic_card") { AutonomicHealthCard(s) }
+            }
+
+            // v0.7.1 — Lab tests section. Manual rituals that produce new
+            // autonomic snapshots on demand. Each test reads from the 24/7
+            // NDJSON for its own window.
+            item("tests_header") { SectionHeader("Lab tests") }
+            item("orthostatic_card") {
+                OrthostaticTestLauncherCard(onStart = onOpenOrthostatic)
             }
 
             // Everything else lives in Samsung Health where it's shown better.
@@ -775,5 +788,262 @@ private fun AutonomicHealthCard(s: BioLabSnapshot) {
                 "Both are valid — they answer different questions.",
             color = UrujMuted, fontSize = 10.sp,
         )
+    }
+}
+
+/**
+ * v0.7.1 — launcher card for the manual orthostatic test ritual.
+ * Shows the most-recent saved test result inline + a START button to take
+ * a fresh reading. Reads history from OrthostaticTestRepository on first
+ * composition.
+ */
+@Composable
+private fun OrthostaticTestLauncherCard(onStart: () -> Unit) {
+    val context = LocalContext.current
+    val repo = androidx.compose.runtime.remember {
+        com.uruj.data.OrthostaticTestRepository(context)
+    }
+    val calc = androidx.compose.runtime.remember {
+        com.uruj.power.OrthostaticTestCalculator()
+    }
+    var allReadings by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf<List<com.uruj.domain.OrthostaticTestResult>>(emptyList())
+    }
+    LaunchedEffect(Unit) {
+        allReadings = withContext(kotlinx.coroutines.Dispatchers.IO) { repo.listAll() }
+    }
+    val latest = allReadings.firstOrNull()
+    var showInfo by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    val interpretation = latest?.let { calc.interpret(it) }
+    val tierAccent = interpretation?.let { tierColorForLauncher(it.overallTier) } ?: UrujAccent
+    BioCard("Orthostatic test — sit→stand autonomic snapshot", accentColor = tierAccent) {
+        // Title row with info icon
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.weight(1f))
+            androidx.compose.material3.TextButton(
+                onClick = { showInfo = true },
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp),
+            ) {
+                Text(
+                    "ⓘ",
+                    color = UrujMuted,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+        if (latest == null) {
+            Text(
+                "No reading yet. The 4-minute protocol gives you a second " +
+                    "autonomic signal alongside overnight HRV — catches acute " +
+                    "fatigue faster than the chronic overnight number does.",
+                color = UrujText, fontSize = 12.sp,
+            )
+        } else {
+            val r = latest
+            Text(
+                interpretation?.summary ?: "",
+                color = tierAccent,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    "${"%.0f".format(r.hrDeltaBpm)}",
+                    color = UrujText,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 36.sp,
+                )
+                Spacer(Modifier.width(4.dp))
+                Column(modifier = Modifier.padding(bottom = 8.dp)) {
+                    Text("bpm HR delta", color = UrujMuted, fontSize = 10.sp)
+                    Text(
+                        "RMSSD ratio %.2f".format(r.rmssdRatio),
+                        color = UrujMuted, fontSize = 10.sp,
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                interpretationHint(r, interpretation),
+                color = UrujText.copy(alpha = 0.85f),
+                fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(6.dp))
+            val sinceText = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(r.startedAtMs))
+            val countText = if (allReadings.size == 1) "1 reading" else "${allReadings.size} readings"
+            Text(
+                "Captured $sinceText · $countText on disk",
+                color = UrujMuted, fontSize = 10.sp,
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        androidx.compose.material3.Button(
+            onClick = onStart,
+            modifier = Modifier.fillMaxWidth(),
+            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                containerColor = UrujAccent,
+            ),
+        ) {
+            Text(
+                if (latest == null) "TAKE FIRST READING" else "TAKE NEW READING",
+                color = Color.Black,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 1.5.sp,
+            )
+        }
+    }
+    if (showInfo) {
+        OrthostaticInfoDialog(
+            latest = latest,
+            interpretation = interpretation,
+            onDismiss = { showInfo = false },
+        )
+    }
+}
+
+/**
+ * Bands-tier color for the launcher card title accent + tier-label color.
+ */
+private fun tierColorForLauncher(tier: com.uruj.domain.AutonomicTier): Color = when (tier) {
+    com.uruj.domain.AutonomicTier.ELITE -> UrujZone1
+    com.uruj.domain.AutonomicTier.HEALTHY -> UrujZone2
+    com.uruj.domain.AutonomicTier.MODERATE_STRAIN -> UrujZone3
+    com.uruj.domain.AutonomicTier.SIGNIFICANT_STRAIN -> UrujZone4
+    com.uruj.domain.AutonomicTier.SEVERE_STRAIN -> UrujZone5
+}
+
+/**
+ * Plain-English nuance line tailored to the actual numbers. Surfaces edge
+ * cases (high ratio at low absolute RMSSD = possible noise floor) that the
+ * tier-label-only view would hide.
+ */
+private fun interpretationHint(
+    r: com.uruj.domain.OrthostaticTestResult,
+    i: com.uruj.domain.OrthostaticInterpretation?,
+): String {
+    if (i == null) return ""
+    // Flag when both RMSSD values are very low — ratio comparison gets noisy
+    // at the strap's effective resolution floor.
+    val bothLow = r.seatedRmssdMs < 20f && r.standingRmssdMs < 20f
+    val tierLine = when (i.overallTier) {
+        com.uruj.domain.AutonomicTier.ELITE ->
+            "Body absorbed the postural challenge cleanly. Minimal HR climb + preserved vagal tone — elite autonomic flexibility."
+        com.uruj.domain.AutonomicTier.HEALTHY ->
+            "Acute autonomic reflex is intact. HR climbed appropriately on standing without over-reacting."
+        com.uruj.domain.AutonomicTier.MODERATE_STRAIN ->
+            "Body is straining to absorb the postural change. Consistent with recent training load — rest is the play."
+        com.uruj.domain.AutonomicTier.SIGNIFICANT_STRAIN ->
+            "Significant autonomic strain. HR over-reacts and/or RMSSD collapses on standing — body is in deep recovery debt."
+        com.uruj.domain.AutonomicTier.SEVERE_STRAIN ->
+            "Severe autonomic strain — over-reaching territory. Skip training today, prioritize sleep + nutrition."
+    }
+    val noiseNote = if (bothLow) " (Both RMSSD values are low — ratio comparison is near the strap's resolution floor; trust the HR-delta tier more than the ratio.)" else ""
+    return tierLine + noiseNote
+}
+
+@Composable
+private fun OrthostaticInfoDialog(
+    latest: com.uruj.domain.OrthostaticTestResult?,
+    interpretation: com.uruj.domain.OrthostaticInterpretation?,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) {
+                Text("CLOSE", color = UrujAccent, fontWeight = FontWeight.Bold)
+            }
+        },
+        title = {
+            Text("Orthostatic test", color = UrujText, fontWeight = FontWeight.Black, fontSize = 18.sp)
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                InfoBlock(
+                    "What it is",
+                    "A 4-minute sit→stand protocol measuring how your autonomic " +
+                        "nervous system responds to a sharp posture change. Standing " +
+                        "requires parasympathetic tone to drop and sympathetic tone " +
+                        "to rise — your HR climbs, your HRV falls. The SIZE of those " +
+                        "shifts tells you how fatigued / recovered you actually are.",
+                )
+                InfoBlock(
+                    "Why cyclists care",
+                    "Overnight HRV is a CHRONIC signal — slow to respond, weeks-long " +
+                        "trend. The orthostatic test is an ACUTE signal — same-day " +
+                        "snapshot of autonomic strain. Together they bracket your " +
+                        "state: a healthy orthostatic with suppressed overnight HRV " +
+                        "= classic early over-reach (acute reflex intact, baseline " +
+                        "depleted). Both impaired = deep recovery debt.",
+                )
+                InfoBlock(
+                    "How URUJ computes it",
+                    "Strap stays on through the 4-min ritual. 24/7 BiometricService " +
+                        "writes RR intervals to NDJSON throughout. After capture we " +
+                        "slice the file by phase timestamps and compute:\n\n" +
+                        "• Mean HR seated + standing\n" +
+                        "• RMSSD seated + standing (Kubios-style ectopic filter, " +
+                        "physiological 300-2000 ms range, NO timestamp filter — " +
+                        "continuous strap-on capture is consecutive by construction)\n" +
+                        "• HR delta = standing − seated\n" +
+                        "• RMSSD ratio = standing / seated",
+                )
+                InfoBlock(
+                    "Reference ranges",
+                    "HR delta tiers (Klivington 1995, Plews et al.):\n" +
+                        "  <10 bpm   Elite autonomic flexibility\n" +
+                        "  10-15 bpm Healthy response\n" +
+                        "  15-25 bpm Moderate strain\n" +
+                        "  25-35 bpm Significant strain\n" +
+                        "  35+ bpm   Severe — overreaching\n\n" +
+                        "RMSSD ratio tiers:\n" +
+                        "  ≥0.4 Healthy\n" +
+                        "  0.3-0.4 Moderate suppression on stand\n" +
+                        "  0.2-0.3 Significant\n" +
+                        "  <0.2 Severe parasympathetic suppression",
+                )
+                InfoBlock(
+                    "Honest caveats",
+                    "• One reading is a snapshot. The TREND across days matters " +
+                        "more than any single value.\n" +
+                        "• RMSSD ratio above 0.85 can mean either elite vagal " +
+                        "preservation OR low-signal noise at the strap's resolution " +
+                        "floor. When both RMSSD values are <20 ms, trust HR delta " +
+                        "more than ratio.\n" +
+                        "• Same-time-of-day testing matters — diurnal autonomic tone " +
+                        "varies. Pick a consistent slot (e.g. morning post-pee, " +
+                        "before caffeine).\n" +
+                        "• Caffeine, anxiety, recent movement, dehydration all skew " +
+                        "the test. Sit 5+ min before STARTing.",
+                )
+                if (latest != null && interpretation != null) {
+                    InfoBlock(
+                        "For YOU right now",
+                        "Reading: ${"%.0f".format(latest.hrDeltaBpm)} bpm HR delta · " +
+                            "%.2f RMSSD ratio\n".format(latest.rmssdRatio) +
+                            "Tier: ${interpretation.summary}\n" +
+                            "Seated RMSSD: ${"%.1f".format(latest.seatedRmssdMs)} ms · " +
+                            "Standing: ${"%.1f".format(latest.standingRmssdMs)} ms",
+                    )
+                }
+            }
+        },
+        containerColor = UrujSurface,
+    )
+}
+
+@Composable
+private fun InfoBlock(title: String, body: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            title.uppercase(),
+            color = UrujAccent,
+            fontWeight = FontWeight.Black,
+            fontSize = 10.sp,
+            letterSpacing = 1.2.sp,
+        )
+        Text(body, color = UrujText, fontSize = 12.sp)
     }
 }
