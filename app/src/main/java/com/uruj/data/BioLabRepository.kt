@@ -218,9 +218,11 @@ class BioLabRepository(context: Context) {
             hrr1Classification = hrr?.medianClassification,
             hrr1SampleCount = hrr?.samples?.size ?: 0,
             hrr1AthleteContext = hrr1AthleteContext,
+            // v0.7.4: expose ALL qualifying samples (was just top 3) so the
+            // HRR1 trend screen has the full 30d history. UI inline list
+            // still .take(3) at the call site.
             hrr1RecentSamples = hrr?.samples
                 ?.sortedByDescending { it.sessionEnd }
-                ?.take(3)
                 ?.map {
                     HrrSample(
                         endTimeMs = it.sessionEnd.toEpochMilli(),

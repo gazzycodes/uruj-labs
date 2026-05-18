@@ -67,6 +67,9 @@ fun BioLabScreen(
     onBack: () -> Unit,
     onOpenOrthostatic: () -> Unit = {},
     onOpenHrvTrend: () -> Unit = {},
+    onOpenHrr1Trend: () -> Unit = {},
+    onOpenCarTrend: () -> Unit = {},
+    onOpenOrthostaticTrend: () -> Unit = {},
     viewModel: BioLabViewModel = viewModel(),
 ) {
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -156,7 +159,7 @@ fun BioLabScreen(
             // Cycling-training metrics — what URUJ uniquely computes
             item("vo2") { Vo2MaxCard(s) }
             if (s.hrr1Median != null) {
-                item("hrr1") { HrRecoveryCard(s) }
+                item("hrr1") { HrRecoveryCard(s, onSeeTrend = onOpenHrr1Trend) }
             }
 
             item("cardio_header") { SectionHeader("Cardiovascular") }
@@ -176,7 +179,9 @@ fun BioLabScreen(
             // 24/7 NDJSON + last SleepSessionRecord. Card hides until ~45 min
             // post-wake when the window is complete.
             if (s.carResult != null && s.carInterpretation != null) {
-                item("car_card") { CarCard(s.carResult, s.carInterpretation) }
+                item("car_card") {
+                    CarCard(s.carResult, s.carInterpretation, onSeeTrend = onOpenCarTrend)
+                }
             }
 
             // v0.7.1 — Lab tests section. Manual rituals that produce new
@@ -184,7 +189,10 @@ fun BioLabScreen(
             // NDJSON for its own window.
             item("tests_header") { SectionHeader("Lab tests") }
             item("orthostatic_card") {
-                OrthostaticTestLauncherCard(onStart = onOpenOrthostatic)
+                OrthostaticTestLauncherCard(
+                    onStart = onOpenOrthostatic,
+                    onSeeTrend = onOpenOrthostaticTrend,
+                )
             }
 
             // Everything else lives in Samsung Health where it's shown better.
@@ -358,7 +366,7 @@ private fun Vo2MaxCard(s: BioLabSnapshot) {
 }
 
 @Composable
-private fun HrRecoveryCard(s: BioLabSnapshot) {
+private fun HrRecoveryCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
     val drop = s.hrr1Median ?: return
     // Color the hero number by the cardiology-grade band.
     val accent = when {
@@ -423,7 +431,7 @@ private fun HrRecoveryCard(s: BioLabSnapshot) {
                 // when more rides exist — keeps card compact while signaling
                 // that the median uses the full set, not just these 3.
                 val totalCount = s.hrr1SampleCount
-                val shownCount = s.hrr1RecentSamples.size
+                val shownCount = minOf(3, s.hrr1RecentSamples.size)
                 val header = if (totalCount > shownCount) {
                     "$shownCount LATEST OF $totalCount QUALIFYING RIDES"
                 } else {
@@ -437,7 +445,7 @@ private fun HrRecoveryCard(s: BioLabSnapshot) {
                     letterSpacing = 1.sp,
                 )
                 Spacer(Modifier.height(4.dp))
-                s.hrr1RecentSamples.forEach { sample ->
+                s.hrr1RecentSamples.take(3).forEach { sample ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             formatHrrSampleDate(sample.endTimeMs),
@@ -469,6 +477,14 @@ private fun HrRecoveryCard(s: BioLabSnapshot) {
                 "Lower drop → higher all-cause mortality risk independent of VO₂ max.",
             color = UrujMuted, fontSize = 10.sp,
         )
+        Spacer(Modifier.height(10.dp))
+        TextButton(onClick = onSeeTrend, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "SEE TREND →",
+                color = UrujAccent, fontWeight = FontWeight.Black,
+                fontSize = 12.sp, letterSpacing = 1.5.sp,
+            )
+        }
     }
 }
 
@@ -829,6 +845,7 @@ private fun AutonomicHealthCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) 
 private fun CarCard(
     car: com.uruj.domain.CarResult,
     interp: com.uruj.domain.CarInterpretation,
+    onSeeTrend: () -> Unit = {},
 ) {
     var showInfo by androidx.compose.runtime.remember {
         androidx.compose.runtime.mutableStateOf(false)
@@ -907,6 +924,14 @@ private fun CarCard(
                 "HC sleep window — NOT salivary cortisol (the lab-gold standard).",
             color = UrujMuted, fontSize = 10.sp,
         )
+        Spacer(Modifier.height(10.dp))
+        TextButton(onClick = onSeeTrend, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "SEE TREND →",
+                color = UrujAccent, fontWeight = FontWeight.Black,
+                fontSize = 12.sp, letterSpacing = 1.5.sp,
+            )
+        }
     }
     if (showInfo) {
         CarInfoDialog(car = car, interpretation = interp, onDismiss = { showInfo = false })
@@ -1026,7 +1051,10 @@ private fun CarInfoDialog(
  * composition.
  */
 @Composable
-private fun OrthostaticTestLauncherCard(onStart: () -> Unit) {
+private fun OrthostaticTestLauncherCard(
+    onStart: () -> Unit,
+    onSeeTrend: () -> Unit = {},
+) {
     val context = LocalContext.current
     val repo = androidx.compose.runtime.remember {
         com.uruj.data.OrthostaticTestRepository(context)
@@ -1120,6 +1148,16 @@ private fun OrthostaticTestLauncherCard(onStart: () -> Unit) {
                 fontWeight = FontWeight.Black,
                 letterSpacing = 1.5.sp,
             )
+        }
+        // v0.7.4: only surface trend link once at least one reading is saved.
+        if (latest != null && allReadings.isNotEmpty()) {
+            TextButton(onClick = onSeeTrend, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "SEE TREND →",
+                    color = UrujAccent, fontWeight = FontWeight.Black,
+                    fontSize = 12.sp, letterSpacing = 1.5.sp,
+                )
+            }
         }
     }
     if (showInfo) {
