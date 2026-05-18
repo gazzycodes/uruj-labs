@@ -66,6 +66,7 @@ import com.uruj.ui.theme.UrujZone5
 fun BioLabScreen(
     onBack: () -> Unit,
     onOpenOrthostatic: () -> Unit = {},
+    onOpenHrvTrend: () -> Unit = {},
     viewModel: BioLabViewModel = viewModel(),
 ) {
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -168,7 +169,7 @@ fun BioLabScreen(
             // has captured RR data. RMSSD / SDNN / pNN50 from BLE chest strap.
             if (s.autonomicRmssdMs != null) {
                 item("autonomic_header") { SectionHeader("Autonomic Health") }
-                item("autonomic_card") { AutonomicHealthCard(s) }
+                item("autonomic_card") { AutonomicHealthCard(s, onSeeTrend = onOpenHrvTrend) }
             }
 
             // v0.7.2 — CAR (Cortisol Awakening Response). Auto-resolved from
@@ -667,7 +668,7 @@ private fun formatHrrSampleDate(ms: Long): String = hrrSampleDateFmt.format(Date
  * visible so the rider can audit the number.
  */
 @Composable
-private fun AutonomicHealthCard(s: BioLabSnapshot) {
+private fun AutonomicHealthCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
     val rmssd = s.autonomicRmssdMs ?: return
     // Color-code RMSSD by athletic-tier ranges. Norms from Plews et al.
     // (elite cyclist HRV) + Shaffer & Ginsberg 2017 (general adult HRV):
@@ -797,6 +798,21 @@ private fun AutonomicHealthCard(s: BioLabSnapshot) {
                 "Both are valid — they answer different questions.",
             color = UrujMuted, fontSize = 10.sp,
         )
+        Spacer(Modifier.height(10.dp))
+        // v0.7.3 — deep-view trend chart link. Becomes useful day 3+ as
+        // nightly readings accumulate.
+        TextButton(
+            onClick = onSeeTrend,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                "SEE TREND →",
+                color = UrujAccent,
+                fontWeight = FontWeight.Black,
+                fontSize = 12.sp,
+                letterSpacing = 1.5.sp,
+            )
+        }
     }
 }
 
