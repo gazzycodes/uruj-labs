@@ -211,6 +211,13 @@ fun DiagnosticsScreen(
                     ContinuousMonitorCard()
                     Spacer(Modifier.height(8.dp))
                 }
+                // v0.7.8 — dual-sensor wear-time card. Shows today's coverage
+                // for BOTH chest strap (BLE NDJSON) and Samsung band (HC HR
+                // samples) plus the combined union — the redundancy metric.
+                item(key = "wear_time") {
+                    WearTimeCard()
+                    Spacer(Modifier.height(8.dp))
+                }
                 // v0.5.0 — BLE chest strap test panel below the 24/7 toggle.
                 // Self-contained: holds its own BleHrSource lifecycle scoped
                 // to composition.
