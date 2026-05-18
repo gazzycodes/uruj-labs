@@ -263,29 +263,34 @@ class ReadinessRepository(context: Context) {
         //   1. HC direct record (rare on Fit Band 3, never on Magene-only setup)
         //   2. URUJ-computed RMSSD from BLE NDJSON (THIS path is the new win)
         //   3. null — HRV component drops from Readiness score
+        // v0.7.0 follow-up — count of days with valid overnight HRV in last 7
+        // days. ReadinessCalculator uses this to switch between absolute-tier
+        // scoring (1-6 days, no real baseline yet) and ratio-vs-baseline
+        // scoring (7+ days, stable baseline). Fixes day-1 "+0%" artifact.
+        var hrvDaysOfDataIn7d = 0
         if (hrvToday == null) {
-            // Try to use the last sleep window for the cleanest signal
+            // Try the last sleep window for cleanest signal; fall back to
+            // rolling 8h overnight proxy when no sleep data available.
             val sleepWindow = lastSleepReader.read(client, granted)
             val (start, end) = if (sleepWindow != null) {
                 sleepWindow.startedAt to sleepWindow.endedAt
             } else {
-                // No sleep data → use rolling last 8h as the overnight proxy
                 now.minus(java.time.Duration.ofHours(8)) to now
             }
             val computedHrv = continuousBiometric.computeHrvForWindow(start, end)
             if (computedHrv != null) {
                 hrvToday = computedHrv.rmssdMs
                 hrvSource = "ble_strap"
-                // Baseline = median of last 7 nights from continuous NDJSON.
-                // Only one night so far on first capture day → baseline ≈ today.
+                // Count days of overnight HRV data — drives scoring mode.
                 val recentNights = continuousBiometric.dailyOvernightHrvHistory(7)
+                hrvDaysOfDataIn7d = recentNights.size
                 if (recentNights.size >= 2) {
                     val sorted = recentNights.map { it.hrv.rmssdMs }.sorted()
                     hrvBaseline = sorted[sorted.size / 2]
-                } else if (recentNights.size == 1) {
-                    // Single night → baseline = today, so ratio = 1.0 (neutral)
-                    hrvBaseline = computedHrv.rmssdMs
                 }
+                // Note: when recentNights.size < 2 we leave hrvBaseline = null.
+                // ReadinessCalculator will use absolute-tier scoring instead of
+                // computing a meaningless "+0% vs same value" ratio.
             }
         }
 
@@ -302,6 +307,7 @@ class ReadinessRepository(context: Context) {
                 restingHrToday = rhrToday,
                 restingHrBaseline7d = rhrBaseline,
                 trainingStressBalance = computeTsb(client, granted, rhrForLoad),
+                hrvDaysOfDataIn7d = hrvDaysOfDataIn7d,
             ),
             rhrSource,
             hrvSource,

@@ -173,7 +173,10 @@ class BioLabRepository(context: Context) {
         }
         val autonomicHrv = continuousBiometric.computeHrvForWindow(hrvWindowStart, hrvWindowEnd)
         val autonomicSampleCount = autonomicHrv?.sampleCount ?: 0
+        val autonomicWindowCount = autonomicHrv?.windowCount ?: 0
         val autonomicWindowLabel = if (sleepWindow != null) "last sleep" else "last 24h"
+        // Count days of overnight HRV captured — drives "baseline building" UX
+        val autonomicDaysOfData = continuousBiometric.daysWithOvernightHrvIn(7)
 
         BioLabSnapshot(
             computedAtMs = System.currentTimeMillis(),
@@ -221,6 +224,8 @@ class BioLabRepository(context: Context) {
             autonomicMeanHrBpm = autonomicHrv?.meanHrBpm,
             autonomicSampleCount = autonomicSampleCount,
             autonomicWindowLabel = autonomicWindowLabel,
+            autonomicWindowCount = autonomicWindowCount,
+            autonomicDaysOfData = autonomicDaysOfData,
         )
     }
 
@@ -420,6 +425,13 @@ data class BioLabSnapshot(
     val autonomicSampleCount: Int = 0,
     /** Human label of the window the HRV was computed over: "last sleep" or "last 24h". */
     val autonomicWindowLabel: String = "",
+    /** Number of 5-min sub-windows the windowed RMSSD was aggregated over.
+     *  ≥3 required for a valid result (HrvCalculator.MIN_WINDOWS). Surfaces
+     *  on UI as "median of N windows" so the rider sees the methodology. */
+    val autonomicWindowCount: Int = 0,
+    /** Days of overnight HRV captured in last 7 days. Drives baseline-building
+     *  UX: <7 days → show "baseline building" notice on the Autonomic card. */
+    val autonomicDaysOfData: Int = 0,
 )
 
 /** A single qualifying HRR1 reading from one exercise session. */

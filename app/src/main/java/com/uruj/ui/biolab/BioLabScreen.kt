@@ -647,23 +647,25 @@ private fun formatHrrSampleDate(ms: Long): String = hrrSampleDateFmt.format(Date
 @Composable
 private fun AutonomicHealthCard(s: BioLabSnapshot) {
     val rmssd = s.autonomicRmssdMs ?: return
-    // Color-code RMSSD by athletic-tier ranges. Athletic endurance RMSSD
-    // norms (Plews et al., elite cyclist HRV studies):
-    //   <30ms = stressed / sympathetic-dominant
-    //   30-50ms = average
+    // Color-code RMSSD by athletic-tier ranges. Norms from Plews et al.
+    // (elite cyclist HRV) + Shaffer & Ginsberg 2017 (general adult HRV):
+    //   <20ms = severely suppressed (illness, overtraining)
+    //   20-30ms = below average
+    //   30-50ms = average healthy adult
     //   50-80ms = trained athlete range
     //   80+ms = elite parasympathetic dominance
     val accent = when {
-        rmssd >= 80f -> UrujZone2
         rmssd >= 50f -> UrujZone2
         rmssd >= 30f -> UrujZone3
+        rmssd >= 20f -> UrujZone3
         else -> UrujZone5
     }
     val tierLabel = when {
-        rmssd >= 80f -> "Elite parasympathetic dominance"
-        rmssd >= 50f -> "Trained athlete range"
-        rmssd >= 30f -> "Average autonomic balance"
-        else -> "Sympathetic-dominant — recovery deficit signal"
+        rmssd >= 80f -> "Elite parasympathetic dominance ✓"
+        rmssd >= 50f -> "Trained athlete range ✓"
+        rmssd >= 30f -> "Average healthy adult range"
+        rmssd >= 20f -> "Below average — watch fatigue"
+        else -> "Severely suppressed — illness/overtraining likely"
     }
     BioCard("Autonomic HRV — beat-to-beat parasympathetic", accentColor = accent) {
         Row(verticalAlignment = Alignment.Bottom) {
@@ -724,16 +726,47 @@ private fun AutonomicHealthCard(s: BioLabSnapshot) {
                     color = UrujText, fontSize = 11.sp)
             }
             Text(
-                "Clean samples: ${s.autonomicSampleCount} RR intervals",
+                "Median of ${s.autonomicWindowCount} 5-min windows · " +
+                    "${s.autonomicSampleCount} clean RR intervals",
                 color = UrujMuted, fontSize = 11.sp,
             )
         }
+        // Baseline-building notice — only shows during the first 7 days of
+        // continuous monitoring when we don't yet have a stable personal
+        // baseline to compare against. Surfaces honestly that today's number
+        // is being measured but not yet trend-contextualized.
+        if (s.autonomicDaysOfData < 7) {
+            Spacer(Modifier.height(8.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(UrujSurfaceHigh.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                    .padding(10.dp),
+            ) {
+                Text(
+                    "BASELINE BUILDING",
+                    color = UrujMuted,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 9.sp,
+                    letterSpacing = 1.5.sp,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = "Day ${s.autonomicDaysOfData} of 7. Today's number is your absolute " +
+                        "RMSSD compared to general athletic norms. After 7 nights captured, " +
+                        "we switch to ratio-vs-YOUR-baseline for catching subtle changes.",
+                    color = UrujText, fontSize = 11.sp,
+                )
+            }
+        }
         Spacer(Modifier.height(8.dp))
         Text(
-            "RMSSD = √(mean of squared consecutive RR differences). Filters: " +
-                "300–2000 ms range + 20% ectopic delta cap (Kubios convention). " +
-                "Real ECG-quality data from Magene H613, NOT a PPG proxy. " +
-                "Trained-athlete range 50-80 ms (Plews et al.).",
+            "RMSSD = √(mean of squared consecutive RR diffs). 5-min windowed " +
+                "(Task Force 1996 standard), median-aggregated. Filters: 300–2000 ms " +
+                "physiological range + timestamp-aware consecutive-beat check + 20% " +
+                "ectopic delta cap (Kubios). Real ECG data from Magene H613, NOT a " +
+                "PPG proxy. Athletic norms: <20 severe / 20-30 low / 30-50 average / " +
+                "50-80 trained / 80+ elite (Plews et al., Shaffer & Ginsberg 2017).",
             color = UrujMuted, fontSize = 10.sp,
         )
     }

@@ -32,7 +32,11 @@ class ReadinessCalculator {
             ReadinessComponent("Sleep", null, "wear band overnight"),
         )
 
-        scoreHrv(inputs.hrvTodayRmssd, inputs.hrvBaseline7d)?.let { (score, detail) ->
+        scoreHrv(
+            today = inputs.hrvTodayRmssd,
+            baseline = inputs.hrvBaseline7d,
+            daysOfData = inputs.hrvDaysOfDataIn7d,
+        )?.let { (score, detail) ->
             components += ReadinessComponent("HRV", score, detail)
             weightedSum += score * 0.30f
             totalWeight += 0.30f
@@ -125,16 +129,47 @@ class ReadinessCalculator {
         return score to hStr
     }
 
-    private fun scoreHrv(today: Float?, baseline: Float?): Pair<Int, String>? {
-        if (today == null || baseline == null || baseline < 1f) return null
+    /**
+     * v0.7.0 follow-up — two-mode HRV scoring.
+     *
+     * Days 1-6 ("baseline building"): use ABSOLUTE-tier scoring. A real
+     * 60 ms RMSSD scores well even without history; a real 20 ms scores
+     * poorly even on day 1. Fixes the bug where day-1 baseline = today
+     * produced a meaningless "+0% vs 7d avg" → score 90.
+     *
+     * Day 7+ (stable baseline): use ratio-based scoring vs personal 7d
+     * median. Ratio captures "today vs MY normal," catches subtle changes
+     * (overtraining, illness onset) better than absolute thresholds.
+     *
+     * Tier thresholds from Plews et al. elite cyclist RMSSD norms +
+     * general adult HRV research (Shaffer & Ginsberg 2017):
+     *   80+ ms = elite parasympathetic dominance
+     *   50-80 ms = trained athlete range
+     *   30-50 ms = average healthy adult
+     *   20-30 ms = below average — watch fatigue
+     *   <20 ms = severely suppressed (illness, overtraining)
+     */
+    private fun scoreHrv(today: Float?, baseline: Float?, daysOfData: Int): Pair<Int, String>? {
+        if (today == null) return null
+
+        // Days 1-6: absolute-tier scoring (no real baseline yet)
+        if (daysOfData < 7 || baseline == null || baseline < 1f) {
+            val absScore = when {
+                today >= 80f -> 100
+                today >= 50f -> 90
+                today >= 30f -> 75
+                today >= 20f -> 50
+                else -> 25
+            }
+            val detail = when (daysOfData) {
+                0, 1 -> "${"%.0f".format(today)} ms · first reading"
+                else -> "${"%.0f".format(today)} ms · baseline building ($daysOfData/7 nights)"
+            }
+            return absScore to detail
+        }
+
+        // Day 7+: ratio vs personal 7d median baseline
         val ratio = today / baseline
-        // Buckets widened in v0.3.2 to match the sleeping HR-proxy's natural
-        // variance. Real RMSSD HRV has tight day-to-day swings (5-15% normal),
-        // so the original thresholds aggressively penalized -20% as "very low."
-        // The sleep-window std-dev proxy is noisier — 20-25% night-over-night
-        // variance is normal sleep variation, not poor recovery. Until we have
-        // real RR-interval HRV (chest strap, v1.5), these wider buckets prevent
-        // false-negative readiness scores on legitimately well-rested days.
         val score = when {
             ratio > 1.10f -> 100  // unusually high — exceptional recovery
             ratio > 1.00f -> 95
