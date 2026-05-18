@@ -238,11 +238,19 @@ class ReadinessRepository(context: Context) {
         if (rhrToday == null && hrPermGranted && sleepPermGranted) {
             val sleepingHrData = readSleepingHrInputs(client, now)
             if (sleepingHrData != null) {
-                val sleepingResult = sleepingRhrCalc.compute(sleepingHrData.first, sleepingHrData.second)
+                // v0.7.7 — also pass strap NDJSON to the calculator so it can
+                // pick STRAP when 24/7 service covered the sleep window.
+                val weekAgo = now.minus(Duration.ofDays(7))
+                val strapSamples = continuousBiometric.hrSamplesForWindow(weekAgo, now)
+                val sleepingResult = sleepingRhrCalc.compute(
+                    hcSamples = sleepingHrData.first,
+                    sleepWindows = sleepingHrData.second,
+                    strapSamples = strapSamples,
+                )
                 if (sleepingResult != null) {
                     rhrToday = sleepingResult.mostRecentNightBpm
                     rhrBaseline = sleepingResult.medianBpm
-                    rhrSource = "sleep"
+                    rhrSource = "sleep:${sleepingResult.mostRecentNightSource.displayShort()}"
                 }
             }
         }

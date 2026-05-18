@@ -203,6 +203,66 @@ fun BioLabScreen(
     }
 }
 
+/**
+ * v0.7.7 — small inline pill showing which sensor produced a single reading.
+ * STRAP = green dot + "strap" / BAND = amber dot + "band" / etc.
+ */
+@Composable
+private fun SourcePill(source: com.uruj.domain.SensorSource) {
+    val color = when (source) {
+        com.uruj.domain.SensorSource.STRAP -> UrujZone2
+        com.uruj.domain.SensorSource.BAND -> UrujZone3
+        com.uruj.domain.SensorSource.MIXED -> UrujZone4
+        com.uruj.domain.SensorSource.UNKNOWN_LEGACY -> UrujMuted
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(5.dp)
+                .background(color, androidx.compose.foundation.shape.CircleShape),
+        )
+        Spacer(Modifier.width(3.dp))
+        Text(
+            source.displayShort(),
+            color = color.copy(alpha = 0.85f),
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.5.sp,
+        )
+    }
+}
+
+/**
+ * v0.7.7 — aggregated source breakdown shown next to a metric's hero number.
+ * "all strap ✓" / "8 strap · 3 band" / "all band" / "legacy".
+ *
+ * Empty map → renders nothing (caller should null-check before showing).
+ */
+@Composable
+private fun SourceBreakdownBadge(breakdown: Map<com.uruj.domain.SensorSource, Int>) {
+    if (breakdown.isEmpty()) return
+    val total = breakdown.values.sum()
+    val parts = breakdown.entries.sortedByDescending { it.value }
+    val text = if (parts.size == 1) {
+        val only = parts[0]
+        when (only.key) {
+            com.uruj.domain.SensorSource.STRAP -> "all from chest strap ✓"
+            com.uruj.domain.SensorSource.BAND -> "all from band (batched)"
+            com.uruj.domain.SensorSource.MIXED -> "mixed (strap + band)"
+            com.uruj.domain.SensorSource.UNKNOWN_LEGACY -> "legacy readings (pre-v0.7.7)"
+        }
+    } else {
+        parts.joinToString(" · ") { "${it.value} ${it.key.displayShort()}" } +
+            " (of $total)"
+    }
+    Text(
+        text,
+        color = UrujMuted,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.SemiBold,
+    )
+}
+
 @Composable
 private fun SectionHeader(title: String) {
     Text(
@@ -397,6 +457,11 @@ private fun HrRecoveryCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
             s.hrr1Classification ?: "—",
             color = UrujText, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
         )
+        // v0.7.7 — source breakdown badge (which sensor produced these readings)
+        if (s.hrr1SourceBreakdown.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            SourceBreakdownBadge(s.hrr1SourceBreakdown)
+        }
         if (s.hrr1AthleteContext != null) {
             Spacer(Modifier.height(8.dp))
             Column(
@@ -459,6 +524,9 @@ private fun HrRecoveryCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
                             color = UrujMuted, fontSize = 10.sp,
                             modifier = Modifier.weight(1f),
                         )
+                        // v0.7.7 — per-sample source pill
+                        SourcePill(sample.source)
+                        Spacer(Modifier.width(6.dp))
                         Text(
                             "${sample.hrr1Bpm} bpm drop",
                             color = UrujText,

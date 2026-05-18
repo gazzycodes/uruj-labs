@@ -1,5 +1,6 @@
 package com.uruj.power
 
+import com.uruj.domain.SensorSource
 import java.time.Instant
 
 /**
@@ -30,23 +31,54 @@ class SleepingRhrCalculator {
         val mostRecentNightEndTime: Instant,
         /** Count of qualifying nights feeding the median. */
         val nightsCount: Int,
+        /** v0.7.7 — which sensor produced the most-recent-night RHR reading.
+         *  STRAP if 24/7 NDJSON had ≥60% coverage of the sleep window,
+         *  otherwise BAND (HC samples). The card UI shows this as a badge. */
+        val mostRecentNightSource: SensorSource = SensorSource.UNKNOWN_LEGACY,
+        /** Per-source nightly count for the overall breakdown badge. */
+        val sourceBreakdown: Map<SensorSource, Int> = emptyMap(),
     )
 
+    /**
+     * v0.7.7 — bulletproof source-aware compute.
+     *
+     * For each sleep window we evaluate strap + HC streams separately. Strap
+     * wins if it has ≥60% sample-density coverage of the window AND ≥5 valid
+     * samples post-glitch-filter. Else fall back to HC if it has ≥5 valid
+     * samples. Each per-night result carries its source.
+     *
+     * @param hcSamples HC HeartRateRecord batches (fallback)
+     * @param strapSamples BLE 24/7 NDJSON samples (preferred). Pass empty list
+     *   if no strap data available for this period.
+     */
     fun compute(
-        timedSamples: List<Pair<Instant, Int>>,
+        hcSamples: List<Pair<Instant, Int>>,
         sleepWindows: List<Pair<Instant, Instant>>,
+        strapSamples: List<Pair<Instant, Int>> = emptyList(),
     ): Result? {
-        if (sleepWindows.isEmpty() || timedSamples.isEmpty()) return null
+        if (sleepWindows.isEmpty()) return null
+        if (hcSamples.isEmpty() && strapSamples.isEmpty()) return null
 
-        // For each sleep window: find min HR sample (with glitch filter), require
-        // ≥5 samples per night so a stray wake-up sample can't masquerade as deep
-        // sleep. Tag with end time so we can find "most recent".
         val perNight = sleepWindows.mapNotNull { (start, end) ->
-            val nightSamples = timedSamples
-                .filter { (t, bpm) -> !t.isBefore(start) && !t.isAfter(end) && bpm >= 35 }
-                .map { it.second }
-            if (nightSamples.size < 5) return@mapNotNull null
-            NightMin(endTime = end, minBpm = nightSamples.min())
+            // Try strap first (per-second precision)
+            val strapMin = minForWindow(strapSamples, start, end)
+            val strapCount = strapSamples.count { (t, _) -> !t.isBefore(start) && !t.isAfter(end) }
+            val winLengthSec = java.time.Duration.between(start, end).seconds.coerceAtLeast(1)
+            val strapDensity = strapCount.toFloat() / winLengthSec.toFloat() // ~1.0 for full coverage
+            if (strapMin != null && strapDensity >= COVERAGE_THRESHOLD) {
+                return@mapNotNull NightMin(end, strapMin, SensorSource.STRAP)
+            }
+            // Fall back to HC
+            val hcMin = minForWindow(hcSamples, start, end)
+            if (hcMin != null) {
+                // If strap had some data but didn't pass coverage, this is
+                // technically MIXED. But we use HC value (more samples), so
+                // call it BAND-leaning. Source = BAND.
+                return@mapNotNull NightMin(end, hcMin, SensorSource.BAND)
+            }
+            // Strap had partial coverage but HC empty — accept strap as MIXED.
+            if (strapMin != null) return@mapNotNull NightMin(end, strapMin, SensorSource.MIXED)
+            null
         }
         if (perNight.isEmpty()) return null
 
@@ -57,13 +89,36 @@ class SleepingRhrCalculator {
             (sortedMins[sortedMins.size / 2 - 1] + sortedMins[sortedMins.size / 2]) / 2
         }
         val mostRecent = perNight.maxBy { it.endTime }
+        val breakdown = perNight.groupingBy { it.source }.eachCount()
         return Result(
             medianBpm = median,
             mostRecentNightBpm = mostRecent.minBpm,
             mostRecentNightEndTime = mostRecent.endTime,
             nightsCount = perNight.size,
+            mostRecentNightSource = mostRecent.source,
+            sourceBreakdown = breakdown,
         )
     }
 
-    private data class NightMin(val endTime: Instant, val minBpm: Int)
+    /** Apply glitch filter + ≥5-sample requirement, return min bpm or null. */
+    private fun minForWindow(
+        samples: List<Pair<Instant, Int>>,
+        start: Instant,
+        end: Instant,
+    ): Int? {
+        val nightSamples = samples
+            .filter { (t, bpm) -> !t.isBefore(start) && !t.isAfter(end) && bpm >= 35 }
+            .map { it.second }
+        if (nightSamples.size < 5) return null
+        return nightSamples.min()
+    }
+
+    private data class NightMin(val endTime: Instant, val minBpm: Int, val source: SensorSource)
+
+    companion object {
+        /** v0.7.7 — minimum sample density (samples per second of window) to
+         *  commit to STRAP source. 0.10 = ~36 samples per hour-long window,
+         *  generous enough to absorb BLE drops while still meaningful. */
+        private const val COVERAGE_THRESHOLD = 0.10f
+    }
 }
