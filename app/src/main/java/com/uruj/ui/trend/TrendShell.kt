@@ -109,6 +109,11 @@ fun TrendShell(
                     tierBands = spec.tierBands,
                     lineColor = spec.lineColor,
                 )
+                // v0.7.6 — tier legend lives BELOW the chart instead of being
+                // squeezed inside the right edge.
+                if (spec.tierBands.isNotEmpty()) {
+                    TierLegend(spec.tierBands)
+                }
                 StatsBlock(
                     points = spec.points,
                     valueFormatter = spec.valueFormatter,

@@ -1,10 +1,20 @@
 package com.uruj.ui.trend
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -58,10 +68,12 @@ fun TrendChart(
             .height(height),
     ) {
         Canvas(modifier = Modifier.fillMaxWidth().height(height)) {
-            // Reserve space: left for Y-axis labels, bottom for X-axis labels,
-            // right for tier-band labels.
+            // Reserve space: left for Y-axis labels, bottom for X-axis labels.
+            // Right side now flush — tier labels moved to a legend BELOW the
+            // chart (v0.7.6 — the squeezed right-margin labels were wrapping
+            // mid-word with longer tier names like "Average" → "Aver" + "age").
             val padLeft = 40f
-            val padRight = if (tierBands.isNotEmpty()) 64f else 12f
+            val padRight = 12f
             val padTop = 8f
             val padBottom = 28f
             val plotLeft = padLeft
@@ -73,7 +85,7 @@ fun TrendChart(
 
             if (plotW <= 0f || plotH <= 0f) return@Canvas
 
-            // ── 1) Tier bands (background) ──────────────────────────────────
+            // ── 1) Tier bands (background only — labels in TierLegend below) ──
             for (band in tierBands) {
                 val top = yToPixel(band.yMax, yMin, yMax, plotTop, plotH)
                 val bottom = yToPixel(band.yMin, yMin, yMax, plotTop, plotH)
@@ -81,20 +93,6 @@ fun TrendChart(
                     color = band.color.copy(alpha = 0.15f),
                     topLeft = Offset(plotLeft, top),
                     size = Size(plotW, (bottom - top).coerceAtLeast(0f)),
-                )
-                // Tier label on right edge
-                drawText(
-                    textMeasurer = textMeasurer,
-                    text = band.label,
-                    style = TextStyle(
-                        color = band.color.copy(alpha = 0.9f),
-                        fontSize = 8.sp,
-                        fontWeight = FontWeight.Bold,
-                    ),
-                    topLeft = Offset(
-                        x = plotRight + 4f,
-                        y = ((top + bottom) / 2f - 6f).coerceIn(plotTop, plotBottom - 12f),
-                    ),
                 )
             }
 
@@ -213,4 +211,55 @@ private fun DrawScope.yToPixel(
 ): Float {
     val frac = ((value - yMin) / (yMax - yMin)).coerceIn(0f, 1f)
     return plotTop + (1f - frac) * plotH
+}
+
+/**
+ * v0.7.6 — tier legend rendered below the chart. Color dot + full label
+ * per tier. Wraps gracefully across two rows if the labels are too long
+ * to fit a single row. Replaces v0.7.5's cramped right-edge-of-canvas
+ * labels which were wrapping mid-word.
+ *
+ * Two-row chunking is intentional + deterministic: tiers in the first
+ * half (top of chart) get row 1, second half get row 2. Keeps the natural
+ * top-to-bottom reading order intact.
+ */
+@Composable
+fun TierLegend(tiers: List<TierBand>) {
+    if (tiers.isEmpty()) return
+    val half = (tiers.size + 1) / 2
+    val firstRow = tiers.take(half)
+    val secondRow = tiers.drop(half)
+    androidx.compose.foundation.layout.Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        LegendRow(firstRow)
+        if (secondRow.isNotEmpty()) LegendRow(secondRow)
+    }
+}
+
+@Composable
+private fun LegendRow(tiers: List<TierBand>) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        tiers.forEach { tier ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(tier.color, CircleShape),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    tier.label,
+                    color = UrujText.copy(alpha = 0.85f),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+    }
 }
