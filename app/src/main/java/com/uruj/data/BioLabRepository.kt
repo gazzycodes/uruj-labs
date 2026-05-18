@@ -56,6 +56,9 @@ class BioLabRepository(context: Context) {
     // v0.7.2 — Cortisol Awakening Response
     private val carRepo = CarRepository(appContext)
     private val carDetector = CarDetector()
+    // v0.9.0 — disk-persisted HRR1 readings (snapshot architecture).
+    // Bridges HC's 30-day retention so HRR1 history survives indefinitely.
+    private val hrrSnapshots = HrrSnapshotRepository(appContext)
 
     suspend fun snapshot(): BioLabSnapshot = withContext(Dispatchers.IO) {
         val profile = profileStore.current()
@@ -202,6 +205,47 @@ class BioLabRepository(context: Context) {
             hcHrSamples = hrTimed30d,
             strapHrSamples = strapHrSamples30d,
         )
+
+        // v0.9.0 — persist every newly-computed HRR1 reading to disk so the
+        // trend chart keeps these readings even after they age out of HC's
+        // 30-day window. Idempotent: snapshots that already exist on disk
+        // are skipped without overwrite (preserves the original methodology
+        // version tag for historical analysis).
+        //
+        // Session ID mapping: URUJ rides own their sessionId from the ride
+        // history. Samsung-tracked sessions (no URUJ ride) get
+        // `samsung-<EPOCH-MS>` since the HC ExerciseSessionRecord doesn't
+        // expose a stable string ID.
+        val urujRides = rideHistory.listAll()
+        hrr?.samples?.forEach { sample ->
+            val sessionId = mapHrrSampleToSnapshotId(sample, urujRides)
+            hrrSnapshots.save(
+                HrrSnapshot(
+                    sessionId = sessionId,
+                    sessionEndMs = sample.sessionEnd.toEpochMilli(),
+                    peakBpm = sample.effortPeakBpm,
+                    hrr1Bpm = sample.hrr1Bpm,
+                    classification = sample.classification,
+                    source = sample.source.name,
+                    methodologyVersion = HrrSnapshotRepository.METHODOLOGY_VERSION,
+                    computedAtMs = System.currentTimeMillis(),
+                ),
+            )
+        }
+
+        // v0.9.0 — load ALL persisted snapshots (unbounded history) and merge
+        // with the current HC-derived samples. Disk wins for samples outside
+        // HC's 30-day window; HC wins for samples in the current window (the
+        // freshest compute may have improved methodology). De-dupe by
+        // sessionEndMs since the same session can produce both a disk entry
+        // (from a prior compute) and an in-memory entry (from this compute).
+        val diskHrrSamples = hrrSnapshots.listAll()
+        val mergedHrrSamples = mergeHrrSamples(
+            hcCurrent = hrr?.samples ?: emptyList(),
+            disk = diskHrrSamples,
+            urujRides = urujRides,
+        )
+
         val hrr1AthleteContext = computeHrr1AthleteContext(hrr?.medianHrr1, vo2.classification)
 
         // v0.7.0 — Autonomic HRV from 24/7 BLE continuous capture. Compute over
@@ -262,21 +306,13 @@ class BioLabRepository(context: Context) {
             // HRR1 — peer-reviewed cardio metric
             hrr1Median = hrr?.medianHrr1,
             hrr1Classification = hrr?.medianClassification,
-            hrr1SampleCount = hrr?.samples?.size ?: 0,
+            // v0.9.0 — sample count reflects the FULL persisted history,
+            // not just HC's 30-day window. Was hrr?.samples?.size ?: 0.
+            hrr1SampleCount = mergedHrrSamples.size,
             hrr1AthleteContext = hrr1AthleteContext,
-            // v0.7.4: expose ALL qualifying samples (was just top 3) so the
-            // HRR1 trend screen has the full 30d history. UI inline list
-            // still .take(3) at the call site.
-            hrr1RecentSamples = hrr?.samples
-                ?.sortedByDescending { it.sessionEnd }
-                ?.map {
-                    HrrSample(
-                        endTimeMs = it.sessionEnd.toEpochMilli(),
-                        hrr1Bpm = it.hrr1Bpm,
-                        peakBpm = it.effortPeakBpm,
-                        source = it.source,
-                    )
-                } ?: emptyList(),
+            // v0.9.0 — merged samples: disk for >30d history + HC for the
+            // last 30d. Trend chart now scales to unlimited history.
+            hrr1RecentSamples = mergedHrrSamples,
             hrr1SourceBreakdown = hrr?.sourceBreakdown ?: emptyMap(),
 
             // v0.7.0 — Autonomic HRV from 24/7 BLE continuous capture
@@ -293,6 +329,75 @@ class BioLabRepository(context: Context) {
             carResult = carResult,
             carInterpretation = carInterpretation,
         )
+    }
+
+    /**
+     * v0.9.0 — map a freshly-computed HRR1 sample to its persistence sessionId.
+     *
+     * URUJ rides own their sessionId from `StoredRideSummary.sessionId`. We
+     * match by endedAtMs ± 60s tolerance (HC's ExerciseSessionRecord end time
+     * can drift slightly from URUJ's recorded ride end).
+     *
+     * Samsung-tracked exercises that don't overlap a URUJ ride get the
+     * synthetic `samsung-<EPOCH-MS>` ID. Stable across recomputes (epoch ms
+     * doesn't change), so subsequent saves correctly skip as duplicates.
+     */
+    private fun mapHrrSampleToSnapshotId(
+        sample: HrRecoveryCalculator.Sample,
+        urujRides: List<StoredRideSummary>,
+    ): String {
+        val endMs = sample.sessionEnd.toEpochMilli()
+        val matchingRide = urujRides.firstOrNull {
+            kotlin.math.abs(it.endedAtMs - endMs) <= 60_000L
+        }
+        return matchingRide?.sessionId ?: "samsung-$endMs"
+    }
+
+    /**
+     * v0.9.0 — merge the current HC-derived HRR1 samples with the disk-
+     * persisted history. Disk owns samples outside HC's 30-day retention;
+     * HC owns the current 30-day window (freshest methodology, includes
+     * sessions newer than the last `snapshot()` call hasn't written yet).
+     *
+     * Strategy: union both lists; de-dupe by sessionId (or sessionEndMs
+     * for Samsung sessions). When the same session appears in both, HC's
+     * fresh version wins — methodology may have improved between the
+     * original snapshot write and this compute.
+     *
+     * Sort descending by endTimeMs so the most recent reading is index 0
+     * (UI inline list does `.take(3)` for the most-recent-3 panel, and
+     * the trend chart sorts ascending for chronological display).
+     */
+    private fun mergeHrrSamples(
+        hcCurrent: List<HrRecoveryCalculator.Sample>,
+        disk: List<HrrSnapshot>,
+        urujRides: List<StoredRideSummary>,
+    ): List<HrrSample> {
+        // Index HC samples by their snapshot ID so we can match against disk
+        val hcById: Map<String, HrRecoveryCalculator.Sample> = hcCurrent.associateBy {
+            mapHrrSampleToSnapshotId(it, urujRides)
+        }
+        // HC samples become the authoritative version for IDs in both sets
+        val fromHc: List<HrrSample> = hcCurrent.map { s ->
+            HrrSample(
+                endTimeMs = s.sessionEnd.toEpochMilli(),
+                hrr1Bpm = s.hrr1Bpm,
+                peakBpm = s.effortPeakBpm,
+                source = s.source,
+            )
+        }
+        // Disk-only samples (not in HC's current 30d) become the historical tail
+        val fromDiskOnly: List<HrrSample> = disk
+            .filter { it.sessionId !in hcById.keys }
+            .map { snap ->
+                HrrSample(
+                    endTimeMs = snap.sessionEndMs,
+                    hrr1Bpm = snap.hrr1Bpm,
+                    peakBpm = snap.peakBpm,
+                    source = snap.sourceEnum,
+                )
+            }
+        return (fromHc + fromDiskOnly).sortedByDescending { it.endTimeMs }
     }
 
     /**
