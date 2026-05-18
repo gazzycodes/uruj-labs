@@ -30,6 +30,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.produceState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
@@ -167,6 +169,13 @@ fun BioLabScreen(
             if (s.autonomicRmssdMs != null) {
                 item("autonomic_header") { SectionHeader("Autonomic Health") }
                 item("autonomic_card") { AutonomicHealthCard(s) }
+            }
+
+            // v0.7.2 — CAR (Cortisol Awakening Response). Auto-resolved from
+            // 24/7 NDJSON + last SleepSessionRecord. Card hides until ~45 min
+            // post-wake when the window is complete.
+            if (s.carResult != null && s.carInterpretation != null) {
+                item("car_card") { CarCard(s.carResult, s.carInterpretation) }
             }
 
             // v0.7.1 — Lab tests section. Manual rituals that produce new
@@ -792,6 +801,209 @@ private fun AutonomicHealthCard(s: BioLabSnapshot) {
 }
 
 /**
+ * v0.7.2 — Cortisol Awakening Response card. Surfaces the morning HPA-axis
+ * activation pattern automatically from 24/7 NDJSON. Tier-coded with
+ * Bio Lab's standard color language (green = healthy, red = blunted).
+ *
+ * Lives under "Autonomic Health" since it's another autonomic signal but
+ * gets its own card because the methodology is different (single-event
+ * detector, not windowed average).
+ */
+@Composable
+private fun CarCard(
+    car: com.uruj.domain.CarResult,
+    interp: com.uruj.domain.CarInterpretation,
+) {
+    var showInfo by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf(false)
+    }
+    val accent = carTierColor(interp.overallTier)
+    BioCard("CAR — cortisol awakening response", accentColor = accent) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.weight(1f))
+            androidx.compose.material3.TextButton(
+                onClick = { showInfo = true },
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp),
+            ) {
+                Text("ⓘ", color = UrujMuted, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        Text(interp.summary, color = accent, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                "+${"%.0f".format(car.amplitudeBpm)}",
+                color = UrujText,
+                fontWeight = FontWeight.Black,
+                fontSize = 44.sp,
+            )
+            Spacer(Modifier.width(6.dp))
+            Column(modifier = Modifier.padding(bottom = 10.dp)) {
+                Text("bpm amplitude", color = UrujMuted, fontSize = 10.sp)
+                Text(
+                    "peak ${"%.0f".format(car.latencyMinutes)} min after wake",
+                    color = UrujMuted, fontSize = 10.sp,
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(UrujSurfaceHigh.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                .padding(10.dp),
+        ) {
+            Text(
+                "BREAKDOWN",
+                color = UrujMuted,
+                fontWeight = FontWeight.Black,
+                fontSize = 9.sp,
+                letterSpacing = 1.5.sp,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Baseline (last 10 min of sleep): ${"%.0f".format(car.baselineHrBpm)} bpm · " +
+                    "${"%.1f".format(car.baselineRmssdMs)} ms RMSSD",
+                color = UrujText, fontSize = 11.sp,
+            )
+            Text(
+                "Peak post-wake: ${"%.0f".format(car.peakHrBpm)} bpm",
+                color = UrujText, fontSize = 11.sp,
+            )
+            Text(
+                "RMSSD drop on activation: ${"%.0f".format(car.rmssdDropPercent)}% " +
+                    "(trough ${"%.1f".format(car.troughRmssdMs)} ms)",
+                color = UrujText, fontSize = 11.sp,
+            )
+            Text(
+                "${car.cleanBeatsInWindow} clean beats in 45-min window",
+                color = UrujMuted, fontSize = 10.sp,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "CAR = HR + HRV inflection in first 30-45 min after waking, proxy " +
+                "for cortisol surge (Pruessner 1997, Clow 2010, Stalder 2016). " +
+                "Healthy adult range: 10-20 bpm rise, peak 20-40 min post-wake. " +
+                "Blunted CAR (<5 bpm) is a published marker of chronic stress, " +
+                "burnout, overtraining, depression. Robust CAR (20+ bpm) = " +
+                "strong HPA-axis activation. Computed from BLE chest strap RR + " +
+                "HC sleep window — NOT salivary cortisol (the lab-gold standard).",
+            color = UrujMuted, fontSize = 10.sp,
+        )
+    }
+    if (showInfo) {
+        CarInfoDialog(car = car, interpretation = interp, onDismiss = { showInfo = false })
+    }
+}
+
+private fun carTierColor(tier: com.uruj.domain.CarTier): Color = when (tier) {
+    com.uruj.domain.CarTier.NORMAL -> UrujZone2
+    com.uruj.domain.CarTier.ROBUST -> UrujZone1
+    com.uruj.domain.CarTier.SUPPRESSED -> UrujZone3
+    com.uruj.domain.CarTier.EXAGGERATED -> UrujZone4
+    com.uruj.domain.CarTier.BLUNTED -> UrujZone5
+}
+
+@Composable
+private fun CarInfoDialog(
+    car: com.uruj.domain.CarResult,
+    interpretation: com.uruj.domain.CarInterpretation,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) {
+                Text("CLOSE", color = UrujAccent, fontWeight = FontWeight.Bold)
+            }
+        },
+        title = {
+            Text("CAR — Cortisol Awakening Response", color = UrujText,
+                fontWeight = FontWeight.Black, fontSize = 18.sp)
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                InfoBlock(
+                    "What it is",
+                    "Cortisol surges 50-160% in the first 30-45 min after waking — " +
+                        "the HPA-axis (hypothalamus-pituitary-adrenal) firing up the " +
+                        "body for the day. URUJ proxies this surge via HR + HRV " +
+                        "inflection because we can't measure salivary cortisol " +
+                        "non-invasively. HR climbs, HRV drops, both driven by the " +
+                        "same sympathetic activation that's pumping the cortisol.",
+                )
+                InfoBlock(
+                    "Why athletes care",
+                    "Blunted CAR is a published marker of:\n" +
+                        "• Chronic stress / burnout\n" +
+                        "• Overtraining syndrome\n" +
+                        "• Depression / mood disorders\n" +
+                        "• HPA-axis dysfunction\n\n" +
+                        "Robust CAR = healthy stress-response system. The body's " +
+                        "ability to ACTIVATE in the morning is a separate signal " +
+                        "from its ability to RECOVER overnight. Both matter.",
+                )
+                InfoBlock(
+                    "How URUJ computes it",
+                    "Automatic — no ritual needed. Each morning after Samsung " +
+                        "writes the SleepSessionRecord and 24/7 NDJSON has 45 min " +
+                        "of post-wake data:\n\n" +
+                        "1. Baseline HR + RMSSD over the last 10 min of sleep\n" +
+                        "2. Peak HR detected in 0-45 min post-wake window\n" +
+                        "3. Amplitude = peak − baseline (the morning surge size)\n" +
+                        "4. Latency = minutes from wake to peak\n" +
+                        "5. RMSSD trajectory binned to 5-min, find the trough\n" +
+                        "6. Cached per-day so opening Bio Lab is instant",
+                )
+                InfoBlock(
+                    "Reference ranges",
+                    "Amplitude tiers (HR rise above sleep baseline):\n" +
+                        "  <5 bpm    Blunted — chronic stress marker\n" +
+                        "  5-10 bpm  Suppressed — HPA dampened\n" +
+                        "  10-20 bpm Healthy ✓ normal range\n" +
+                        "  20-30 bpm Robust ✓ strong activation\n" +
+                        "  >30 bpm   Exaggerated — acute stress/anxiety\n\n" +
+                        "Latency tiers (time to peak):\n" +
+                        "  <10 min  Very fast — possible acute stress\n" +
+                        "  10-20 min Fast — robust activation\n" +
+                        "  20-40 min Typical — healthy range\n" +
+                        "  40-60 min Slow — HPA dampened\n" +
+                        "  >60 min  Very slow — blunted",
+                )
+                InfoBlock(
+                    "Honest caveats",
+                    "• URUJ measures the HR/HRV signature of the cortisol surge, " +
+                        "not cortisol itself. Strong correlation in research but " +
+                        "salivary measurement is the lab-gold standard.\n" +
+                        "• Wake events that follow a poor sleep can suppress CAR " +
+                        "amplitude — interpret in context with sleep quality.\n" +
+                        "• Coffee + stress in the first 30 min skew the peak " +
+                        "(more sympathetic activation = bigger spike). For a " +
+                        "clean reading, no caffeine before the 45-min mark.\n" +
+                        "• Naps don't produce CAR (different neuroendocrine pattern).\n" +
+                        "• Trends > single readings. Track week-over-week.",
+                )
+                InfoBlock(
+                    "For YOU right now",
+                    "Amplitude: ${"%.0f".format(car.amplitudeBpm)} bpm " +
+                        "(${interpretation.amplitudeTier.name.lowercase()})\n" +
+                        "Latency: ${"%.0f".format(car.latencyMinutes)} min " +
+                        "(${interpretation.latencyTier.name.lowercase()})\n" +
+                        "RMSSD trough: ${"%.1f".format(car.troughRmssdMs)} ms " +
+                        "(${"%.0f".format(car.rmssdDropPercent)}% drop from baseline)\n" +
+                        "Overall: ${interpretation.summary}",
+                )
+            }
+        },
+        containerColor = UrujSurface,
+    )
+}
+
+/**
  * v0.7.1 — launcher card for the manual orthostatic test ritual.
  * Shows the most-recent saved test result inline + a START button to take
  * a fresh reading. Reads history from OrthostaticTestRepository on first
@@ -960,7 +1172,10 @@ private fun OrthostaticInfoDialog(
             Text("Orthostatic test", color = UrujText, fontWeight = FontWeight.Black, fontSize = 18.sp)
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 InfoBlock(
                     "What it is",
                     "A 4-minute sit→stand protocol measuring how your autonomic " +
