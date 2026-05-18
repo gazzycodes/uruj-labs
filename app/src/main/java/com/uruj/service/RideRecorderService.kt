@@ -551,6 +551,14 @@ class RideRecorderService : Service() {
                             bleBatteryPct = bleSource.battery.value,
                             bleContactDetected = sample.contactDetected,
                         ) }
+                        // v0.8.1 — feed Live state for HUD inline waveform +
+                        // Live tab. RideRecorderService is the active BLE owner
+                        // during a ride; BiometricService is paused.
+                        LiveStateHolder.onBleNotification(
+                            receivedAtMs = sample.receivedAtMs,
+                            bpm = sample.bpm,
+                            rrIntervalsMs = sample.rrIntervalsMs,
+                        )
                         // Reset back-off as soon as a sample arrives — we're stable.
                         retryDelayMs = 5_000L
                     }

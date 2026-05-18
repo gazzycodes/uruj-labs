@@ -63,6 +63,7 @@ fun PreRideChecklistScreen(
     onOpenHistory: () -> Unit = {},
     onOpenDiagnostics: () -> Unit = {},
     onOpenBioLab: () -> Unit = {},
+    onOpenLive: () -> Unit = {},
     viewModel: ChecklistViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -172,6 +173,7 @@ fun PreRideChecklistScreen(
                     onOpenHistory = onOpenHistory,
                     onOpenDiagnostics = onOpenDiagnostics,
                     onOpenBioLab = onOpenBioLab,
+                    onOpenLive = onOpenLive,
                 )
             }
             // Readiness card is the primary status indicator on this screen,
@@ -251,6 +253,7 @@ private fun UrujHeader(
     onOpenHistory: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenBioLab: () -> Unit,
+    onOpenLive: () -> Unit,
 ) {
     // Two-row header: brand on top, navigation underneath. Four nav buttons in
     // a single row was overflowing on ~360dp phones (PROFILE got pushed off the
@@ -289,6 +292,7 @@ private fun UrujHeader(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             NavButton(label = "LAB", onClick = onOpenBioLab, contentPadding = navPadding)
+            NavButton(label = "LIVE", onClick = onOpenLive, contentPadding = navPadding)
             NavButton(label = "PIPELINE", onClick = onOpenDiagnostics, contentPadding = navPadding)
             NavButton(label = "RIDES", onClick = onOpenHistory, contentPadding = navPadding)
             NavButton(label = "PROFILE", onClick = onOpenProfile, contentPadding = navPadding)

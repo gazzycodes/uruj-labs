@@ -147,6 +147,7 @@ private sealed interface AppScreen {
     data object Hrr1Trend : AppScreen
     data object CarTrend : AppScreen
     data object OrthostaticTrend : AppScreen
+    data object LiveData : AppScreen
     data class ViewingPastRide(val summary: StoredRideSummary) : AppScreen
 }
 
@@ -267,6 +268,10 @@ class MainActivity : ComponentActivity() {
                             onOpenHistory = { screen = AppScreen.History },
                             onOpenDiagnostics = { screen = AppScreen.Diagnostics },
                             onOpenBioLab = { screen = AppScreen.BioLab },
+                            onOpenLive = { screen = AppScreen.LiveData },
+                        )
+                        AppScreen.LiveData -> com.uruj.ui.live.LiveScreen(
+                            onBack = { screen = AppScreen.Checklist },
                         )
                         AppScreen.Profile -> RiderProfileScreen(
                             onBack = { screen = AppScreen.Checklist },
