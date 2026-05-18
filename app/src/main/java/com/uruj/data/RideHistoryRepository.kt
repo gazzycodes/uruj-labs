@@ -39,6 +39,12 @@ data class StoredRideSummary(
     val averageHrBpm: Int? = null,
     val maxHrBpm: Int? = null,
     val hrSampleCount: Int = 0,
+    /** v0.8.2 — short readable label describing which sensor(s) produced
+     *  the HR data: "from chest strap" / "from band (batched)" /
+     *  "65% strap + 35% band". Null for legacy summaries computed pre-v0.8.2
+     *  (UI shows "legacy" tag in that case). New rides populate this from
+     *  ride NDJSON's per-tick `hrSource` field (BLE-first via the merger). */
+    val hrSourceLabel: String? = null,
 ) {
     /** Rebuild a RideState skeleton from this summary so the summary screen can render
      *  historic rides with the same UI it uses for just-completed rides. */

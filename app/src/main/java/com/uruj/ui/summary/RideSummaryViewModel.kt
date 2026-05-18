@@ -9,9 +9,12 @@ import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.uruj.data.NdjsonRideReader
 import com.uruj.data.RideHistoryRepository
+import com.uruj.data.RideHrSample
 import com.uruj.data.RiderProfileStore
 import com.uruj.data.StoredRideSummary
+import com.uruj.domain.SensorSource
 import com.uruj.power.TimeInZoneCalculator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -38,6 +41,17 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
     private val historyRepo = RideHistoryRepository(application)
     private val profileStore = RiderProfileStore(application)
     private val zoneCalc = TimeInZoneCalculator()
+    // v0.8.2 — read source-tagged HR from ride NDJSON (strap-first when
+    // strap was streaming during the ride) before falling back to HC.
+    private val ndjsonReader = NdjsonRideReader(application)
+
+    /**
+     * v0.8.2 — per-ride HR source breakdown. Populated whenever the ride
+     * NDJSON has usable HR data; null when we fell back to HC entirely.
+     * Drives the source-label badge on TIZ + ride-stats cards.
+     */
+    private val _hrSourceBreakdown = MutableStateFlow<Map<SensorSource, Int>>(emptyMap())
+    val hrSourceBreakdown: StateFlow<Map<SensorSource, Int>> = _hrSourceBreakdown.asStateFlow()
 
     private val _hrEnrichment = MutableStateFlow<HrEnrichmentState>(HrEnrichmentState.Idle)
     val hrEnrichment: StateFlow<HrEnrichmentState> = _hrEnrichment.asStateFlow()
@@ -53,14 +67,121 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
     private var pollingJob: Job? = null
 
     fun startHrEnrichment(sessionId: String, startedAtMs: Long, endedAtMs: Long) {
+        // v0.8.2 — first try the ride NDJSON. If the strap was streaming
+        // during the ride, RideRecorderService wrote source-tagged hrBpm
+        // per GPS tick. NDJSON-first means higher-precision strap data
+        // wins; HC stays as fallback for pre-strap rides or strap-off
+        // segments.
+        viewModelScope.launch { tryEnrichFromNdjsonThenHc(sessionId, startedAtMs, endedAtMs) }
+    }
+
+    private suspend fun tryEnrichFromNdjsonThenHc(
+        sessionId: String,
+        startedAtMs: Long,
+        endedAtMs: Long,
+    ) {
+        val ndjsonHr = withContext(Dispatchers.IO) { ndjsonReader.readHrSamples(sessionId) }
+        if (ndjsonHr.size >= NdjsonRideReader.MIN_USEFUL_HR_SAMPLES) {
+            // Strap (and/or merged BLE+HC during ride) covered this ride well.
+            // Compute everything from NDJSON; skip HC polling entirely.
+            applyHrEnrichment(sessionId, endedAtMs, ndjsonHr)
+            Log.d(
+                "URUJ-Summary",
+                "Ride $sessionId enriched from NDJSON: ${ndjsonHr.size} HR samples, " +
+                    "sources=${ndjsonHr.groupingBy { it.source }.eachCount()}",
+            )
+            return
+        }
+        // NDJSON didn't have enough HR samples — fall back to existing HC path.
+        Log.d(
+            "URUJ-Summary",
+            "Ride $sessionId — NDJSON had ${ndjsonHr.size} HR samples (<min), falling back to HC",
+        )
+        startHcEnrichmentFlow(sessionId, startedAtMs, endedAtMs)
+    }
+
+    /** v0.8.2 — compute HR stats + TIZ from NDJSON samples, persist + emit. */
+    private fun applyHrEnrichment(
+        sessionId: String,
+        endMs: Long,
+        samples: List<RideHrSample>,
+    ) {
+        if (samples.isEmpty()) return
+        val avg = samples.map { it.bpm }.average().toInt()
+        val max = samples.maxOf { it.bpm }
+        val count = samples.size
+        val breakdown = samples.groupingBy { it.source }.eachCount()
+
+        // Persist + emit summary stats. Source label captures the breakdown
+        // for the displayed badge on next ride open.
+        historyRepo.load(sessionId)?.let { existing ->
+            historyRepo.save(
+                existing.copy(
+                    averageHrBpm = avg,
+                    maxHrBpm = max,
+                    hrSampleCount = count,
+                    hrSourceLabel = formatSourceLabel(breakdown),
+                ),
+            )
+        }
+        _hrEnrichment.value = HrEnrichmentState.Done(
+            avgHrBpm = avg,
+            maxHrBpm = max,
+            sampleCount = count,
+            isRefreshing = false,
+        )
+        _hrSourceBreakdown.value = breakdown
+
+        // TIZ from the same NDJSON samples (no duplicate work). Profile is
+        // cheap to read; max HR drives the %max bands.
+        viewModelScope.launch {
+            runCatching {
+                val profile = profileStore.current()
+                val timed = samples.map { Instant.ofEpochMilli(it.timestampMs) to it.bpm }
+                val tiz = zoneCalc.compute(
+                    samples = timed,
+                    maxHrBpm = profile.maxHrBpm,
+                    rideEndMs = endMs,
+                )
+                _timeInZone.value = tiz
+            }.onFailure { Log.w("URUJ-Summary", "NDJSON-sourced TIZ compute failed", it) }
+        }
+    }
+
+    /** v0.8.2 — short readable badge label from a source breakdown. */
+    private fun formatSourceLabel(breakdown: Map<SensorSource, Int>): String {
+        if (breakdown.isEmpty()) return ""
+        val total = breakdown.values.sum()
+        // Sort by count descending so the dominant source appears first
+        val parts = breakdown.entries.sortedByDescending { it.value }
+        if (parts.size == 1) {
+            return when (parts[0].key) {
+                SensorSource.STRAP -> "from chest strap"
+                SensorSource.BAND -> "from band (batched)"
+                SensorSource.MIXED -> "mixed"
+                SensorSource.UNKNOWN_LEGACY -> "from band (legacy)"
+            }
+        }
+        // Mixed sources — show percentages
+        return parts.joinToString(" + ") { e ->
+            val pct = (e.value * 100 / total).coerceAtLeast(1)
+            "$pct% ${e.key.displayShort()}"
+        }
+    }
+
+    /**
+     * v0.8.2 — original HC-polling flow extracted into a separate method
+     * (called only when NDJSON has no HR data, e.g. pre-strap-pairing
+     * rides or both BLE+HC were unavailable during the ride). Behavior
+     * unchanged from pre-v0.8.2: polls every 15s for 5 min, stops when
+     * HC sync lands.
+     */
+    private fun startHcEnrichmentFlow(
+        sessionId: String,
+        startedAtMs: Long,
+        endedAtMs: Long,
+    ) {
         val existing = historyRepo.load(sessionId)
-        // If we already have HR data, show it instantly AND kick off a single
-        // background re-pull. The original 5-min polling window stops the
-        // first time it sees ANY HR data — but Samsung sometimes pushes the
-        // full workout batch later (the 2026-05-13 ride was a textbook case:
-        // initial enrichment captured max 156 from partial sync, real peak
-        // 173 arrived ~15 min after ride end). Re-pulling on summary view
-        // lets the displayed max catch up to reality.
         if (existing?.averageHrBpm != null) {
             // Show stored data immediately with isRefreshing=true — UI renders a
             // small spinner/badge so the rider knows a background HC re-pull is

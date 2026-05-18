@@ -60,9 +60,55 @@ class NdjsonRideReader(context: Context) {
         samples
     }
 
+    /**
+     * v0.8.2 — read just the HR-bearing samples from a ride's NDJSON. Each
+     * returned entry is `(timestamp, bpm, source)`. Skips samples with null
+     * `hrBpm` (no HR recorded for that GPS tick — pre-strap rides or BLE/HC
+     * both unavailable at that instant).
+     *
+     * `source` maps the persisted `hrSource` string back to a `SensorSource`:
+     *   "BLE_CHEST_STRAP" → STRAP
+     *   "HC_BATCHED" → BAND
+     *   "UNKNOWN" or null → UNKNOWN_LEGACY (treated as BAND-equivalent for
+     *     fallback purposes, but flagged so the breakdown can show it)
+     *
+     * Used by RideSummaryViewModel + future TIZ + zone-coloring paths to
+     * read the higher-precision strap data when available rather than
+     * re-querying HC. Falls back to HC when this returns empty (or
+     * effectively empty — < MIN_USEFUL_SAMPLES).
+     */
+    suspend fun readHrSamples(sessionId: String): List<RideHrSample> =
+        readSamples(sessionId, stride = 1)
+            .mapNotNull { s ->
+                val bpm = s.hrBpm ?: return@mapNotNull null
+                if (bpm <= 0) return@mapNotNull null
+                RideHrSample(
+                    timestampMs = s.timestampMs,
+                    bpm = bpm,
+                    source = mapSourceString(s.hrSource),
+                )
+            }
+
+    private fun mapSourceString(raw: String?): com.uruj.domain.SensorSource = when (raw) {
+        "BLE_CHEST_STRAP" -> com.uruj.domain.SensorSource.STRAP
+        "HC_BATCHED" -> com.uruj.domain.SensorSource.BAND
+        "UNKNOWN", null -> com.uruj.domain.SensorSource.UNKNOWN_LEGACY
+        else -> com.uruj.domain.SensorSource.UNKNOWN_LEGACY
+    }
+
     companion object {
         private const val TAG = "URUJ-NdjsonReader"
         /** Hard ceiling on samples returned. At stride=1 corresponds to ~2.7 hours of 1Hz data. */
         private const val MAX_SAMPLES = 10_000
+        /** Below this many samples, fall back to HC instead of trusting NDJSON
+         *  HR alone. Most real rides have ≥60 samples (1 min minimum). */
+        const val MIN_USEFUL_HR_SAMPLES = 30
     }
 }
+
+/** v0.8.2 — one HR reading from a ride's NDJSON, with provenance. */
+data class RideHrSample(
+    val timestampMs: Long,
+    val bpm: Int,
+    val source: com.uruj.domain.SensorSource,
+)
