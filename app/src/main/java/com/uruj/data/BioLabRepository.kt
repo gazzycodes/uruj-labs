@@ -11,6 +11,9 @@ import androidx.health.connect.client.records.Vo2MaxRecord
 import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import com.uruj.domain.CarInterpretation
+import com.uruj.domain.CarResult
+import com.uruj.power.CarDetector
 import com.uruj.power.HrAnalyzer
 import com.uruj.power.HrRecoveryCalculator
 import com.uruj.power.KarvonenZonesCalculator
@@ -50,6 +53,9 @@ class BioLabRepository(context: Context) {
     // v0.7.0 — read RMSSD HRV from continuous BLE NDJSON
     private val continuousBiometric = ContinuousBiometricRepository(appContext)
     private val lastSleepReader = LastSleepReader()
+    // v0.7.2 — Cortisol Awakening Response
+    private val carRepo = CarRepository(appContext)
+    private val carDetector = CarDetector()
 
     suspend fun snapshot(): BioLabSnapshot = withContext(Dispatchers.IO) {
         val profile = profileStore.current()
@@ -178,6 +184,12 @@ class BioLabRepository(context: Context) {
         // Count days of overnight HRV captured — drives "baseline building" UX
         val autonomicDaysOfData = continuousBiometric.daysWithOvernightHrvIn(7)
 
+        // v0.7.2 — Cortisol Awakening Response. Only resolved when the
+        // most-recent sleep ended ≥45 min ago and 24/7 NDJSON has enough
+        // samples for the pre/post-wake windows. Null otherwise (card hides).
+        val carResult = carRepo.computeForLastWake()
+        val carInterpretation = carResult?.let { carDetector.interpret(it) }
+
         BioLabSnapshot(
             computedAtMs = System.currentTimeMillis(),
             healthConnectAvailable = true,
@@ -226,6 +238,10 @@ class BioLabRepository(context: Context) {
             autonomicWindowLabel = autonomicWindowLabel,
             autonomicWindowCount = autonomicWindowCount,
             autonomicDaysOfData = autonomicDaysOfData,
+
+            // v0.7.2 — CAR
+            carResult = carResult,
+            carInterpretation = carInterpretation,
         )
     }
 
@@ -432,6 +448,13 @@ data class BioLabSnapshot(
     /** Days of overnight HRV captured in last 7 days. Drives baseline-building
      *  UX: <7 days → show "baseline building" notice on the Autonomic card. */
     val autonomicDaysOfData: Int = 0,
+
+    /** v0.7.2 — Cortisol Awakening Response for the most recent wake event.
+     *  Null when last sleep ended <45 min ago, or 24/7 NDJSON didn't have
+     *  enough samples in the pre/post-wake windows. Card hides when null. */
+    val carResult: CarResult? = null,
+    /** Tier classification + plain-English summary, paired with carResult. */
+    val carInterpretation: CarInterpretation? = null,
 )
 
 /** A single qualifying HRR1 reading from one exercise session. */
