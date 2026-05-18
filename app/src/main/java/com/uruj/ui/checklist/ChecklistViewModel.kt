@@ -56,7 +56,21 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
         pollingJob = viewModelScope.launch {
             while (isActive) {
                 refresh()
-                delay(2_000L)
+                // v0.8.4 — was 2_000ms. That fired refresh() every 2 sec,
+                // each call running checkHealthConnectPermission() +
+                // checkHealthConnectRecentHr() → 2 HC queries per poll →
+                // ~60 HC reads/min from this loop ALONE. Combined with
+                // Readiness poll + inventory + WearTime, total HC pressure
+                // consistently blew HC's foreground quota → flickering
+                // "granted ↔ not granted" on the HR permission tile +
+                // cascading data drops on the Readiness card.
+                //
+                // 15 sec is plenty: Android perms / GPS / HC perms don't
+                // change at 2-sec resolution in normal use. User toggles
+                // settings → returns to app → next refresh fires within
+                // 15 sec → catches the change. Force-fresh available via
+                // any explicit FIX button which calls refresh() inline.
+                delay(15_000L)
             }
         }
         // v0.8.4 — Readiness polling reduced from 60s → 5 min to stop the
