@@ -23,12 +23,23 @@ class DiagnosticsViewModel(application: Application) : AndroidViewModel(applicat
     private val _lastRefreshAtMs = MutableStateFlow<Long?>(null)
     val lastRefreshAtMs: StateFlow<Long?> = _lastRefreshAtMs.asStateFlow()
 
+    /**
+     * v0.7.10 — monotonic counter that increments on every `refresh()`.
+     * Child cards on the Pipeline tab (WearTimeCard, ContinuousMonitorCard,
+     * future cards) observe this and re-fetch their own data when the
+     * counter changes. Previously the refresh button only refreshed the
+     * HC inventory listing — now it cascades to every card on the tab.
+     */
+    private val _refreshTrigger = MutableStateFlow(0L)
+    val refreshTrigger: StateFlow<Long> = _refreshTrigger.asStateFlow()
+
     fun refresh() {
         viewModelScope.launch {
             _isRefreshing.value = true
             try {
                 _inventory.value = repo.inventory()
                 _lastRefreshAtMs.value = System.currentTimeMillis()
+                _refreshTrigger.value = _refreshTrigger.value + 1
             } finally {
                 _isRefreshing.value = false
             }

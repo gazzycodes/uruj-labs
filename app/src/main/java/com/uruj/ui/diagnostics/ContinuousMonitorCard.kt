@@ -62,7 +62,7 @@ import kotlinx.coroutines.launch
  * battery drain.
  */
 @Composable
-fun ContinuousMonitorCard() {
+fun ContinuousMonitorCard(refreshTrigger: Long = 0L) {
     val context = LocalContext.current
     val settingsStore = remember { BiometricSettingsStore(context) }
     val recorder = remember { ContinuousBiometricRecorder(context) }
@@ -81,6 +81,12 @@ fun ContinuousMonitorCard() {
             delay(10_000L)
         }
         samplesToday = runCatching { recorder.samplesTodayCount() }.getOrDefault(0L)
+    }
+    // v0.7.10 — also re-fetch on global refresh button taps
+    LaunchedEffect(refreshTrigger) {
+        if (refreshTrigger > 0L) {
+            samplesToday = runCatching { recorder.samplesTodayCount() }.getOrDefault(0L)
+        }
     }
 
     Column(
