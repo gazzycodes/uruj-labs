@@ -20,6 +20,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -49,6 +53,17 @@ fun TrendShell(
     spec: TrendSpec,
     onBack: () -> Unit,
 ) {
+    // v0.7.6 — range chips re-added. Each metric screen loads max-window data;
+    // TrendShell filters here so the chart updates instantly on chip tap.
+    var range by remember { mutableStateOf(TrendRange.DAYS_30) }
+    val nowMs = System.currentTimeMillis()
+    val cutoffMs = when (range) {
+        TrendRange.DAYS_7 -> nowMs - 7L * 24 * 3600_000
+        TrendRange.DAYS_30 -> nowMs - 30L * 24 * 3600_000
+        TrendRange.DAYS_90 -> nowMs - 90L * 24 * 3600_000
+        TrendRange.ALL -> 0L
+    }
+    val filteredPoints = spec.points.filter { it.labelMs >= cutoffMs }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -83,12 +98,26 @@ fun TrendShell(
             )
             Text(spec.intro, color = UrujMuted, fontSize = 12.sp)
 
+            // v0.7.6 — range filter chips
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                for (r in TrendRange.entries) {
+                    RangeChip(
+                        label = r.label,
+                        selected = r == range,
+                        onClick = { range = r },
+                    )
+                }
+            }
+
             if (spec.loading) {
                 Box(
                     modifier = Modifier.fillMaxWidth().height(160.dp),
                     contentAlignment = Alignment.Center,
                 ) { CircularProgressIndicator(color = UrujAccent) }
-            } else if (spec.points.isEmpty()) {
+            } else if (filteredPoints.isEmpty()) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -102,7 +131,7 @@ fun TrendShell(
                 }
             } else {
                 TrendChart(
-                    points = spec.points,
+                    points = filteredPoints,
                     yMin = spec.yMin,
                     yMax = spec.yMax,
                     yTicks = spec.yTicks,
@@ -115,12 +144,12 @@ fun TrendShell(
                     TierLegend(spec.tierBands)
                 }
                 StatsBlock(
-                    points = spec.points,
+                    points = filteredPoints,
                     valueFormatter = spec.valueFormatter,
                     higherIsBetter = spec.higherIsBetter,
                 )
                 ReadingsList(
-                    points = spec.points,
+                    points = filteredPoints,
                     valueFormatter = spec.valueFormatter,
                     detailFormatter = spec.detailFormatter,
                 )
@@ -259,5 +288,26 @@ private fun ReadingsList(
                 color = UrujMuted, fontSize = 10.sp,
             )
         }
+    }
+}
+
+/** v0.7.6 — time-range filter for the trend chart. ALL shows everything
+ *  on disk (useful as the dataset grows past 90 days). */
+enum class TrendRange(val label: String) {
+    DAYS_7("7d"),
+    DAYS_30("30d"),
+    DAYS_90("90d"),
+    ALL("All"),
+}
+
+@Composable
+private fun RangeChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    val bg = if (selected) UrujAccent else UrujSurfaceHigh.copy(alpha = 0.5f)
+    val fg = if (selected) androidx.compose.ui.graphics.Color.Black else UrujText
+    androidx.compose.material3.TextButton(
+        onClick = onClick,
+        modifier = Modifier.background(bg, androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
+    ) {
+        Text(label, color = fg, fontWeight = FontWeight.Bold, fontSize = 12.sp)
     }
 }
