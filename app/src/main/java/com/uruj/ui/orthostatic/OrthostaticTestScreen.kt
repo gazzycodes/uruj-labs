@@ -183,6 +183,12 @@ private fun PhaseView(
     secondary: String,
     accent: Color,
 ) {
+    // Big-number countdowns (≤4 chars: "5:23", "27", "·") use 120sp.
+    // Multi-word labels ("Get ready", "···") use 48sp so the letters
+    // don't run into each other with our negative letter-spacing.
+    val isCountdown = primary.length <= 4 && primary.any { it.isDigit() }
+    val primaryFontSize = if (isCountdown) 120.sp else 48.sp
+    val primaryLetterSpacing = if (isCountdown) (-4).sp else 0.sp
     Column(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.Center,
@@ -201,8 +207,8 @@ private fun PhaseView(
             color = accent,
             fontFamily = FontFamily.SansSerif,
             fontWeight = FontWeight.Black,
-            fontSize = 120.sp,
-            letterSpacing = (-4).sp,
+            fontSize = primaryFontSize,
+            letterSpacing = primaryLetterSpacing,
         )
         Spacer(Modifier.height(24.dp))
         Text(

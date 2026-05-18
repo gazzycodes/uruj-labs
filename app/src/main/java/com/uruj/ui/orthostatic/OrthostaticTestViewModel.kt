@@ -59,6 +59,23 @@ class OrthostaticTestViewModel(application: Application) : AndroidViewModel(appl
                 )
                 return@launch
             }
+            // Pre-flight: is the pipeline actually capturing RIGHT NOW? The
+            // settings toggle being on doesn't guarantee BLE is streaming.
+            val recent = withContext(Dispatchers.IO) { repo.recentSampleCount(60_000L) }
+            if (recent < 5) {
+                _state.value = UiState.Error(
+                    "24/7 monitoring toggle is ON but the strap is not streaming " +
+                        "right now (only $recent samples in the last 60 sec — need " +
+                        "≥5). Likely causes:\n\n" +
+                        "• Strap is off or out of range\n" +
+                        "• Electrodes are dry — wet them with water and re-seat\n" +
+                        "• BLE service was killed by Android — open Pipeline tab " +
+                        "and check the 24/7 monitoring card status; toggle off/on " +
+                        "to restart\n\n" +
+                        "Fix that first, then come back."
+                )
+                return@launch
+            }
             runProtocol()
         }
     }
@@ -113,9 +130,13 @@ class OrthostaticTestViewModel(application: Application) : AndroidViewModel(appl
 
         // ── Computing — slice the 24/7 NDJSON and run the math ──
         _state.value = UiState.Computing
+        val (seatedSamples, standingSamples) = withContext(Dispatchers.IO) {
+            repo.samplesForWindow(seatedStart, seatedEnd) to
+                repo.samplesForWindow(standingStart, standingEnd)
+        }
+        val seatedBeats = seatedSamples.sumOf { it.rrIntervalsMs.count { rr -> rr > 0 } }
+        val standingBeats = standingSamples.sumOf { it.rrIntervalsMs.count { rr -> rr > 0 } }
         val result = withContext(Dispatchers.IO) {
-            val seatedSamples = repo.samplesForWindow(seatedStart, seatedEnd)
-            val standingSamples = repo.samplesForWindow(standingStart, standingEnd)
             calc.compute(
                 sessionId = sessionId,
                 startedAtMs = startedAtMs,
@@ -128,10 +149,34 @@ class OrthostaticTestViewModel(application: Application) : AndroidViewModel(appl
             )
         }
         if (result == null) {
-            _state.value = UiState.Error(
-                "Not enough clean RR data captured. Check strap contact (electrodes " +
-                    "moist + snug) and that 24/7 monitoring service is alive. Try again."
-            )
+            // Show the rider EXACTLY what was captured so they can diagnose.
+            val msg = buildString {
+                append("Not enough clean RR data to compute. What we captured:\n\n")
+                append("• SEATED window: ${seatedSamples.size} samples, $seatedBeats beats\n")
+                append("• STANDING window: ${standingSamples.size} samples, $standingBeats beats\n")
+                append("• Need ≥30 clean beats per window\n\n")
+                if (seatedSamples.isEmpty() && standingSamples.isEmpty()) {
+                    append(
+                        "Both windows are EMPTY — the 24/7 service was not writing " +
+                            "during the test. Check Pipeline tab → 24/7 monitoring " +
+                            "card status; toggle off/on to restart."
+                    )
+                } else if (seatedBeats < 30 || standingBeats < 30) {
+                    append(
+                        "Strap was sending mostly empty notifications (no RR " +
+                            "intervals) — usually means poor electrode contact. " +
+                            "Wet the electrodes with water, re-seat the strap snug, " +
+                            "then retry."
+                    )
+                } else {
+                    append(
+                        "Beat count looks fine but consecutive-pair filter rejected " +
+                            "most of them. Could be motion artifact (sat/stood with " +
+                            "unstable posture). Retry while staying very still."
+                    )
+                }
+            }
+            _state.value = UiState.Error(msg)
             return
         }
         withContext(Dispatchers.IO) { repo.save(result) }

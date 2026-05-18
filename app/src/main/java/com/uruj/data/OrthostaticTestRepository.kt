@@ -34,6 +34,21 @@ class OrthostaticTestRepository(context: Context) {
         return continuousRepo.samplesForWindow(start, end)
     }
 
+    /**
+     * Pre-flight: is the 24/7 service actually CAPTURING right now? The
+     * toggle being on doesn't guarantee BLE is streaming — strap could be
+     * disconnected, off-skin, out of range, or the service could have been
+     * killed by Android Doze and is awaiting auto-restart.
+     *
+     * Returns the count of samples received in the last [withinMs] ms.
+     * 0 = nothing flowing right now. Non-zero = pipeline is alive.
+     */
+    fun recentSampleCount(withinMs: Long = 60_000L): Int {
+        val now = Instant.now()
+        val start = now.minusMillis(withinMs)
+        return continuousRepo.samplesForWindow(start, now).size
+    }
+
     /** Persist a finished test result to disk. */
     fun save(result: OrthostaticTestResult): Boolean {
         val ts = Instant.ofEpochMilli(result.startedAtMs)
