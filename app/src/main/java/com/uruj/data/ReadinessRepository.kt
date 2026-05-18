@@ -78,6 +78,9 @@ class ReadinessRepository(context: Context) {
     private val lastSleepReader = LastSleepReader()
     // v0.7.0 — BLE chest-strap RMSSD HRV from continuous monitoring NDJSON.
     private val continuousBiometric = ContinuousBiometricRepository(appContext)
+    // v0.9.1 — daily TSB snapshots so the 6-month fitness curve survives
+    // beyond HC's 30-day retention window. Same architecture as HRR1/RHR/VO2.
+    private val tsbSnapshots = TsbSnapshotRepository(appContext)
 
     suspend fun compute(): ReadinessResult = withContext(Dispatchers.IO) {
         val inputs = gatherInputs()
@@ -312,6 +315,27 @@ class ReadinessRepository(context: Context) {
         // anchors the HR Reserve fraction for running/HIIT/etc hrTSS.
         val rhrForLoad = rhrBaseline ?: rhrToday
 
+        // v0.9.1 — compute TSB once with full detail, then both:
+        //   (1) use the scalar .tsb for ReadinessInputs (downstream scoring)
+        //   (2) persist the daily snapshot (CTL + ATL + TSB) to disk for the
+        //       future TSB trend chart that watches fitness curves over months
+        val tsbDetailed = computeTsbDetailed(client, granted, rhrForLoad)
+        if (tsbDetailed != null) {
+            val today = LocalDate.now(ZoneId.systemDefault())
+            tsbSnapshots.save(
+                TsbSnapshot(
+                    dateIsoLocal = today.toString(),
+                    tsb = tsbDetailed.tsb,
+                    ctl = tsbDetailed.ctl,
+                    atl = tsbDetailed.atl,
+                    totalLoad42d = tsbDetailed.totalLoad42d,
+                    methodologyVersion = TsbSnapshotRepository.METHODOLOGY_VERSION,
+                    computedAtMs = System.currentTimeMillis(),
+                ),
+                date = today,
+            )
+        }
+
         return Triple(
             ReadinessInputs(
                 sleepLastNightHours = sleep,
@@ -319,7 +343,7 @@ class ReadinessRepository(context: Context) {
                 hrvBaseline7d = hrvBaseline,
                 restingHrToday = rhrToday,
                 restingHrBaseline7d = rhrBaseline,
-                trainingStressBalance = computeTsb(client, granted, rhrForLoad),
+                trainingStressBalance = tsbDetailed?.tsb,
                 hrvDaysOfDataIn7d = hrvDaysOfDataIn7d,
             ),
             rhrSource,
@@ -431,11 +455,23 @@ class ReadinessRepository(context: Context) {
      * cycling source. Sessions within ±2 min of a URUJ ride are also skipped
      * (Samsung sometimes auto-detects what URUJ already recorded).
      */
-    private suspend fun computeTsb(
+    /**
+     * v0.9.1 — TSB compute now returns the detailed CTL + ATL + total-load
+     * triple, not just the headline TSB scalar. Caller in [compute] uses
+     * `.tsb` for ReadinessInputs (unchanged) AND saves a daily disk snapshot
+     * capturing all three values for the future TSB trend chart (the long-
+     * arc fitness curve that lets riders see taper / overload / recovery
+     * patterns across months).
+     *
+     * Old `computeTsb` shape (returning Float?) is preserved at call sites
+     * through a thin wrapper [computeTsbScalar] so any code path that just
+     * needs the number keeps working.
+     */
+    private suspend fun computeTsbDetailed(
         client: HealthConnectClient?,
         granted: Set<String>,
         athleticRhr: Int?,
-    ): Float? {
+    ): TsbCompute? {
         val rides = historyRepo.listAll()
         val zone = ZoneId.systemDefault()
         val todayDate = LocalDate.now(zone)
@@ -496,8 +532,26 @@ class ReadinessRepository(context: Context) {
             atl = atl * (1f - 1f / 7f) + tss * (1f / 7f)
             ctl = ctl * (1f - 1f / 42f) + tss * (1f / 42f)
         }
-        return ctl - atl
+        return TsbCompute(tsb = ctl - atl, ctl = ctl, atl = atl, totalLoad42d = totalLoad)
     }
+
+    /**
+     * Backwards-compatible wrapper — same signature + return as pre-v0.9.1.
+     * Used by call sites that only need the scalar TSB value.
+     */
+    private suspend fun computeTsb(
+        client: HealthConnectClient?,
+        granted: Set<String>,
+        athleticRhr: Int?,
+    ): Float? = computeTsbDetailed(client, granted, athleticRhr)?.tsb
+
+    /** v0.9.1 — full CTL/ATL/TSB triple plus the 42d total load contribution. */
+    private data class TsbCompute(
+        val tsb: Float,
+        val ctl: Float,
+        val atl: Float,
+        val totalLoad42d: Float,
+    )
 
     private data class SessionLoad(val daysAgo: Int, val tss: Float)
 
