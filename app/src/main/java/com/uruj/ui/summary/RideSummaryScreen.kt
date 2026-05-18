@@ -136,12 +136,15 @@ fun RideSummaryScreen(
             Spacer(Modifier.height(12.dp))
             HrCard(hrState)
             // Time-in-zone breakdown — only shown when HR samples exist for the ride.
-            // Reads from HC's post-batch sync data via TimeInZoneCalculator. Polarized
-            // training compliance metric (Blummenfelt-style 80/20) included inline.
+            // v0.8.2 — reads ride NDJSON (strap-first via BLE merger) when available,
+            // falling back to HC's post-batch sync. hrSourceBreakdown surfaces which
+            // sensor(s) produced the data so the rider can see "from chest strap ✓"
+            // vs "from band (batched)" vs "78% strap + 22% band" etc.
             val tiz by viewModel.timeInZone.collectAsStateWithLifecycle()
+            val hrSourceBreakdown by viewModel.hrSourceBreakdown.collectAsStateWithLifecycle()
             if (tiz != null) {
                 Spacer(Modifier.height(12.dp))
-                TimeInZoneCard(tiz!!)
+                TimeInZoneCard(tiz!!, sourceBreakdown = hrSourceBreakdown)
             }
             Spacer(Modifier.height(12.dp))
             ClimbCard(state)
@@ -337,8 +340,38 @@ private fun HrCard(hrState: HrEnrichmentState) {
 }
 
 @Composable
-private fun TimeInZoneCard(result: com.uruj.power.TimeInZoneCalculator.Result) {
+private fun TimeInZoneCard(
+    result: com.uruj.power.TimeInZoneCalculator.Result,
+    sourceBreakdown: Map<com.uruj.domain.SensorSource, Int> = emptyMap(),
+) {
     Card("TIME IN ZONE", accent = UrujNeonMagenta) {
+        // v0.8.2 — source breakdown badge above the bar so rider knows which
+        // sensor(s) produced the HR data feeding this analysis. Strap-sourced
+        // TIZ is more accurate than HC-batched (per-second cadence vs ~30s).
+        if (sourceBreakdown.isNotEmpty()) {
+            val total = sourceBreakdown.values.sum()
+            val badge = if (sourceBreakdown.size == 1) {
+                val only = sourceBreakdown.keys.first()
+                when (only) {
+                    com.uruj.domain.SensorSource.STRAP -> "from chest strap ✓"
+                    com.uruj.domain.SensorSource.BAND -> "from band (batched)"
+                    com.uruj.domain.SensorSource.MIXED -> "mixed sources"
+                    com.uruj.domain.SensorSource.UNKNOWN_LEGACY -> "legacy (pre-v0.8.2)"
+                }
+            } else {
+                sourceBreakdown.entries.sortedByDescending { it.value }.joinToString(" + ") { e ->
+                    val pct = (e.value * 100 / total).coerceAtLeast(1)
+                    "$pct% ${e.key.displayShort()}"
+                }
+            }
+            androidx.compose.material3.Text(
+                badge,
+                color = UrujMuted,
+                fontSize = 10.sp,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+            )
+        }
         // Horizontal stacked bar — each zone takes a slice proportional to its
         // share of the total. Visual at-a-glance "where did I spend the ride."
         Row(
