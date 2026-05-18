@@ -30,6 +30,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.produceState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
@@ -960,7 +962,10 @@ private fun OrthostaticInfoDialog(
             Text("Orthostatic test", color = UrujText, fontWeight = FontWeight.Black, fontSize = 18.sp)
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 InfoBlock(
                     "What it is",
                     "A 4-minute sit→stand protocol measuring how your autonomic " +
