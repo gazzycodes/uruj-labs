@@ -220,19 +220,59 @@ class MainActivity : ComponentActivity() {
                             activeOrphan = null
                         },
                         onEndAndSave = {
-                            ioScope.launch(Dispatchers.IO) {
-                                RideHistoryRepository(this@MainActivity)
-                                    .finalizeActiveOrphan(active.sessionId)
+                            // v0.8.5 — bulletproof END & SAVE flow.
+                            //
+                            // Pre-v0.8.5: kicked off finalizeActiveOrphan, set
+                            // recoveredRide=active. User then saw the
+                            // "Previous ride recovered" dialog (which has wording
+                            // implying the OS auto-recovered the ride — incorrect
+                            // for this path where the user EXPLICITLY chose end &
+                            // save). Tapping VIEW RIDE attempted to navigate to
+                            // ViewingPastRide but could land on HUD if Android
+                            // had auto-restarted the killed RideRecorderService
+                            // (START_STICKY) and rideState.isRecording was still
+                            // true — the navigation `when` block routes
+                            // isRecording=true to HudScreen BEFORE checking the
+                            // `screen` state.
+                            //
+                            // v0.8.5 fixes both issues:
+                            //   1. Defensively send ACTION_STOP to the service
+                            //      (in case Android auto-restarted it).
+                            //   2. Explicitly reset RideStateHolder so the nav
+                            //      chain sees isRecording=false immediately
+                            //      (no race with the service's STOP intent).
+                            //   3. Navigate DIRECTLY to ViewingPastRide; skip
+                            //      the OrphanRecoveryDialog (wrong wording for
+                            //      this user-initiated path).
+                            //   4. Reload the freshly-finalized summary so the
+                            //      displayed stats reflect the NDJSON rebuild.
+                            val sessionId = active.sessionId
+                            ioScope.launch {
+                                stopRide()
+                                RideStateHolder.reset()
+                                val final = withContext(Dispatchers.IO) {
+                                    val repo = RideHistoryRepository(this@MainActivity)
+                                    repo.finalizeActiveOrphan(sessionId)
+                                    repo.load(sessionId)
+                                } ?: active
+                                screen = AppScreen.ViewingPastRide(final)
+                                activeOrphan = null
+                                recoveredRide = null
                             }
-                            activeOrphan = null
-                            recoveredRide = active
                         },
                         onDiscard = {
-                            ioScope.launch(Dispatchers.IO) {
-                                RideHistoryRepository(this@MainActivity)
-                                    .discardActiveOrphan(active.sessionId)
+                            ioScope.launch {
+                                // Defensive: ensure service is stopped if Android
+                                // auto-restarted it post-kill, before deleting
+                                // the NDJSON it might still be appending to.
+                                stopRide()
+                                RideStateHolder.reset()
+                                withContext(Dispatchers.IO) {
+                                    RideHistoryRepository(this@MainActivity)
+                                        .discardActiveOrphan(active.sessionId)
+                                }
+                                activeOrphan = null
                             }
-                            activeOrphan = null
                         },
                     )
                 }
