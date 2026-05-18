@@ -92,8 +92,27 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
             readinessJob = viewModelScope.launch {
                 while (isActive) {
                     val snap = readinessRepo.computeWithDiagnostics()
-                    _readiness.value = snap.result
-                    _readinessSnapshot.value = snap
+                    // v0.8.4 — STICKY CACHE: only overwrite the displayed
+                    // snapshot if the new result is at-least-as-complete as
+                    // the cached one. Prevents transient HC rate-limit
+                    // failures from blanking the Readiness card.
+                    //
+                    // dataConfidence is the fraction of the 4-input weight
+                    // that produced a non-null component (0.0 → 1.0). When
+                    // HC rate-limits mid-poll, several inputs come back
+                    // null → dataConfidence drops → we keep the previous
+                    // good snapshot instead.
+                    val current = _readinessSnapshot.value
+                    val shouldUpdate = current == null ||
+                        snap.result.dataConfidence >= current.result.dataConfidence ||
+                        // Also accept if the new compute is from >10 min ago
+                        // — let stale-good get overwritten by any fresher
+                        // compute even if HC is degraded.
+                        (System.currentTimeMillis() - current.computedAtMs) > 10L * 60 * 1000
+                    if (shouldUpdate) {
+                        _readiness.value = snap.result
+                        _readinessSnapshot.value = snap
+                    }
                     delay(READINESS_POLL_INTERVAL_MS)
                 }
             }
@@ -107,7 +126,9 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
         readinessJob = null
     }
 
-    /** User-triggered readiness re-fetch with visible loading state. */
+    /** User-triggered readiness re-fetch with visible loading state.
+     *  v0.8.4 — manual tap ALWAYS overwrites cache (user explicitly asked
+     *  for fresh data); the sticky cache only applies to background polls. */
     fun refreshReadiness() {
         viewModelScope.launch {
             _readinessSyncing.value = true
