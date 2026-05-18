@@ -61,6 +61,8 @@ class BioLabRepository(context: Context) {
     private val hrrSnapshots = HrrSnapshotRepository(appContext)
     // v0.9.1 — daily Athletic RHR snapshots. Same architecture as HRR1.
     private val rhrSnapshots = RhrSnapshotRepository(appContext)
+    // v0.9.1 — daily VO2 max snapshots (URUJ + Samsung side-by-side).
+    private val vo2Snapshots = Vo2SnapshotRepository(appContext)
 
     suspend fun snapshot(): BioLabSnapshot = withContext(Dispatchers.IO) {
         val profile = profileStore.current()
@@ -214,6 +216,27 @@ class BioLabRepository(context: Context) {
         // URUJ's number is shown alongside Samsung's in the VO2 card — both
         // visible, neither hidden. Transparency is the moat.
         val displayVo2 = vo2.consensus
+
+        // v0.9.1 — persist today's VO2 snapshot if we have a consensus value.
+        // Idempotent — today's file is preserved if it already exists. Captures
+        // BOTH URUJ + Samsung values so future trend charts can show side-by-side
+        // evolution (same transparency moat as the BioLab card).
+        if (displayVo2 != null) {
+            val today = java.time.LocalDate.now()
+            vo2Snapshots.save(
+                Vo2Snapshot(
+                    dateIsoLocal = today.toString(),
+                    urujConsensusMlKgMin = displayVo2,
+                    urujHrBasedMlKgMin = vo2.hrBased,
+                    urujPowerBasedMlKgMin = vo2.powerBased,
+                    samsungMlKgMin = samsungVo2Max,
+                    classification = vo2.classification,
+                    methodologyVersion = Vo2SnapshotRepository.METHODOLOGY_VERSION,
+                    computedAtMs = System.currentTimeMillis(),
+                ),
+                date = today,
+            )
+        }
 
         val karvonenZones = if (effectiveRestingHr != null && effectiveMaxHr > effectiveRestingHr) {
             karvonenCalc.compute(effectiveMaxHr, effectiveRestingHr)
