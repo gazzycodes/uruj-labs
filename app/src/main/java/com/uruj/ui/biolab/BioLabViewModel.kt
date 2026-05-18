@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.uruj.data.BioLabRepository
 import com.uruj.data.BioLabSnapshot
+import com.uruj.data.HcReadGuard
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,8 +47,21 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val fresh = repo.snapshot()
+                // v0.8.5 — during the post-ride quiet window, serve cache
+                // and skip the HC-heavy snapshot compute entirely. User is
+                // in the post-ride tab cascade and BioLab's reads (HC HR
+                // samples 30d, sleep windows 30d, exercise sessions 30d,
+                // VO2 record, weight record) total ~7 HC reads per snapshot
+                // — enough to push burst sub-limit if combined with
+                // Inventory + Readiness reads. Cache holds until normal
+                // sticky-cache TTL takes over.
                 val cached = _snapshot.value
+                if (!force && cached != null && HcReadGuard.isPostRideQuietWindow()) {
+                    Log.d(TAG, "[v0.8.5] post-ride quiet window — serving cache")
+                    return@launch
+                }
+                HcReadGuard.recordRead("biolab.snapshot")
+                val fresh = repo.snapshot()
                 val shouldUpdate = force ||
                     cached == null ||
                     fresh.dataConfidence >= cached.dataConfidence ||

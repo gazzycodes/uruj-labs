@@ -121,6 +121,10 @@ class WearTimeRepository(context: Context) {
         if (HealthPermission.getReadPermission(HeartRateRecord::class) !in granted) {
             return emptyList()
         }
+        // v0.8.5 — observability so HC pressure is visible in logcat
+        // (filter URUJ-HC). WearTime polls every 30s while Pipeline tab is
+        // visible — 120 reads/hr in the worst case, small but cumulative.
+        HcReadGuard.recordRead("weartime.hr-samples")
         return runCatching {
             client.readRecords(
                 ReadRecordsRequest(

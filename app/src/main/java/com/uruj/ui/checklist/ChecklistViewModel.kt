@@ -102,7 +102,13 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
                 val current = _readinessSnapshot.value
                 val recent = current != null &&
                     (System.currentTimeMillis() - current.computedAtMs) < READINESS_REFRESH_DEBOUNCE_MS
-                if (!recent) {
+                // v0.8.5 — during post-ride quiet window, serve cache if any
+                // exists. Bridges the post-ride tab cascade so Readiness
+                // doesn't add 6-8 HC reads during HC's burst-hot moment.
+                val postRideQuiet = current != null &&
+                    com.uruj.data.HcReadGuard.isPostRideQuietWindow()
+                if (!recent && !postRideQuiet) {
+                    com.uruj.data.HcReadGuard.recordRead("readiness.tab-open")
                     val snap = readinessRepo.computeWithDiagnostics()
                     // Sticky-cache fallback retained — protects against an
                     // HC blip during the single compute. If new result has
@@ -130,11 +136,14 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
 
     /** User-triggered readiness re-fetch with visible loading state.
      *  v0.8.4 — manual tap ALWAYS overwrites cache (user explicitly asked
-     *  for fresh data); the sticky cache only applies to background polls. */
+     *  for fresh data); the sticky cache only applies to background polls.
+     *  v0.8.5 — manual tap also bypasses the post-ride quiet window (user
+     *  wants fresh, even if HC is burst-hot — their call). */
     fun refreshReadiness() {
         viewModelScope.launch {
             _readinessSyncing.value = true
             try {
+                com.uruj.data.HcReadGuard.recordRead("readiness.manual-sync")
                 val snap = readinessRepo.computeWithDiagnostics()
                 _readiness.value = snap.result
                 _readinessSnapshot.value = snap
