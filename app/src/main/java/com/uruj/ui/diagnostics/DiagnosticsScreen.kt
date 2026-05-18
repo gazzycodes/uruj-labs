@@ -60,6 +60,7 @@ fun DiagnosticsScreen(
     val inventory by viewModel.inventory.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val lastRefreshAt by viewModel.lastRefreshAtMs.collectAsStateWithLifecycle()
+    val refreshTrigger by viewModel.refreshTrigger.collectAsStateWithLifecycle()
 
     val permLauncher = rememberLauncherForActivityResult(
         contract = PermissionController.createRequestPermissionResultContract(),
@@ -208,14 +209,16 @@ fun DiagnosticsScreen(
                 // v0.6.0 — 24/7 continuous monitoring toggle at the top.
                 // Sleep with strap on → wake with overnight data.
                 item(key = "continuous_monitor") {
-                    ContinuousMonitorCard()
+                    // v0.7.10 — refreshTrigger cascades the global refresh
+                    // button to this card.
+                    ContinuousMonitorCard(refreshTrigger = refreshTrigger)
                     Spacer(Modifier.height(8.dp))
                 }
                 // v0.7.8 — dual-sensor wear-time card. Shows today's coverage
                 // for BOTH chest strap (BLE NDJSON) and Samsung band (HC HR
                 // samples) plus the combined union — the redundancy metric.
                 item(key = "wear_time") {
-                    WearTimeCard()
+                    WearTimeCard(refreshTrigger = refreshTrigger)
                     Spacer(Modifier.height(8.dp))
                 }
                 // v0.5.0 — BLE chest strap test panel below the 24/7 toggle.

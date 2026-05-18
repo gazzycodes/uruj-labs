@@ -53,7 +53,7 @@ import kotlinx.coroutines.delay
  * Refreshes every 30s while the screen is foregrounded.
  */
 @Composable
-fun WearTimeCard() {
+fun WearTimeCard(refreshTrigger: Long = 0L) {
     val context = LocalContext.current
     val repo = remember { WearTimeRepository(context) }
     var snapshot by remember { mutableStateOf<WearTimeSnapshot?>(null) }
@@ -65,6 +65,12 @@ fun WearTimeCard() {
             snapshot = repo.today()
             loading = false
             delay(30_000L)
+        }
+    }
+    // v0.7.10 — re-fetch on global refresh button taps
+    LaunchedEffect(refreshTrigger) {
+        if (refreshTrigger > 0L) {
+            snapshot = repo.today()
         }
     }
 
@@ -86,10 +92,11 @@ fun WearTimeCard() {
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            "Local midnight → now. Strap = realtime primary (per-beat NDJSON). " +
-                "Band = batched backup (~10-15 min cadence at rest, HC sync lags 15-30 min). " +
-                "Combined = redundancy — when one is off (charging / shower / app crash), " +
-                "the other usually covers.",
+            "Strap is the realtime sensor (per-beat NDJSON) so it gets a wear % + " +
+                "gap line. Band is batched — Samsung writes HR every 10-15 min at " +
+                "idle and HC sync lags 6-24h on quiet days — so a wear % would be " +
+                "misleading; it's shown as a sync indicator only. Band still fills " +
+                "HRR1 + RHR via the source-labeled fallback path.",
             color = UrujMuted, fontSize = 11.sp,
         )
         Spacer(Modifier.height(12.dp))
@@ -112,6 +119,10 @@ fun WearTimeCard() {
             }
             else -> {
                 val nowMs = System.currentTimeMillis()
+                // v0.7.10 — strap is the only metric we display as wear-time %
+                // (per-second cadence is accurate at minute resolution). Band
+                // wear-time math was misleading at idle (14h+ batch lag is
+                // normal) → demoted to an informational sync line below.
                 WearRow(
                     label = "CHEST STRAP",
                     wornMinutes = s.result.strapWornMinutes,
@@ -124,54 +135,26 @@ fun WearTimeCard() {
                         "strap streamed " + formatAgo(nowMs - it) + " ago"
                     } ?: "no strap data yet",
                 )
-                Spacer(Modifier.height(8.dp))
-                WearRow(
-                    label = "SAMSUNG BAND",
-                    wornMinutes = s.result.bandWornMinutes,
-                    percent = s.result.bandPercent(),
-                    longestGapMin = s.result.longestBandGapMinutes,
-                    color = pickPercentColor(s.result.bandPercent()),
-                    available = s.bandAvailable,
-                    unavailableMsg = "No band HR data — check Samsung Health sync + HC permission",
-                    lastSyncedAgoText = s.mostRecentBandSampleMs?.let {
-                        val ago = nowMs - it
-                        val agoStr = formatAgo(ago)
-                        when {
-                            ago < 30L * 60_000L -> "band synced $agoStr ago ✓"
-                            ago < 2L * 3600_000L -> "band synced $agoStr ago (batch lag normal)"
-                            else -> "band synced $agoStr ago — sync may be stalled"
-                        }
-                    } ?: "band hasn't synced to HC yet today",
-                )
-                Spacer(Modifier.height(8.dp))
-                WearRow(
-                    label = "COMBINED ✓",
-                    wornMinutes = s.result.combinedWornMinutes,
-                    percent = s.result.combinedPercent(),
-                    longestGapMin = s.result.longestCombinedGapMinutes,
-                    color = pickPercentColor(s.result.combinedPercent()),
-                    available = true,
-                    unavailableMsg = "",
-                    isCombined = true,
-                    lastSyncedAgoText = "redundancy — neither sensor blind here",
-                )
+                Spacer(Modifier.height(10.dp))
+                // v0.7.10 — band info-only row (no percentage, no progress bar)
+                BandStatusRow(snapshot = s, nowMs = nowMs)
 
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    interpretation(s),
+                    strapInterpretation(s),
                     color = UrujText.copy(alpha = 0.85f),
                     fontSize = 11.sp,
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Methodology: STRAP uses 1-min buckets (per-second cadence supports " +
-                        "minute resolution). BAND at idle writes 1 HR sample per 10-15 min, " +
-                        "so each band sample marks ±7.5 min around it as 'worn' (15-min " +
-                        "inference window). HC writes 15-30 min after Samsung Health syncs, " +
-                        "so band % may lag the strap %.\n\n" +
-                        "If URUJ app dies: strap stops capturing (BLE pipeline goes with it), " +
-                        "BUT band continues syncing to HC independently. That's why COMBINED " +
-                        "= redundancy.",
+                    "Methodology: strap uses 1-min buckets (per-second NDJSON cadence " +
+                        "supports minute resolution). Band is intentionally NOT shown as a " +
+                        "wear-time %: Samsung writes idle HR samples at ~10-15 min cadence " +
+                        "and HC sync lags 6-24h on quiet days, so any % would be misleading. " +
+                        "Band's role here is backup verification — when strap is off " +
+                        "(charging / shower / app crash), the band's batched HR fills in " +
+                        "HRR1 + RHR via the source-labeled path. See HR Recovery + Athletic " +
+                        "RHR cards for which sensor produced each reading.",
                     color = UrujMuted, fontSize = 10.sp,
                 )
             }
@@ -286,23 +269,71 @@ private fun formatHm(minutes: Int): String {
     return if (m == 0) "${h}h" else "${h}h ${m}m"
 }
 
-private fun interpretation(s: WearTimeSnapshot): String {
-    val combinedPct = s.result.combinedPercent()
-    val gapMin = s.result.longestCombinedGapMinutes
+/** v0.7.10 — band as info-only row. No percentage, no progress bar — just
+ *  current sync state + count of today's batched samples. Honest because
+ *  band's idle-cadence batch behavior makes any % misleading. */
+@Composable
+private fun BandStatusRow(snapshot: WearTimeSnapshot, nowMs: Long) {
+    val s = snapshot
+    val lastSyncMs = s.mostRecentBandSampleMs
+    val lastSyncText = if (lastSyncMs != null) {
+        "Last band HR sample synced ${formatAgo(nowMs - lastSyncMs)} ago"
+    } else if (s.bandAvailable) {
+        "Band paired — no HR samples in HC yet today (batch sync pending)"
+    } else {
+        "No band HR data — check Samsung Health sync + HC permission"
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "SAMSUNG BAND",
+            color = UrujMuted,
+            fontWeight = FontWeight.Black,
+            fontSize = 10.sp,
+            letterSpacing = 1.5.sp,
+            modifier = Modifier.width(132.dp),
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                "Backup / verification",
+                color = UrujText.copy(alpha = 0.9f),
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 12.sp,
+            )
+            Text(
+                lastSyncText,
+                color = UrujMuted,
+                fontSize = 10.sp,
+            )
+        }
+    }
+}
+
+/**
+ * v0.7.10 — interpretation focused on the strap (band wear-time math
+ * removed). Strap is the realtime primary, so its % is what matters. Band
+ * backup is mentioned generally without a misleading number.
+ */
+private fun strapInterpretation(s: WearTimeSnapshot): String {
+    val pct = s.result.strapPercent()
+    val gapMin = s.result.longestStrapGapMinutes
     return when {
-        combinedPct >= 95f && gapMin <= 20 ->
-            "Near-perfect coverage today. Both sensors mostly captured continuously."
-        combinedPct >= 95f && gapMin > 20 ->
-            "Excellent overall coverage. One ${formatHm(gapMin)} blind window — probably " +
-                "shower or charging cycle when both came off."
-        combinedPct >= 80f ->
-            "Strong coverage. ${formatHm(gapMin)} longest blind window. Tomorrow try " +
-                "to keep at least one device on during routine breaks (shower / charge)."
-        combinedPct >= 60f ->
-            "Moderate coverage — ${formatHm(gapMin)} blind window today. Consider staggered " +
-                "charging (strap charges while band stays on, then swap)."
+        pct >= 95f && gapMin <= 20 ->
+            "Near-perfect strap coverage today. Realtime data is continuous; " +
+                "band stands by as batch backup."
+        pct >= 95f && gapMin > 20 ->
+            "Excellent strap coverage with one ${formatHm(gapMin)} gap — probably " +
+                "a shower or charging window. Band may have filled in HRR1 / RHR " +
+                "during that gap (see source labels on those cards)."
+        pct >= 80f ->
+            "Strong strap coverage. Longest gap ${formatHm(gapMin)}. Band backup " +
+                "fills HRR1 / RHR readings if any rides or sleep fell in that window."
+        pct >= 60f ->
+            "Moderate strap coverage. Longest gap ${formatHm(gapMin)}. Stagger " +
+                "charging cycles (charge strap while wearing band, or vice versa) " +
+                "to keep at least one sensor on at all times."
         else ->
-            "Low coverage today. ${formatHm(gapMin)} longest blind window. Wear at least " +
-                "one device continuously to feed the 24/7 metrics."
+            "Low strap coverage today. Longest gap ${formatHm(gapMin)}. Wear the " +
+                "strap continuously to feed the 24/7 autonomic metrics (HRV / CAR / " +
+                "orthostatic). Band fills in HRR1 + RHR but not the rest."
     }
 }
