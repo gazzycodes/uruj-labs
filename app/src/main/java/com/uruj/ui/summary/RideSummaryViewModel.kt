@@ -66,13 +66,47 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
 
     private var pollingJob: Job? = null
 
+    /**
+     * v0.8.6 — tracks the in-flight enrichment coroutine + the session it
+     * was started for. Cancelled when a new `startHrEnrichment` is called
+     * with a different session, preventing the prior session's slow HC
+     * polling loop from writing state for a ride we're no longer viewing.
+     *
+     * Fixes the bug surfaced after v0.8.5 merge: short test ride →
+     * fell back to HC polling (correct fallback for sub-30-sample NDJSON)
+     * → user navigated to past 37.78km ride → NDJSON path correctly
+     * loaded strap data → test ride's polling loop's next 15s tick
+     * overwrote the past ride's Done state with stale Polling state for
+     * the wrong sessionId.
+     */
+    private var enrichmentJob: Job? = null
+    private var currentEnrichmentSessionId: String? = null
+
     fun startHrEnrichment(sessionId: String, startedAtMs: Long, endedAtMs: Long) {
+        // v0.8.6 — cancel any prior in-flight enrichment. RideSummaryViewModel
+        // is Activity-scoped (singleton), so without explicit cancellation
+        // a polling loop from a prior ride summary survives navigation and
+        // writes state for the wrong sessionId.
+        if (currentEnrichmentSessionId != sessionId) {
+            enrichmentJob?.cancel()
+            pollingJob?.cancel()
+            pollingJob = null
+            // Reset displayed state so prior session's data doesn't bleed
+            // through visually while the new session's enrichment runs.
+            _hrEnrichment.value = HrEnrichmentState.Idle
+            _hrSourceBreakdown.value = emptyMap()
+            _timeInZone.value = null
+        }
+        currentEnrichmentSessionId = sessionId
+
         // v0.8.2 — first try the ride NDJSON. If the strap was streaming
         // during the ride, RideRecorderService wrote source-tagged hrBpm
         // per GPS tick. NDJSON-first means higher-precision strap data
         // wins; HC stays as fallback for pre-strap rides or strap-off
         // segments.
-        viewModelScope.launch { tryEnrichFromNdjsonThenHc(sessionId, startedAtMs, endedAtMs) }
+        enrichmentJob = viewModelScope.launch {
+            tryEnrichFromNdjsonThenHc(sessionId, startedAtMs, endedAtMs)
+        }
     }
 
     private suspend fun tryEnrichFromNdjsonThenHc(
@@ -92,12 +126,57 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
             )
             return
         }
-        // NDJSON didn't have enough HR samples — fall back to existing HC path.
+
+        // v0.8.6 — for VERY short rides (<60s), skip HC polling entirely.
+        // Samsung's batch-sync window is 5-30 min and only fires for rides
+        // it tracked as workouts; sub-60-second rides won't produce useful
+        // HC data even after the 5-minute polling window. Polling for them
+        // shows misleading "Syncing from HC..." UX (especially galling
+        // when the rider HAS a strap paired + streaming live — they correctly
+        // expect strap-precedence) AND creates the state-race window where
+        // navigating away mid-poll causes a stale write to a different
+        // session's summary. NotAvailable hides the HR card entirely; for
+        // very short test rides that's the honest answer.
+        val rideDurationMs = endedAtMs - startedAtMs
+        if (rideDurationMs < SHORT_RIDE_HC_SKIP_MS) {
+            Log.d(
+                "URUJ-Summary",
+                "Ride $sessionId — ${rideDurationMs}ms is too short for HR enrichment " +
+                    "(${ndjsonHr.size} NDJSON samples). Skipping HC polling.",
+            )
+            _hrEnrichment.value = HrEnrichmentState.NotAvailable
+            return
+        }
+
+        // v0.8.6 — for rides with SOME strap samples but below the analysis
+        // threshold, surface what we have rather than hiding it under HC
+        // polling. Honors strap-precedence: even partial strap data > HC
+        // data for the same window (strap is per-second, HC is batched).
+        // Only fall back to HC if we have ZERO usable strap samples (most
+        // commonly: no strap was paired for this ride).
+        val hasAnyStrapSamples = ndjsonHr.any { it.source == com.uruj.domain.SensorSource.STRAP }
+        if (hasAnyStrapSamples) {
+            Log.d(
+                "URUJ-Summary",
+                "Ride $sessionId — ${ndjsonHr.size} strap NDJSON samples (<min ${NdjsonRideReader.MIN_USEFUL_HR_SAMPLES}). " +
+                    "Showing partial strap data instead of HC fallback.",
+            )
+            applyHrEnrichment(sessionId, endedAtMs, ndjsonHr)
+            return
+        }
+
+        // NDJSON had no usable HR — fall back to existing HC path.
         Log.d(
             "URUJ-Summary",
-            "Ride $sessionId — NDJSON had ${ndjsonHr.size} HR samples (<min), falling back to HC",
+            "Ride $sessionId — NDJSON had ${ndjsonHr.size} HR samples (none from strap), falling back to HC",
         )
         startHcEnrichmentFlow(sessionId, startedAtMs, endedAtMs)
+    }
+
+    companion object {
+        /** v0.8.6 — rides shorter than 60s skip HC polling. Samsung won't
+         *  have useful data and polling shows misleading UX. */
+        private const val SHORT_RIDE_HC_SKIP_MS = 60_000L
     }
 
     /** v0.8.2 — compute HR stats + TIZ from NDJSON samples, persist + emit.
@@ -113,6 +192,16 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
         samples: List<RideHrSample>,
     ) {
         if (samples.isEmpty()) return
+        // v0.8.6 — defensive session check. Caller is a coroutine that may
+        // have been cancelled mid-flight by a newer startHrEnrichment for
+        // a different session; in that case the cancellation usually
+        // short-circuits us, but the synchronous StateFlow writes below
+        // could still race in. Bail out if we no longer represent the
+        // current session.
+        if (currentEnrichmentSessionId != sessionId) {
+            Log.d("URUJ-Summary", "applyHrEnrichment for $sessionId — session changed, skipping write")
+            return
+        }
         // Moving-time filter for the displayed AVG / MAX HR. Excludes
         // auto-paused samples + samples where the rider wasn't pedalling
         // (speed below MOVING_SPEED_THRESHOLD_MPS). Falls back to the full
@@ -213,24 +302,37 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
         }
 
         pollingJob?.cancel()
+        // v0.8.6 — capture the session this polling loop is for. Every
+        // StateFlow write below first verifies we're still the active
+        // session. Without this, a polling loop launched for ride A keeps
+        // ticking after the user navigates to ride B, and its 15s updates
+        // overwrite ride B's correctly-loaded state.
+        val pollingForSessionId = sessionId
         pollingJob = viewModelScope.launch {
+            if (currentEnrichmentSessionId != pollingForSessionId) return@launch
             _hrEnrichment.value = HrEnrichmentState.Polling(secondsElapsed = 0)
             val app = getApplication<Application>()
             val sdkOk = HealthConnectClient.getSdkStatus(app) == HealthConnectClient.SDK_AVAILABLE
             if (!sdkOk) {
-                _hrEnrichment.value = HrEnrichmentState.NotAvailable
+                if (currentEnrichmentSessionId == pollingForSessionId) {
+                    _hrEnrichment.value = HrEnrichmentState.NotAvailable
+                }
                 return@launch
             }
             val client = runCatching { HealthConnectClient.getOrCreate(app) }.getOrNull()
             if (client == null) {
-                _hrEnrichment.value = HrEnrichmentState.NotAvailable
+                if (currentEnrichmentSessionId == pollingForSessionId) {
+                    _hrEnrichment.value = HrEnrichmentState.NotAvailable
+                }
                 return@launch
             }
             // Health Connect permission must be granted — silent skip if not.
             val granted = runCatching { client.permissionController.getGrantedPermissions() }
                 .getOrDefault(emptySet())
             if (HealthPermission.getReadPermission(HeartRateRecord::class) !in granted) {
-                _hrEnrichment.value = HrEnrichmentState.NotAvailable
+                if (currentEnrichmentSessionId == pollingForSessionId) {
+                    _hrEnrichment.value = HrEnrichmentState.NotAvailable
+                }
                 return@launch
             }
 
@@ -238,6 +340,11 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
             val startedAt = System.currentTimeMillis()
             val deadline = startedAt + 5 * 60 * 1_000L
             while (System.currentTimeMillis() < deadline) {
+                // v0.8.6 — bail if the active session changed under us.
+                if (currentEnrichmentSessionId != pollingForSessionId) {
+                    Log.d("URUJ-Summary", "Polling loop for $pollingForSessionId — session changed, bailing")
+                    return@launch
+                }
                 val (avg, max, count) = withContext(Dispatchers.IO) {
                     fetchHrStats(client, startedAtMs, endedAtMs)
                 }
@@ -251,14 +358,23 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
                             ),
                         )
                     }
-                    _hrEnrichment.value = HrEnrichmentState.Done(avg, max, count)
+                    // v0.8.6 — defensive session check before writing terminal state
+                    if (currentEnrichmentSessionId == pollingForSessionId) {
+                        _hrEnrichment.value = HrEnrichmentState.Done(avg, max, count)
+                    }
                     return@launch
                 }
                 val elapsedSec = ((System.currentTimeMillis() - startedAt) / 1000).toInt()
-                _hrEnrichment.value = HrEnrichmentState.Polling(elapsedSec)
+                // v0.8.6 — only emit Polling state if we're still the active session.
+                if (currentEnrichmentSessionId == pollingForSessionId) {
+                    _hrEnrichment.value = HrEnrichmentState.Polling(elapsedSec)
+                }
                 delay(15_000L)
             }
-            _hrEnrichment.value = HrEnrichmentState.TimedOut
+            // v0.8.6 — TimedOut also gated on session match.
+            if (currentEnrichmentSessionId == pollingForSessionId) {
+                _hrEnrichment.value = HrEnrichmentState.TimedOut
+            }
         }
     }
 
