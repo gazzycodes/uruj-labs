@@ -3,6 +3,7 @@ package com.uruj.service
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlin.math.sqrt
 
 /**
@@ -23,11 +24,18 @@ import kotlin.math.sqrt
  */
 object LiveStateHolder {
 
-    /** One detected heartbeat with the RR interval ending at it. */
+    /** One detected heartbeat with the RR interval ending at it.
+     *
+     *  v0.8.1 fix — `isSynthetic` flags beats whose RR was derived from bpm
+     *  (the BLE notification didn't include real RR data). Synthetic beats
+     *  are FINE for the waveform display (we still know the BPM accurately)
+     *  but MUST be excluded from rolling RMSSD because their RRs have zero
+     *  variance by construction → would falsely report RMSSD≈0. */
     data class Beat(
         val timestampMs: Long,
         val bpm: Int,
         val rrMs: Int,
+        val isSynthetic: Boolean = false,
     )
 
     data class State(
@@ -55,6 +63,7 @@ object LiveStateHolder {
             val cutoff = nowMs - windowMs
             val recent = recentBeats
                 .filter { it.timestampMs >= cutoff }
+                .filter { !it.isSynthetic } // v0.8.1 fix — synthetic RR pollutes RMSSD
                 .filter { it.rrMs in PHYSIOLOGICAL_RR_MIN..PHYSIOLOGICAL_RR_MAX }
             if (recent.size < 2) return null
             val diffs = mutableListOf<Int>()
@@ -95,10 +104,12 @@ object LiveStateHolder {
             // BLE notification without RR data — synthesize a single beat at
             // receivedAtMs with rrMs derived from bpm. Lower precision but keeps
             // the waveform alive when strap reports beats without RR.
+            // Flagged isSynthetic=true so rolling RMSSD excludes it (zero
+            // variance by construction would falsely report ~0 ms RMSSD).
             val syntheticRr = (60_000 / bpm.coerceAtLeast(1)).coerceIn(
                 PHYSIOLOGICAL_RR_MIN, PHYSIOLOGICAL_RR_MAX,
             )
-            newBeats += Beat(receivedAtMs, bpm, syntheticRr)
+            newBeats += Beat(receivedAtMs, bpm, syntheticRr, isSynthetic = true)
         } else {
             // Per BLE HRP spec: RR intervals are ordered oldest-to-newest.
             // Latest beat lands at receivedAtMs; earlier beats step back by RR.
@@ -129,10 +140,9 @@ object LiveStateHolder {
     }
 
     // ────── helpers ──────
-
-    private fun <T> MutableStateFlow<T>.update(transform: (T) -> T) {
-        value = transform(value)
-    }
+    // v0.8.1 fix — removed local non-atomic `update` extension. Now using
+    // `kotlinx.coroutines.flow.update` (imported at top) which uses CAS and
+    // is safe under concurrent writes from both services.
 
     /** Max beats held in the ring buffer. ~300 = 5 min at HR 60. */
     private const val MAX_BEATS = 300
