@@ -86,9 +86,10 @@ fun WearTimeCard() {
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            "Local midnight → now. Higher % = more continuous data on disk. " +
-                "Combined = redundancy (either sensor counted). One device off doesn't " +
-                "mean a blind window if the other was capturing.",
+            "Local midnight → now. Strap = realtime primary (per-beat NDJSON). " +
+                "Band = batched backup (~10-15 min cadence at rest, HC sync lags 15-30 min). " +
+                "Combined = redundancy — when one is off (charging / shower / app crash), " +
+                "the other usually covers.",
             color = UrujMuted, fontSize = 11.sp,
         )
         Spacer(Modifier.height(12.dp))
@@ -110,6 +111,7 @@ fun WearTimeCard() {
                 )
             }
             else -> {
+                val nowMs = System.currentTimeMillis()
                 WearRow(
                     label = "CHEST STRAP",
                     wornMinutes = s.result.strapWornMinutes,
@@ -118,6 +120,9 @@ fun WearTimeCard() {
                     color = pickPercentColor(s.result.strapPercent()),
                     available = s.strapEverPaired,
                     unavailableMsg = "No strap paired — pair via SCAN & PAIR below",
+                    lastSyncedAgoText = s.mostRecentStrapSampleMs?.let {
+                        "strap streamed " + formatAgo(nowMs - it) + " ago"
+                    } ?: "no strap data yet",
                 )
                 Spacer(Modifier.height(8.dp))
                 WearRow(
@@ -128,6 +133,15 @@ fun WearTimeCard() {
                     color = pickPercentColor(s.result.bandPercent()),
                     available = s.bandAvailable,
                     unavailableMsg = "No band HR data — check Samsung Health sync + HC permission",
+                    lastSyncedAgoText = s.mostRecentBandSampleMs?.let {
+                        val ago = nowMs - it
+                        val agoStr = formatAgo(ago)
+                        when {
+                            ago < 30L * 60_000L -> "band synced $agoStr ago ✓"
+                            ago < 2L * 3600_000L -> "band synced $agoStr ago (batch lag normal)"
+                            else -> "band synced $agoStr ago — sync may be stalled"
+                        }
+                    } ?: "band hasn't synced to HC yet today",
                 )
                 Spacer(Modifier.height(8.dp))
                 WearRow(
@@ -139,6 +153,7 @@ fun WearTimeCard() {
                     available = true,
                     unavailableMsg = "",
                     isCombined = true,
+                    lastSyncedAgoText = "redundancy — neither sensor blind here",
                 )
 
                 Spacer(Modifier.height(10.dp))
@@ -149,9 +164,14 @@ fun WearTimeCard() {
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Methodology: each minute is 'worn' if ≥1 sample landed in it. Strap " +
-                        "= 24/7 BLE NDJSON. Band = HC HeartRateRecord (HC writes 15-30 min " +
-                        "after Samsung Health syncs, so band % may lag the strap %).",
+                    "Methodology: STRAP uses 1-min buckets (per-second cadence supports " +
+                        "minute resolution). BAND at idle writes 1 HR sample per 10-15 min, " +
+                        "so each band sample marks ±7.5 min around it as 'worn' (15-min " +
+                        "inference window). HC writes 15-30 min after Samsung Health syncs, " +
+                        "so band % may lag the strap %.\n\n" +
+                        "If URUJ app dies: strap stops capturing (BLE pipeline goes with it), " +
+                        "BUT band continues syncing to HC independently. That's why COMBINED " +
+                        "= redundancy.",
                     color = UrujMuted, fontSize = 10.sp,
                 )
             }
@@ -168,6 +188,7 @@ private fun WearRow(
     color: Color,
     available: Boolean,
     unavailableMsg: String,
+    lastSyncedAgoText: String,
     isCombined: Boolean = false,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -181,7 +202,14 @@ private fun WearRow(
                 modifier = Modifier.width(132.dp),
             )
             if (!available) {
-                Text(unavailableMsg, color = UrujMuted, fontSize = 10.sp)
+                Column {
+                    Text(unavailableMsg, color = UrujMuted, fontSize = 10.sp)
+                    Text(
+                        lastSyncedAgoText,
+                        color = UrujMuted.copy(alpha = 0.7f),
+                        fontSize = 9.sp,
+                    )
+                }
                 return@Row
             }
             Text(
@@ -215,7 +243,30 @@ private fun WearRow(
                         .background(color, RoundedCornerShape(2.dp)),
                 )
             }
+            // v0.7.9 — last-sync indicator
+            Spacer(Modifier.height(2.dp))
+            Text(
+                lastSyncedAgoText,
+                color = UrujMuted.copy(alpha = 0.75f),
+                fontSize = 9.sp,
+            )
         }
+    }
+}
+
+/** "5m" / "1h 12m" / "3h" / "2d" — formats a duration in ms as human text. */
+private fun formatAgo(ms: Long): String {
+    val absMs = if (ms < 0) 0L else ms
+    val totalMin = absMs / 60_000L
+    return when {
+        totalMin < 1L -> "<1m"
+        totalMin < 60L -> "${totalMin}m"
+        totalMin < 60L * 24L -> {
+            val h = totalMin / 60L
+            val m = totalMin % 60L
+            if (m == 0L) "${h}h" else "${h}h ${m}m"
+        }
+        else -> "${totalMin / (60L * 24L)}d"
     }
 }
 
