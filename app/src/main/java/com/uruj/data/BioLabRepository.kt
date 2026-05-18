@@ -181,8 +181,13 @@ class BioLabRepository(context: Context) {
         val autonomicSampleCount = autonomicHrv?.sampleCount ?: 0
         val autonomicWindowCount = autonomicHrv?.windowCount ?: 0
         val autonomicWindowLabel = if (sleepWindow != null) "last sleep" else "last 24h"
-        // Count days of overnight HRV captured — drives "baseline building" UX
-        val autonomicDaysOfData = continuousBiometric.daysWithOvernightHrvIn(7)
+        // Count days of overnight HRV captured — drives "baseline building" UX.
+        // v0.7.4: use Samsung sleep windows (same as Bio Lab Autonomic card)
+        // instead of the old 22:00-09:00 heuristic so the day count agrees
+        // with what the trend chart shows.
+        val recentSleeps7d = lastSleepReader.listLastNDays(client, granted, 7)
+        val autonomicDaysOfData = continuousBiometric
+            .dailyOvernightHrvHistoryFromSessions(recentSleeps7d).size
 
         // v0.7.2 — Cortisol Awakening Response. Only resolved when the
         // most-recent sleep ended ≥45 min ago and 24/7 NDJSON has enough
