@@ -51,23 +51,71 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
     private var pollingJob: Job? = null
     private var readinessJob: Job? = null
 
+    // v0.8.4 final — cache HC check results so polling loop doesn't re-query
+    // HC on every iteration. Only refresh on initial poll start + manual
+    // refresh + FIX button.
+    private var cachedHcPermItem: CheckItem? = null
+    private var cachedHcRecentHrItem: CheckItem? = null
+    private var hcCachedAtMs: Long = 0L
+
     fun startPolling() {
         if (pollingJob?.isActive == true) return
         pollingJob = viewModelScope.launch {
+            // First iteration: force fresh HC checks
+            refresh(forceHc = true)
+            // Subsequent polls: Android checks only, HC stays cached
             while (isActive) {
-                refresh()
-                delay(2_000L)
+                delay(POLL_INTERVAL_MS)
+                refresh(forceHc = false)
             }
         }
-        // Readiness is expensive to compute (HC queries + history scan), refresh
-        // every 60 s — sleep/HRV/RHR data doesn't change minute-to-minute.
+        // v0.8.4 — Readiness polling reduced from 60s → 5 min to stop the
+        // HC rate-limit storm. Each Readiness compute fires 6-8 HC reads
+        // (sleep windows, HR samples, RHR record, HRV record, exercise
+        // sessions). At 60s cadence that was ~480 HC reads/hour just from
+        // this poll, alone enough to consistently bump HC's foreground
+        // quota ceiling.
+        //
+        // User-visible impact: readiness updates every 5 min in the
+        // background. The SYNC button on the Readiness card stays available
+        // for INSTANT manual refresh. Sleep / HRV / RHR / TSB don't change
+        // minute-to-minute anyway — 5 min is plenty.
+        //
+        // App-open ALWAYS fires an immediate compute (the first iteration
+        // of the loop runs before any delay). So opening the LAB tab gets
+        // fresh data each time.
+        // v0.8.4 final — Readiness compute fires ONCE on LAB tab enter.
+        // No background polling loop. Every displayed value is from a
+        // single known compute time visible in the "synced X ago" indicator
+        // on the Readiness card. Real-time + transparent — manual SYNC button
+        // is the only way to refresh.
+        //
+        // Why: any background poll silently spamming HC creates either
+        // rate-limit storms (frequent polling) or invisible stale displays
+        // (rare polling). One-shot on screen-enter + manual SYNC eliminates
+        // both. Total HC reads from Readiness path: ~6-8 per LAB tab visit,
+        // zero between visits.
         if (readinessJob?.isActive != true) {
             readinessJob = viewModelScope.launch {
-                while (isActive) {
+                // Skip recompute if a recent compute is already on screen
+                // (user rapidly tab-switching shouldn't re-hammer HC).
+                val current = _readinessSnapshot.value
+                val recent = current != null &&
+                    (System.currentTimeMillis() - current.computedAtMs) < READINESS_REFRESH_DEBOUNCE_MS
+                if (!recent) {
                     val snap = readinessRepo.computeWithDiagnostics()
-                    _readiness.value = snap.result
-                    _readinessSnapshot.value = snap
-                    delay(60_000L)
+                    // Sticky-cache fallback retained — protects against an
+                    // HC blip during the single compute. If new result has
+                    // less data, keep the prior (since cached value is
+                    // already visible to user via "synced X ago").
+                    val cached = _readinessSnapshot.value
+                    val shouldUpdate = cached == null ||
+                        snap.result.dataConfidence >= cached.result.dataConfidence ||
+                        (System.currentTimeMillis() - cached.computedAtMs) > 10L * 60 * 1000
+                    if (shouldUpdate) {
+                        _readiness.value = snap.result
+                        _readinessSnapshot.value = snap
+                    }
                 }
             }
         }
@@ -80,7 +128,9 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
         readinessJob = null
     }
 
-    /** User-triggered readiness re-fetch with visible loading state. */
+    /** User-triggered readiness re-fetch with visible loading state.
+     *  v0.8.4 — manual tap ALWAYS overwrites cache (user explicitly asked
+     *  for fresh data); the sticky cache only applies to background polls. */
     fun refreshReadiness() {
         viewModelScope.launch {
             _readinessSyncing.value = true
@@ -94,19 +144,52 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    suspend fun refresh() {
+    suspend fun refresh(forceHc: Boolean = false) {
         _state.value = _state.value.copy(refreshing = true)
+
+        // v0.8.4 final — HC checks now cached. Polling loop calls
+        // refresh(forceHc=false) every 15 sec → only the local Android
+        // checks (location, GPS, notification, battery, OpenTracks) get
+        // re-queried. HC checks reuse the cached result from the last
+        // forced fresh.
+        val now = System.currentTimeMillis()
+        val needHcRefresh = forceHc ||
+            cachedHcPermItem == null ||
+            cachedHcRecentHrItem == null ||
+            (now - hcCachedAtMs) > HC_CACHE_TTL_MS
+
+        val hcPermItem: CheckItem
+        val hcRecentHrItem: CheckItem
+        if (needHcRefresh) {
+            hcPermItem = checkHealthConnectPermission()
+            hcRecentHrItem = checkHealthConnectRecentHr()
+            cachedHcPermItem = hcPermItem
+            cachedHcRecentHrItem = hcRecentHrItem
+            hcCachedAtMs = now
+        } else {
+            hcPermItem = cachedHcPermItem!!
+            hcRecentHrItem = cachedHcRecentHrItem!!
+        }
+
         val items = buildList {
             add(checkLocationPermission())
             add(checkLocationServices())
             add(checkNotificationPermission())
             add(checkHealthConnectInstalled())
-            add(checkHealthConnectPermission())
-            add(checkHealthConnectRecentHr())
+            add(hcPermItem)
+            add(hcRecentHrItem)
             add(checkBatteryOptimization())
             add(checkOpenTracksInstalled())
         }
         _state.value = ChecklistState(items = items, refreshing = false)
+    }
+
+    /** v0.8.4 final — invalidate HC cache (call from FIX button handler so
+     *  user returning from permission settings sees fresh state). */
+    fun invalidateHcCache() {
+        cachedHcPermItem = null
+        cachedHcRecentHrItem = null
+        hcCachedAtMs = 0L
     }
 
     private fun checkNotificationPermission(): CheckItem {
@@ -269,5 +352,29 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
             status = if (installed) CheckStatus.Pass else CheckStatus.Warning,
             canFix = !installed,
         )
+    }
+
+    private companion object {
+        /** v0.8.4 final — Readiness no longer auto-polls in a background
+         *  loop. Computed once on LAB tab open + on manual SYNC. This
+         *  constant is no longer used for a loop interval; kept for
+         *  documentation. */
+        @Suppress("unused")
+        const val READINESS_POLL_INTERVAL_MS_DEPRECATED = 5L * 60L * 1000L
+
+        /** v0.8.4 final — debounce window for re-entry to LAB tab. If a
+         *  Readiness compute landed within this window, don't re-fire on
+         *  next tab visit (rapid tab-switching shouldn't hammer HC). */
+        const val READINESS_REFRESH_DEBOUNCE_MS = 60L * 1000L
+
+        /** v0.8.4 final — local Android checks (location, GPS, notif, etc.)
+         *  poll at this cadence. HC checks are CACHED and only re-queried
+         *  on forced refresh, not in this loop. */
+        const val POLL_INTERVAL_MS = 15L * 1000L
+
+        /** v0.8.4 final — cache TTL for HC permission + recent-HR checks.
+         *  Polling loop reuses cached value if within this window. Forced
+         *  refresh (initial poll, manual refresh, FIX button) bypasses. */
+        const val HC_CACHE_TTL_MS = 5L * 60L * 1000L
     }
 }
