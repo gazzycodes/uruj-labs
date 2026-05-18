@@ -28,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,6 +60,7 @@ import com.uruj.ui.theme.UrujZone5
 @Composable
 fun BioLabScreen(
     onBack: () -> Unit,
+    onOpenOrthostatic: () -> Unit = {},
     viewModel: BioLabViewModel = viewModel(),
 ) {
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -162,6 +164,14 @@ fun BioLabScreen(
             if (s.autonomicRmssdMs != null) {
                 item("autonomic_header") { SectionHeader("Autonomic Health") }
                 item("autonomic_card") { AutonomicHealthCard(s) }
+            }
+
+            // v0.7.1 — Lab tests section. Manual rituals that produce new
+            // autonomic snapshots on demand. Each test reads from the 24/7
+            // NDJSON for its own window.
+            item("tests_header") { SectionHeader("Lab tests") }
+            item("orthostatic_card") {
+                OrthostaticTestLauncherCard(onStart = onOpenOrthostatic)
             }
 
             // Everything else lives in Samsung Health where it's shown better.
@@ -775,5 +785,76 @@ private fun AutonomicHealthCard(s: BioLabSnapshot) {
                 "Both are valid — they answer different questions.",
             color = UrujMuted, fontSize = 10.sp,
         )
+    }
+}
+
+/**
+ * v0.7.1 — launcher card for the manual orthostatic test ritual.
+ * Shows the most-recent saved test result inline + a START button to take
+ * a fresh reading. Reads history from OrthostaticTestRepository on first
+ * composition.
+ */
+@Composable
+private fun OrthostaticTestLauncherCard(onStart: () -> Unit) {
+    val context = LocalContext.current
+    val repo = androidx.compose.runtime.remember {
+        com.uruj.data.OrthostaticTestRepository(context)
+    }
+    val latest by produceState<com.uruj.domain.OrthostaticTestResult?>(initialValue = null) {
+        value = withContext(kotlinx.coroutines.Dispatchers.IO) { repo.latest() }
+    }
+    BioCard("Orthostatic test — sit→stand autonomic snapshot", accentColor = UrujAccent) {
+        if (latest == null) {
+            Text(
+                "No reading yet. The 4-minute protocol gives you a second " +
+                    "autonomic signal alongside overnight HRV — catches acute " +
+                    "fatigue faster than the chronic overnight number does.",
+                color = UrujText, fontSize = 12.sp,
+            )
+        } else {
+            val r = latest!!
+            Text(
+                "Last reading",
+                color = UrujMuted, fontSize = 9.sp,
+                fontWeight = FontWeight.Black, letterSpacing = 1.5.sp,
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    "${"%.0f".format(r.hrDeltaBpm)}",
+                    color = UrujText,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 36.sp,
+                )
+                Spacer(Modifier.width(4.dp))
+                Column(modifier = Modifier.padding(bottom = 8.dp)) {
+                    Text("bpm HR delta", color = UrujMuted, fontSize = 10.sp)
+                    Text(
+                        "RMSSD ratio %.2f".format(r.rmssdRatio),
+                        color = UrujMuted, fontSize = 10.sp,
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Captured ${SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(r.startedAtMs))}",
+                color = UrujMuted, fontSize = 10.sp,
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        androidx.compose.material3.Button(
+            onClick = onStart,
+            modifier = Modifier.fillMaxWidth(),
+            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                containerColor = UrujAccent,
+            ),
+        ) {
+            Text(
+                if (latest == null) "TAKE FIRST READING" else "TAKE NEW READING",
+                color = Color.Black,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 1.5.sp,
+            )
+        }
     }
 }
