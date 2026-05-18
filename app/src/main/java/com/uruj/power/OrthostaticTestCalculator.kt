@@ -21,6 +21,20 @@ class OrthostaticTestCalculator(
     /**
      * Compute the result. Returns null if either window lacks enough data
      * for a meaningful RMSSD (fewer than 30 clean RR diffs).
+     *
+     * Methodology note: uses `computeFromFlatRr` (skips timestamp-aware
+     * consecutive-pair filter) because for a 2-min continuous strap-on
+     * capture, we KNOW the beats are consecutive — no BLE drops or sleep-
+     * stage gaps to defend against. The timestamp filter was designed for
+     * overnight windowed analysis where cross-gap pairs would otherwise
+     * corrupt RMSSD. Using it here over-rejects legitimate pairs due to
+     * normal Android BLE delivery jitter, especially at elevated daytime
+     * HR (smaller RR → tighter percentage-based tolerance). Same approach
+     * Elite HRV / HRV4Training / Polar take for short captures.
+     *
+     * Filters that DO still apply: physiological RR range (300-2000 ms)
+     * and 20% ectopic delta cap (Kubios). So we still reject sensor noise
+     * and PVC/PAC artifacts — we just trust temporal consecutiveness.
      */
     fun compute(
         sessionId: String,
@@ -32,11 +46,11 @@ class OrthostaticTestCalculator(
         standingStartMs: Long,
         standingEndMs: Long,
     ): OrthostaticTestResult? {
-        val seatedBeats = samplesToBeats(seatedSamples)
-        val standingBeats = samplesToBeats(standingSamples)
+        val seatedRr = flatRrList(seatedSamples)
+        val standingRr = flatRrList(standingSamples)
 
-        val seatedHrv = hrvCalc.compute(seatedBeats) ?: return null
-        val standingHrv = hrvCalc.compute(standingBeats) ?: return null
+        val seatedHrv = hrvCalc.computeFromFlatRr(seatedRr) ?: return null
+        val standingHrv = hrvCalc.computeFromFlatRr(standingRr) ?: return null
 
         val hrDelta = standingHrv.meanHrBpm - seatedHrv.meanHrBpm
         val rmssdRatio = if (seatedHrv.rmssdMs > 0f) {
@@ -94,17 +108,19 @@ class OrthostaticTestCalculator(
         )
     }
 
-    private fun samplesToBeats(samples: List<ContinuousSample>): List<HrvCalculator.Beat> {
-        val beats = mutableListOf<HrvCalculator.Beat>()
-        for (sample in samples) {
-            var t = sample.timestampMs
-            for (i in sample.rrIntervalsMs.indices.reversed()) {
-                val rr = sample.rrIntervalsMs[i]
-                if (rr <= 0) continue
-                beats.add(HrvCalculator.Beat(timestampMs = t, rrMs = rr))
-                t -= rr
+    /**
+     * Flatten the RR arrays from a list of samples, preserving order
+     * (sample-by-sample, then within each sample oldest-to-newest per BLE HRP
+     * spec). Drops zero / negative RR. No timestamps — short-capture compute
+     * doesn't need them.
+     */
+    private fun flatRrList(samples: List<ContinuousSample>): List<Int> {
+        val rr = mutableListOf<Int>()
+        for (sample in samples.sortedBy { it.timestampMs }) {
+            for (v in sample.rrIntervalsMs) {
+                if (v > 0) rr += v
             }
         }
-        return beats.sortedBy { it.timestampMs }
+        return rr
     }
 }
