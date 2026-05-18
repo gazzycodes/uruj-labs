@@ -24,6 +24,7 @@ import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.Instant
@@ -114,7 +115,26 @@ class HealthConnectInventoryRepository(context: Context) {
 
     private val appContext = context.applicationContext
 
-    suspend fun inventory(): List<HcDataTypeStatus> = withContext(Dispatchers.IO) {
+    // v0.8.4 — in-process cache to prevent HC rate-limit storms.
+    // Previously every Pipeline tab open + every refresh tap fired 16 HC reads
+    // back-to-back with zero delay. HC's foreground rate-limiter then rejected
+    // half the calls with "request quota exceeded" → most cards showed ERR.
+    //
+    // Cache TTL 30 sec: long enough to absorb tab-switching + double-taps;
+    // short enough that refresh button still produces fresh data within a
+    // few seconds. Forced refresh (rate=true) bypasses the cache.
+    @Volatile
+    private var cachedInventory: List<HcDataTypeStatus>? = null
+    @Volatile
+    private var cachedAtMs: Long = 0L
+
+    suspend fun inventory(force: Boolean = false): List<HcDataTypeStatus> = withContext(Dispatchers.IO) {
+        // Serve cache when fresh (and not forced)
+        val now = System.currentTimeMillis()
+        if (!force && cachedInventory != null && (now - cachedAtMs) < CACHE_TTL_MS) {
+            return@withContext cachedInventory!!
+        }
+
         val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
         if (!sdkOk) return@withContext HcDataTypes.all.map {
             HcDataTypeStatus(it, false, 0, null, "Health Connect not available")
@@ -127,16 +147,33 @@ class HealthConnectInventoryRepository(context: Context) {
             .getOrDefault(emptySet())
 
         val weekAgo = Instant.now().minus(Duration.ofDays(7))
-        val now = Instant.now()
-        val range = TimeRangeFilter.between(weekAgo, now)
+        val nowInstant = Instant.now()
+        val range = TimeRangeFilter.between(weekAgo, nowInstant)
 
-        HcDataTypes.all.map { type ->
-            if (type.readPermission !in granted) {
+        // v0.8.4 — throttle HC reads. 150ms between consecutive reads keeps
+        // us well below HC's per-second rate ceiling. 16 types × 150ms =
+        // ~2.4 sec total (vs <100ms before, which blew the rate limit).
+        val results = mutableListOf<HcDataTypeStatus>()
+        for ((index, type) in HcDataTypes.all.withIndex()) {
+            val status = if (type.readPermission !in granted) {
                 HcDataTypeStatus(type, false, 0, null)
             } else {
                 queryType(client, type, range)
             }
+            results += status
+            if (index < HcDataTypes.all.lastIndex) {
+                delay(THROTTLE_DELAY_MS)
+            }
         }
+        cachedInventory = results
+        cachedAtMs = System.currentTimeMillis()
+        results
+    }
+
+    /** v0.8.4 — invalidate cache (e.g. after permission grant flow completes). */
+    fun invalidateCache() {
+        cachedInventory = null
+        cachedAtMs = 0L
     }
 
     private suspend fun queryType(
@@ -166,5 +203,15 @@ class HealthConnectInventoryRepository(context: Context) {
         }.getOrElse {
             HcDataTypeStatus(type, true, 0, null, it.message ?: "query failed")
         }
+    }
+
+    companion object {
+        /** v0.8.4 — minimum delay between consecutive HC reads to stay under
+         *  HC's foreground rate limiter. 150ms × 16 types ≈ 2.4 sec total. */
+        private const val THROTTLE_DELAY_MS = 150L
+        /** v0.8.4 — in-process cache TTL. Long enough to absorb tab-switching
+         *  + double-taps; short enough that a refresh button tap forces fresh
+         *  data within seconds. */
+        private const val CACHE_TTL_MS = 30_000L
     }
 }

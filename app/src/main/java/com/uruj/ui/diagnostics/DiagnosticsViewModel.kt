@@ -33,11 +33,17 @@ class DiagnosticsViewModel(application: Application) : AndroidViewModel(applicat
     private val _refreshTrigger = MutableStateFlow(0L)
     val refreshTrigger: StateFlow<Long> = _refreshTrigger.asStateFlow()
 
-    fun refresh() {
+    /**
+     * v0.8.4 — `force=true` bypasses the inventory cache. Default `false`
+     * (used on screen open) lets a recent cached result serve immediately
+     * + avoids hammering HC's rate limiter. Explicit refresh button taps
+     * pass force=true to guarantee a fresh read.
+     */
+    fun refresh(force: Boolean = true) {
         viewModelScope.launch {
             _isRefreshing.value = true
             try {
-                _inventory.value = repo.inventory()
+                _inventory.value = repo.inventory(force = force)
                 _lastRefreshAtMs.value = System.currentTimeMillis()
                 _refreshTrigger.value = _refreshTrigger.value + 1
             } finally {
