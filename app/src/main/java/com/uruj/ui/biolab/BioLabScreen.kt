@@ -157,6 +157,13 @@ fun BioLabScreen(
                 item("zones_card") { KarvonenZonesCard(s.karvonenZones) }
             }
 
+            // v0.7.0 — Autonomic Health section. Only shows when 24/7 monitoring
+            // has captured RR data. RMSSD / SDNN / pNN50 from BLE chest strap.
+            if (s.autonomicRmssdMs != null) {
+                item("autonomic_header") { SectionHeader("Autonomic Health") }
+                item("autonomic_card") { AutonomicHealthCard(s) }
+            }
+
             // Everything else lives in Samsung Health where it's shown better.
             // We do NOT proxy. We deep-link.
             item("external_header") { SectionHeader("External — see Samsung Health") }
@@ -620,3 +627,114 @@ private fun LiveAgeText(thenMs: Long, prefix: String = "") {
 
 private val hrrSampleDateFmt = SimpleDateFormat("MMM d", Locale.getDefault())
 private fun formatHrrSampleDate(ms: Long): String = hrrSampleDateFmt.format(Date(ms))
+
+/**
+ * v0.7.0 — Autonomic Health card. Real RMSSD HRV computed from BLE chest
+ * strap RR intervals captured 24/7 by BiometricService. Replaces the
+ * "chest strap unlocks" placeholder that was dimmed since v0.4.0.
+ *
+ * Shows:
+ *   - RMSSD (hero) — parasympathetic / vagal tone marker
+ *   - SDNN — overall HRV
+ *   - pNN50 % — clinical parasympathetic indicator
+ *   - Mean HR over the window
+ *   - Sample count + window label ("last sleep" / "last 24h")
+ *   - Reference ranges for context (athletic norms)
+ *
+ * Methodology footer per lab-level rule 3 — formula + filter rationale
+ * visible so the rider can audit the number.
+ */
+@Composable
+private fun AutonomicHealthCard(s: BioLabSnapshot) {
+    val rmssd = s.autonomicRmssdMs ?: return
+    // Color-code RMSSD by athletic-tier ranges. Athletic endurance RMSSD
+    // norms (Plews et al., elite cyclist HRV studies):
+    //   <30ms = stressed / sympathetic-dominant
+    //   30-50ms = average
+    //   50-80ms = trained athlete range
+    //   80+ms = elite parasympathetic dominance
+    val accent = when {
+        rmssd >= 80f -> UrujZone2
+        rmssd >= 50f -> UrujZone2
+        rmssd >= 30f -> UrujZone3
+        else -> UrujZone5
+    }
+    val tierLabel = when {
+        rmssd >= 80f -> "Elite parasympathetic dominance"
+        rmssd >= 50f -> "Trained athlete range"
+        rmssd >= 30f -> "Average autonomic balance"
+        else -> "Sympathetic-dominant — recovery deficit signal"
+    }
+    BioCard("Autonomic HRV — beat-to-beat parasympathetic", accentColor = accent) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                text = "%.1f".format(rmssd),
+                color = accent,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Black,
+                fontSize = 56.sp,
+                letterSpacing = (-2).sp,
+            )
+            Spacer(Modifier.width(6.dp))
+            Column(modifier = Modifier.padding(bottom = 12.dp)) {
+                Text(
+                    "ms RMSSD",
+                    color = UrujMuted,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                )
+                Text(
+                    "from ${s.autonomicWindowLabel}",
+                    color = UrujMuted,
+                    fontSize = 10.sp,
+                )
+            }
+        }
+        Text(
+            tierLabel,
+            color = UrujText,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 13.sp,
+        )
+        Spacer(Modifier.height(10.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(UrujSurfaceHigh.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                .padding(10.dp),
+        ) {
+            Text(
+                "BREAKDOWN",
+                color = UrujMuted,
+                fontWeight = FontWeight.Black,
+                fontSize = 9.sp,
+                letterSpacing = 1.5.sp,
+            )
+            Spacer(Modifier.height(4.dp))
+            s.autonomicSdnnMs?.let {
+                Text("SDNN (overall HRV): ${"%.1f".format(it)} ms",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            s.autonomicPnn50Pct?.let {
+                Text("pNN50: ${"%.1f".format(it)}%",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            s.autonomicMeanHrBpm?.let {
+                Text("Mean HR over window: ${it.toInt()} bpm",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            Text(
+                "Clean samples: ${s.autonomicSampleCount} RR intervals",
+                color = UrujMuted, fontSize = 11.sp,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "RMSSD = √(mean of squared consecutive RR differences). Filters: " +
+                "300–2000 ms range + 20% ectopic delta cap (Kubios convention). " +
+                "Real ECG-quality data from Magene H613, NOT a PPG proxy. " +
+                "Trained-athlete range 50-80 ms (Plews et al.).",
+            color = UrujMuted, fontSize = 10.sp,
+        )
+    }
+}

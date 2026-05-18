@@ -265,6 +265,7 @@ private fun DiagnosticsLine(snapshot: ReadinessSnapshot) {
         }
         val hrvLabel = when (diag.hrvSourceLabel) {
             "direct" -> "${diag.hrvRecords7d} HRV(direct)"
+            "ble_strap" -> "HRV(strap) ✓"  // v0.7.0 — real RMSSD from BLE
             "sleep" -> "HRV(sleep) ✓"
             "proxy" -> "HRV(HR-proxy)"
             else -> "${diag.hrvRecords7d} HRV"
@@ -436,7 +437,7 @@ private fun reasonFor(label: String, score: Int, detail: String): String = when 
         score >= 90 -> "autonomic system primed ✓"
         score >= 70 -> "near baseline — normal variance"
         score >= 40 -> "below baseline — watch fatigue"
-        else -> "Samsung Fit Band 3 doesn't write HRV; chest strap (v1.5) unlocks real RMSSD"
+        else -> "below baseline — significant recovery deficit"
     }
     "Resting HR" -> when {
         score >= 100 -> "RHR below baseline → strong recovery"

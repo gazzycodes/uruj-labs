@@ -15,6 +15,10 @@
          to external devices. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
+    <!-- v0.7.0: auto-resume the 24/7 service after phone reboot if user has
+         opted in. Receiver below listens for BOOT_COMPLETED. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <!-- Persistent ride notification on lock screen / AOD -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -123,6 +127,18 @@
             android:name=".service.BiometricService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- v0.7.0: re-start BiometricService after phone reboot if user has
+             24/7 monitoring toggled ON. Mirrors Samsung Health behavior. -->
+        <receiver
+            android:name=".service.BootCompletedReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <!-- FileProvider for shareable summary images. Generates content:// URIs so
              WhatsApp / Instagram / etc. can read the JPG without us granting raw

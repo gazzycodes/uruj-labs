@@ -76,6 +76,8 @@ class ReadinessRepository(context: Context) {
     private val profileStore = RiderProfileStore(appContext)
     private val sleepingRhrCalc = SleepingRhrCalculator()
     private val lastSleepReader = LastSleepReader()
+    // v0.7.0 — BLE chest-strap RMSSD HRV from continuous monitoring NDJSON.
+    private val continuousBiometric = ContinuousBiometricRepository(appContext)
 
     suspend fun compute(): ReadinessResult = withContext(Dispatchers.IO) {
         val inputs = gatherInputs()
@@ -248,10 +250,44 @@ class ReadinessRepository(context: Context) {
         // v0.4.0: HRV proxy fallback REMOVED. SleepingHrvProxyCalculator was
         // std-dev of HR samples in sleep windows — directionally correlated
         // with RMSSD but NOT real HRV. Per [[feedback_no_samsung_proxy]] +
-        // [[reference_lab_level_uruj]] rule #4 (no fake numbers). HRV column
-        // only populates when Samsung writes HeartRateVariabilityRmssdRecord
-        // (rare on Fit Band 3, real when present). Real RMSSD HRV unlocks
-        // with v1.5 BLE chest strap.
+        // [[reference_lab_level_uruj]] rule #4 (no fake numbers).
+        //
+        // v0.7.0: REAL RMSSD HRV unlocked via BLE chest strap (Magene H613)
+        // captured 24/7 by BiometricService and stored as RR-interval NDJSON.
+        // ContinuousBiometricRepository reads the overnight sleep window and
+        // computes RMSSD/SDNN/pNN50 from the actual beat-to-beat data. This
+        // is the same calculation Polar / Kubios / EliteHRV do on the same
+        // input — real autonomic measurement, not a proxy.
+        //
+        // Priority:
+        //   1. HC direct record (rare on Fit Band 3, never on Magene-only setup)
+        //   2. URUJ-computed RMSSD from BLE NDJSON (THIS path is the new win)
+        //   3. null — HRV component drops from Readiness score
+        if (hrvToday == null) {
+            // Try to use the last sleep window for the cleanest signal
+            val sleepWindow = lastSleepReader.read(client, granted)
+            val (start, end) = if (sleepWindow != null) {
+                sleepWindow.startedAt to sleepWindow.endedAt
+            } else {
+                // No sleep data → use rolling last 8h as the overnight proxy
+                now.minus(java.time.Duration.ofHours(8)) to now
+            }
+            val computedHrv = continuousBiometric.computeHrvForWindow(start, end)
+            if (computedHrv != null) {
+                hrvToday = computedHrv.rmssdMs
+                hrvSource = "ble_strap"
+                // Baseline = median of last 7 nights from continuous NDJSON.
+                // Only one night so far on first capture day → baseline ≈ today.
+                val recentNights = continuousBiometric.dailyOvernightHrvHistory(7)
+                if (recentNights.size >= 2) {
+                    val sorted = recentNights.map { it.hrv.rmssdMs }.sorted()
+                    hrvBaseline = sorted[sorted.size / 2]
+                } else if (recentNights.size == 1) {
+                    // Single night → baseline = today, so ratio = 1.0 (neutral)
+                    hrvBaseline = computedHrv.rmssdMs
+                }
+            }
+        }
 
         // For multi-sport TSB, prefer rhrBaseline (7d median, stable) — falls
         // back to rhrToday if baseline missing. This is the personal RHR that

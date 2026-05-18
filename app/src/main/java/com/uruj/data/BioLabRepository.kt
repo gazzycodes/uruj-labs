@@ -47,6 +47,9 @@ class BioLabRepository(context: Context) {
     private val karvonenCalc = KarvonenZonesCalculator()
     private val hrrCalc = HrRecoveryCalculator()
     private val sleepingRhrCalc = SleepingRhrCalculator()
+    // v0.7.0 — read RMSSD HRV from continuous BLE NDJSON
+    private val continuousBiometric = ContinuousBiometricRepository(appContext)
+    private val lastSleepReader = LastSleepReader()
 
     suspend fun snapshot(): BioLabSnapshot = withContext(Dispatchers.IO) {
         val profile = profileStore.current()
@@ -154,6 +157,24 @@ class BioLabRepository(context: Context) {
         val hrr = hrrCalc.compute(combinedSessionEnds, hrTimed30d)
         val hrr1AthleteContext = computeHrr1AthleteContext(hrr?.medianHrr1, vo2.classification)
 
+        // v0.7.0 — Autonomic HRV from 24/7 BLE continuous capture. Compute over
+        // last sleep window for the cleanest signal (parasympathetic dominance);
+        // fall back to last 24h if no sleep data. Null when 24/7 monitoring
+        // hasn't run yet (Continuous NDJSON empty for this window).
+        val sleepWindow = lastSleepReader.read(client, granted)
+        val hrvWindowStart: Instant
+        val hrvWindowEnd: Instant
+        if (sleepWindow != null) {
+            hrvWindowStart = sleepWindow.startedAt
+            hrvWindowEnd = sleepWindow.endedAt
+        } else {
+            hrvWindowEnd = now
+            hrvWindowStart = now.minus(Duration.ofHours(24))
+        }
+        val autonomicHrv = continuousBiometric.computeHrvForWindow(hrvWindowStart, hrvWindowEnd)
+        val autonomicSampleCount = autonomicHrv?.sampleCount ?: 0
+        val autonomicWindowLabel = if (sleepWindow != null) "last sleep" else "last 24h"
+
         BioLabSnapshot(
             computedAtMs = System.currentTimeMillis(),
             healthConnectAvailable = true,
@@ -192,6 +213,14 @@ class BioLabRepository(context: Context) {
                         peakBpm = it.effortPeakBpm,
                     )
                 } ?: emptyList(),
+
+            // v0.7.0 — Autonomic HRV from 24/7 BLE continuous capture
+            autonomicRmssdMs = autonomicHrv?.rmssdMs,
+            autonomicSdnnMs = autonomicHrv?.sdnnMs,
+            autonomicPnn50Pct = autonomicHrv?.pnn50Percent,
+            autonomicMeanHrBpm = autonomicHrv?.meanHrBpm,
+            autonomicSampleCount = autonomicSampleCount,
+            autonomicWindowLabel = autonomicWindowLabel,
         )
     }
 
@@ -375,6 +404,22 @@ data class BioLabSnapshot(
     val hrr1SampleCount: Int = 0,
     val hrr1AthleteContext: String? = null,
     val hrr1RecentSamples: List<HrrSample> = emptyList(),
+
+    // v0.7.0 — Autonomic HRV from 24/7 BLE chest strap RR data
+    /** Real RMSSD HRV from BLE chest strap RR intervals (ms). Higher = better
+     *  parasympathetic recovery. Null when 24/7 monitoring hasn't captured data
+     *  for the relevant window yet. */
+    val autonomicRmssdMs: Float? = null,
+    /** SDNN (overall HRV) in ms. */
+    val autonomicSdnnMs: Float? = null,
+    /** pNN50 percentage. */
+    val autonomicPnn50Pct: Float? = null,
+    /** Mean HR over the HRV window (sleep / last 24h). */
+    val autonomicMeanHrBpm: Float? = null,
+    /** Number of clean RR intervals used in the HRV calc. */
+    val autonomicSampleCount: Int = 0,
+    /** Human label of the window the HRV was computed over: "last sleep" or "last 24h". */
+    val autonomicWindowLabel: String = "",
 )
 
 /** A single qualifying HRR1 reading from one exercise session. */

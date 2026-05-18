@@ -37,9 +37,11 @@ class ReadinessCalculator {
             weightedSum += score * 0.30f
             totalWeight += 0.30f
         } ?: components.add(
-            // v0.4.1: honest label — Samsung Fit Band 3 doesn't write HRV
-            // records to HC. The "needs 7 days" framing was misleading.
-            ReadinessComponent("HRV", null, "chest strap unlocks (v1.5)"),
+            // v0.7.0: when null, the 24/7 monitoring toggle is off or hasn't
+            // captured enough RR data yet. Once toggle is ON + strap worn
+            // overnight, ReadinessRepository computes real RMSSD from the
+            // BLE NDJSON and this branch stops firing.
+            ReadinessComponent("HRV", null, "enable 24/7 monitoring + wear strap"),
         )
 
         scoreRestingHr(inputs.restingHrToday, inputs.restingHrBaseline7d)?.let { (score, detail) ->
