@@ -508,7 +508,31 @@ data class BioLabSnapshot(
     val carResult: CarResult? = null,
     /** Tier classification + plain-English summary, paired with carResult. */
     val carInterpretation: CarInterpretation? = null,
-)
+) {
+    /**
+     * v0.8.5 — fraction of the 7 key cycling-training signals that
+     * produced non-null data this snapshot. Used by BioLabViewModel's
+     * sticky-cache so a transient HC blip (rate-limit / Samsung sync
+     * hiccup) doesn't blank good cards by overwriting them with a
+     * less-complete snapshot. Same pattern as ReadinessSnapshot's
+     * sticky cache introduced in v0.8.4.
+     *
+     * Signals counted: restingHrBpm, vo2MaxConsensus, karvonenZones,
+     * hrr1Median, autonomicRmssdMs, carResult, highestHr30d.
+     */
+    val dataConfidence: Float
+        get() {
+            var present = 0
+            if (restingHrBpm != null) present++
+            if (vo2MaxConsensus != null) present++
+            if (karvonenZones != null) present++
+            if (hrr1Median != null) present++
+            if (autonomicRmssdMs != null) present++
+            if (carResult != null) present++
+            if (highestHr30d != null) present++
+            return present / 7f
+        }
+}
 
 /** A single qualifying HRR1 reading from one exercise session. */
 data class HrrSample(
