@@ -68,6 +68,22 @@ class ContinuousBiometricRepository(context: Context) {
     }
 
     /**
+     * v0.7.7 — extract `(timestamp, bpm)` pairs from the 24/7 NDJSON for the
+     * requested window. Drop samples with bpm ≤ 0 (BLE handshake noise).
+     *
+     * Used by `HrRecoveryCalculator` + `SleepingRhrCalculator` as the
+     * higher-resolution alternative to HC HeartRateRecord batches. Per-second
+     * cadence (vs HC's ~30 sec batches) gives noticeably tighter HRR1 numbers
+     * because the post-effort window has 30-60 samples instead of 2-3.
+     */
+    fun hrSamplesForWindow(start: Instant, end: Instant): List<Pair<Instant, Int>> {
+        return samplesForWindow(start, end)
+            .filter { it.bpm > 0 }
+            .map { Instant.ofEpochMilli(it.timestampMs) to it.bpm }
+            .sortedBy { it.first }
+    }
+
+    /**
      * Reconstructs the actual beat timestamps from a list of ContinuousSamples.
      * Per Bluetooth HRP spec, RR intervals in each notification are ordered
      * oldest-to-newest. The latest beat is at sample.timestampMs. Walking the

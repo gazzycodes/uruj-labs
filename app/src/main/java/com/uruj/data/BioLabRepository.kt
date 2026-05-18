@@ -91,7 +91,15 @@ class BioLabRepository(context: Context) {
         // Powers Karvonen zones + VO2 max formula even if not displayed in
         // its own card.
         val sleepWindows30d = readSleepWindows(client, granted, monthAgo, now)
-        val sleepingRhr = sleepingRhrCalc.compute(hrTimed30d, sleepWindows30d)
+        // v0.7.7 — pull strap NDJSON for the FULL 30d window. Calculator picks
+        // strap vs HC per-night based on coverage. STRAP wins where 24/7
+        // service was capturing; BAND fills in nights where it wasn't.
+        val strapHrSamples30d = continuousBiometric.hrSamplesForWindow(monthAgo, now)
+        val sleepingRhr = sleepingRhrCalc.compute(
+            hcSamples = hrTimed30d,
+            sleepWindows = sleepWindows30d,
+            strapSamples = strapHrSamples30d,
+        )
 
         // Athletic max — the 30d peak across all tracked effort. Cycling-relevant
         // (the ceiling number lets riders see how close training has pushed them).
@@ -138,7 +146,22 @@ class BioLabRepository(context: Context) {
         val restingHrSourceLabel = sleepingRhr?.let {
             val nights = it.nightsCount
             val plural = if (nights == 1) "night" else "nights"
-            "athletic RHR — median of $nights sleep $plural"
+            // v0.7.7 — surface source breakdown inline. "12 strap + 3 band" tells
+            // the rider exactly which sensor produced their RHR median.
+            val breakdownStr = if (it.sourceBreakdown.size == 1) {
+                val onlySource = it.sourceBreakdown.keys.first()
+                when (onlySource) {
+                    com.uruj.domain.SensorSource.STRAP -> " · all from chest strap ✓"
+                    com.uruj.domain.SensorSource.BAND -> " · all from band"
+                    com.uruj.domain.SensorSource.MIXED -> " · mixed sources"
+                    com.uruj.domain.SensorSource.UNKNOWN_LEGACY -> ""
+                }
+            } else {
+                " · " + it.sourceBreakdown.entries
+                    .sortedByDescending { e -> e.value }
+                    .joinToString(" + ") { e -> "${e.value} ${e.key.displayShort()}" }
+            }
+            "athletic RHR — median of $nights sleep $plural$breakdownStr"
         } ?: "no sleep data — wear band overnight"
 
         val ftpIsLikelyUntested = profile.ftpWatts == 200
@@ -160,7 +183,15 @@ class BioLabRepository(context: Context) {
 
         // HR Recovery (HRR1) — Cole NEJM 1999. Stronger CV mortality predictor
         // than VO2 max alone. Samsung doesn't expose this number.
-        val hrr = hrrCalc.compute(combinedSessionEnds, hrTimed30d)
+        // v0.7.7 — pass BOTH HC + strap streams. Calculator picks STRAP when
+        // 24/7 NDJSON covered the post-effort window with ≥60% sample density,
+        // BAND otherwise, MIXED as a fallback for partial strap coverage when
+        // HC also has nothing.
+        val hrr = hrrCalc.compute(
+            exerciseSessionEndTimes = combinedSessionEnds,
+            hcHrSamples = hrTimed30d,
+            strapHrSamples = strapHrSamples30d,
+        )
         val hrr1AthleteContext = computeHrr1AthleteContext(hrr?.medianHrr1, vo2.classification)
 
         // v0.7.0 — Autonomic HRV from 24/7 BLE continuous capture. Compute over
@@ -233,8 +264,10 @@ class BioLabRepository(context: Context) {
                         endTimeMs = it.sessionEnd.toEpochMilli(),
                         hrr1Bpm = it.hrr1Bpm,
                         peakBpm = it.effortPeakBpm,
+                        source = it.source,
                     )
                 } ?: emptyList(),
+            hrr1SourceBreakdown = hrr?.sourceBreakdown ?: emptyMap(),
 
             // v0.7.0 — Autonomic HRV from 24/7 BLE continuous capture
             autonomicRmssdMs = autonomicHrv?.rmssdMs,
@@ -432,6 +465,9 @@ data class BioLabSnapshot(
     val hrr1SampleCount: Int = 0,
     val hrr1AthleteContext: String? = null,
     val hrr1RecentSamples: List<HrrSample> = emptyList(),
+    /** v0.7.7 — per-source count for the HRR1 card badge.
+     *  e.g. {STRAP=8, BAND=3} → "8 strap · 3 band". */
+    val hrr1SourceBreakdown: Map<com.uruj.domain.SensorSource, Int> = emptyMap(),
 
     // v0.7.0 — Autonomic HRV from 24/7 BLE chest strap RR data
     /** Real RMSSD HRV from BLE chest strap RR intervals (ms). Higher = better
@@ -469,4 +505,6 @@ data class HrrSample(
     val endTimeMs: Long,
     val hrr1Bpm: Int,
     val peakBpm: Int,
+    /** v0.7.7 — which sensor produced this reading. */
+    val source: com.uruj.domain.SensorSource = com.uruj.domain.SensorSource.UNKNOWN_LEGACY,
 )

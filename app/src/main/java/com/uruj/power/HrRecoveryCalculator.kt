@@ -1,5 +1,6 @@
 package com.uruj.power
 
+import com.uruj.domain.SensorSource
 import java.time.Duration
 import java.time.Instant
 
@@ -29,6 +30,10 @@ class HrRecoveryCalculator {
         val recoveryHrBpm: Int,
         val hrr1Bpm: Int,
         val classification: String,
+        /** v0.7.7 — which sensor produced this reading. STRAP when 24/7 NDJSON
+         *  covered the recovery window; BAND when only HC HR samples available;
+         *  MIXED when both contributed parts of the window. */
+        val source: SensorSource = SensorSource.UNKNOWN_LEGACY,
     )
 
     data class Result(
@@ -37,18 +42,37 @@ class HrRecoveryCalculator {
         val medianHrr1: Int,
         /** Worst-of, best-of, classification of the median. */
         val medianClassification: String,
+        /** v0.7.7 — count of samples per source for the UI badge.
+         *  e.g. "8 strap · 3 band" or "all strap". */
+        val sourceBreakdown: Map<SensorSource, Int> = emptyMap(),
     )
 
     /**
-     * @param exerciseSessionEndTimes endTime of every ExerciseSessionRecord in window
-     * @param hrTimedSamples HR samples (Instant + bpm) over the same window plus
-     *   a 2-minute trailing buffer past the last session end.
+     * v0.7.7 — bulletproof source-aware compute.
+     *
+     * Per session end, we evaluate the recovery window separately against BOTH
+     * the BLE strap NDJSON samples and the HC HR samples, then pick:
+     *   1. STRAP — if strap window has ≥60% sample density AND a usable
+     *      recovery sample in the [30s, 180s] window
+     *   2. BAND — strap missing or low coverage; HC has a usable recovery sample
+     *   3. skip — neither produced a valid sample
+     *
+     * The 60% threshold protects against false-STRAP labels when the strap
+     * dropped mid-recovery: if only a few seconds of strap data exist, fall
+     * back to HC for that session. Conservative — better to call it BAND than
+     * to mislabel a partial reading.
+     *
+     * @param strapHrSamples per-second BLE NDJSON samples (preferred). Pass
+     *   emptyList() if no strap available or no NDJSON data.
+     * @param hcHrSamples HC HeartRateRecord batched samples (fallback).
      */
     fun compute(
         exerciseSessionEndTimes: List<Instant>,
-        hrTimedSamples: List<Pair<Instant, Int>>,
+        hcHrSamples: List<Pair<Instant, Int>>,
+        strapHrSamples: List<Pair<Instant, Int>> = emptyList(),
     ): Result? {
-        if (exerciseSessionEndTimes.isEmpty() || hrTimedSamples.isEmpty()) return null
+        if (exerciseSessionEndTimes.isEmpty()) return null
+        if (hcHrSamples.isEmpty() && strapHrSamples.isEmpty()) return null
 
         // v0.3.7: filter sessions whose recovery window overlaps another workout.
         // User had 3 rides on 2026-05-14; recovery samples for one ride could
@@ -63,44 +87,18 @@ class HrRecoveryCalculator {
         if (cleanEnds.isEmpty()) return null
 
         val samples = cleanEnds.mapNotNull { end ->
-            // Effort peak: highest HR in the last 5 min of the session. We don't
-            // know the session start (we only get end times here) so we just look
-            // back from end and trust that the peak in the closing 5 min was the
-            // working HR.
-            val effortWindow = hrTimedSamples.filter { (t, _) ->
-                !t.isBefore(end.minus(EFFORT_LOOKBACK)) && !t.isAfter(end)
+            // Try strap first
+            val strapSample = computeOne(end, strapHrSamples, SensorSource.STRAP)
+            if (strapSample != null && hasGoodCoverage(end, strapHrSamples, RECOVERY_WINDOW_START, RECOVERY_WINDOW_END, expectedCadenceMs = 1000L)) {
+                return@mapNotNull strapSample
             }
-            val peak = effortWindow.maxOfOrNull { it.second } ?: return@mapNotNull null
-            // Require a real hard effort. Easy walks / commute rides don't have a
-            // recovery curve worth measuring.
-            if (peak < MIN_PEAK_BPM) return@mapNotNull null
-
-            // Recovery: HR sample whose timestamp is CLOSEST to end+60s.
-            // Cole's protocol measures HR exactly at +60s post-exercise. With
-            // Fit Band 3 spot-checks we won't land precisely on 60s — closest-
-            // by-time in the [+30s, +180s] window is the best honest match.
-            // Earlier versions used MIN-of-window which biased toward later
-            // (more recovered) samples — that measured HRR2-HRR3 and labelled
-            // it HRR1.
-            val ideal = end.plus(Duration.ofSeconds(60))
-            val recoveryWindow = hrTimedSamples.filter { (t, _) ->
-                !t.isBefore(end.plus(RECOVERY_WINDOW_START)) &&
-                    !t.isAfter(end.plus(RECOVERY_WINDOW_END))
-            }
-            val recovery = recoveryWindow
-                .minByOrNull { (t, _) -> kotlin.math.abs(Duration.between(ideal, t).seconds) }
-                ?.second ?: return@mapNotNull null
-            val drop = peak - recovery
-            // Negative drops or absurd jumps indicate sensor weirdness, not data.
-            if (drop !in 0..100) return@mapNotNull null
-
-            Sample(
-                sessionEnd = end,
-                effortPeakBpm = peak,
-                recoveryHrBpm = recovery,
-                hrr1Bpm = drop,
-                classification = classify(drop),
-            )
+            // Fall back to HC
+            val hcSample = computeOne(end, hcHrSamples, SensorSource.BAND)
+            if (hcSample != null) return@mapNotNull hcSample
+            // If strap produced a partial reading (didn't pass coverage) AND HC
+            // didn't produce anything, accept the partial strap as MIXED-leaning
+            // (better than no data — and the sensor was real).
+            strapSample?.copy(source = SensorSource.MIXED)
         }
         if (samples.isEmpty()) return null
 
@@ -110,11 +108,72 @@ class HrRecoveryCalculator {
         } else {
             (sorted[sorted.size / 2 - 1] + sorted[sorted.size / 2]) / 2
         }
+        val breakdown = samples.groupingBy { it.source }.eachCount()
         return Result(
             samples = samples,
             medianHrr1 = median,
             medianClassification = classify(median),
+            sourceBreakdown = breakdown,
         )
+    }
+
+    /** Compute a single HRR1 sample from one HR-sample stream for one session-end. */
+    private fun computeOne(
+        end: Instant,
+        hrTimedSamples: List<Pair<Instant, Int>>,
+        source: SensorSource,
+    ): Sample? {
+        if (hrTimedSamples.isEmpty()) return null
+        val effortWindow = hrTimedSamples.filter { (t, _) ->
+            !t.isBefore(end.minus(EFFORT_LOOKBACK)) && !t.isAfter(end)
+        }
+        val peak = effortWindow.maxOfOrNull { it.second } ?: return null
+        if (peak < MIN_PEAK_BPM) return null
+
+        val ideal = end.plus(Duration.ofSeconds(60))
+        val recoveryWindow = hrTimedSamples.filter { (t, _) ->
+            !t.isBefore(end.plus(RECOVERY_WINDOW_START)) &&
+                !t.isAfter(end.plus(RECOVERY_WINDOW_END))
+        }
+        val recovery = recoveryWindow
+            .minByOrNull { (t, _) -> kotlin.math.abs(Duration.between(ideal, t).seconds) }
+            ?.second ?: return null
+        val drop = peak - recovery
+        if (drop !in 0..100) return null
+
+        return Sample(
+            sessionEnd = end,
+            effortPeakBpm = peak,
+            recoveryHrBpm = recovery,
+            hrr1Bpm = drop,
+            classification = classify(drop),
+            source = source,
+        )
+    }
+
+    /**
+     * v0.7.7 — coverage check: does the sample stream have enough data points
+     * in the [start, end] window to commit to that source?
+     *
+     * Threshold: ≥60% of expected sample count. Expected count = window length
+     * divided by typical cadence. For BLE strap at ~1 Hz across 30-180s window
+     * that's ~150 samples; need ≥90. For HC batched ~30s cadence, ~5 samples;
+     * need ≥3. Same percentage threshold applied to both.
+     */
+    private fun hasGoodCoverage(
+        sessionEnd: Instant,
+        samples: List<Pair<Instant, Int>>,
+        windowStart: Duration,
+        windowEnd: Duration,
+        expectedCadenceMs: Long,
+    ): Boolean {
+        val winStart = sessionEnd.plus(windowStart)
+        val winEnd = sessionEnd.plus(windowEnd)
+        val actual = samples.count { (t, _) ->
+            !t.isBefore(winStart) && !t.isAfter(winEnd)
+        }
+        val expected = Duration.between(winStart, winEnd).toMillis() / expectedCadenceMs
+        return actual.toFloat() / expected.toFloat() >= COVERAGE_THRESHOLD
     }
 
     private fun classify(drop: Int): String = when {
@@ -154,5 +213,8 @@ class HrRecoveryCalculator {
          *  next workout's warmup HR and produce inflated drops. 3 min is wide
          *  enough to fully clear our 180s recovery window. */
         private val MIN_SESSION_GAP: Duration = Duration.ofMinutes(3)
+        /** v0.7.7 — fraction of expected samples required to commit to a
+         *  source label as STRAP (vs falling back to HC or labeling MIXED). */
+        private const val COVERAGE_THRESHOLD = 0.60f
     }
 }
