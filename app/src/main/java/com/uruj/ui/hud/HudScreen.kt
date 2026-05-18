@@ -97,6 +97,13 @@ fun HudScreen(onStopRide: () -> Unit) {
             // v0.8.0 — session intent indicator + CHANGE button (override mid-ride).
             Spacer(Modifier.height(2.dp))
             SessionIntentBar(state)
+            // v0.8.1 — inline live HR waveform (last 30s). Only when paired
+            // strap is supplying beats. Saves a glance: see HR trend instead
+            // of just the current number.
+            if (state.bleStrapName != null) {
+                Spacer(Modifier.height(4.dp))
+                HudWaveform()
+            }
             // v0.5.1 — BLE chest strap row, only shown when a paired strap exists
             // for this ride. Off-screen otherwise so non-strap users don't see clutter.
             if (state.bleStrapName != null) {

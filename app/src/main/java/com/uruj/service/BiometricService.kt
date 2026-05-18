@@ -156,6 +156,16 @@ class BiometricService : Service() {
                     samplesTotal += 1
                     lastSampleAtMs = sample.receivedAtMs
                     recorder.append(sample, latestBatteryPct)
+                    // v0.8.1 — feed Live state for HUD inline waveform +
+                    // Live tab. Only when this service is the active BLE
+                    // owner (no ride recording). When a ride is recording,
+                    // RideRecorderService takes over BLE and writes to Live
+                    // state instead.
+                    LiveStateHolder.onBleNotification(
+                        receivedAtMs = sample.receivedAtMs,
+                        bpm = sample.bpm,
+                        rrIntervalsMs = sample.rrIntervalsMs,
+                    )
                     // Update notification at most every 5s to keep it fresh
                     // without churning notification updates.
                     if (samplesTotal % 5 == 0L) {
