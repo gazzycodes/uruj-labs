@@ -59,6 +59,8 @@ class BioLabRepository(context: Context) {
     // v0.9.0 — disk-persisted HRR1 readings (snapshot architecture).
     // Bridges HC's 30-day retention so HRR1 history survives indefinitely.
     private val hrrSnapshots = HrrSnapshotRepository(appContext)
+    // v0.9.1 — daily Athletic RHR snapshots. Same architecture as HRR1.
+    private val rhrSnapshots = RhrSnapshotRepository(appContext)
 
     suspend fun snapshot(): BioLabSnapshot = withContext(Dispatchers.IO) {
         val profile = profileStore.current()
@@ -155,6 +157,29 @@ class BioLabRepository(context: Context) {
         ) {
             runCatching { profileStore.saveRestingHrBpm(effectiveRestingHr) }
                 .onFailure { Log.w(TAG, "[v0.8.0] RHR cache write failed", it) }
+        }
+
+        // v0.9.1 — persist today's daily RHR snapshot. Idempotent: if today
+        // already has a file on disk, the write is skipped (preserves the
+        // original methodology version for historical analysis). Stores the
+        // ROLLING MEDIAN (what BioLab displays) plus the most-recent-night's
+        // actual reading + source — enough to drive future RHR trend charts
+        // beyond HC's 30-day retention.
+        if (sleepingRhr != null) {
+            val today = java.time.LocalDate.now()
+            rhrSnapshots.save(
+                RhrSnapshot(
+                    dateIsoLocal = today.toString(),
+                    medianBpm = sleepingRhr.medianBpm,
+                    mostRecentNightBpm = sleepingRhr.mostRecentNightBpm,
+                    mostRecentNightEndMs = sleepingRhr.mostRecentNightEndTime.toEpochMilli(),
+                    mostRecentNightSource = sleepingRhr.mostRecentNightSource.name,
+                    nightsContributing = sleepingRhr.nightsCount,
+                    methodologyVersion = RhrSnapshotRepository.METHODOLOGY_VERSION,
+                    computedAtMs = System.currentTimeMillis(),
+                ),
+                date = today,
+            )
         }
         val restingHrSourceLabel = sleepingRhr?.let {
             val nights = it.nightsCount
