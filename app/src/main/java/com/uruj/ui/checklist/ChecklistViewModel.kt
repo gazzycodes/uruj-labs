@@ -59,15 +59,28 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
                 delay(2_000L)
             }
         }
-        // Readiness is expensive to compute (HC queries + history scan), refresh
-        // every 60 s — sleep/HRV/RHR data doesn't change minute-to-minute.
+        // v0.8.4 — Readiness polling reduced from 60s → 5 min to stop the
+        // HC rate-limit storm. Each Readiness compute fires 6-8 HC reads
+        // (sleep windows, HR samples, RHR record, HRV record, exercise
+        // sessions). At 60s cadence that was ~480 HC reads/hour just from
+        // this poll, alone enough to consistently bump HC's foreground
+        // quota ceiling.
+        //
+        // User-visible impact: readiness updates every 5 min in the
+        // background. The SYNC button on the Readiness card stays available
+        // for INSTANT manual refresh. Sleep / HRV / RHR / TSB don't change
+        // minute-to-minute anyway — 5 min is plenty.
+        //
+        // App-open ALWAYS fires an immediate compute (the first iteration
+        // of the loop runs before any delay). So opening the LAB tab gets
+        // fresh data each time.
         if (readinessJob?.isActive != true) {
             readinessJob = viewModelScope.launch {
                 while (isActive) {
                     val snap = readinessRepo.computeWithDiagnostics()
                     _readiness.value = snap.result
                     _readinessSnapshot.value = snap
-                    delay(60_000L)
+                    delay(READINESS_POLL_INTERVAL_MS)
                 }
             }
         }
@@ -269,5 +282,12 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
             status = if (installed) CheckStatus.Pass else CheckStatus.Warning,
             canFix = !installed,
         )
+    }
+
+    private companion object {
+        /** v0.8.4 — readiness re-poll interval. 5 min keeps HC reads under
+         *  quota. SYNC button on the readiness card forces an immediate
+         *  fresh fetch independent of this loop. */
+        const val READINESS_POLL_INTERVAL_MS = 5L * 60L * 1000L
     }
 }
