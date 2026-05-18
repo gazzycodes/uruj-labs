@@ -26,6 +26,7 @@ class RiderProfileStore(context: Context) {
             bikeWeightKg = prefs[KEY_BIKE_WEIGHT_KG] ?: 10f,
             ftpWatts = prefs[KEY_FTP_WATTS] ?: 200,
             maxHrBpm = prefs[KEY_MAX_HR_BPM] ?: 190,
+            restingHrBpm = prefs[KEY_RESTING_HR_BPM] ?: 50,
             tireType = runCatching { TireType.valueOf(prefs[KEY_TIRE_TYPE] ?: "") }
                 .getOrDefault(TireType.Road),
             ridingPosition = runCatching { RidingPosition.valueOf(prefs[KEY_RIDING_POSITION] ?: "") }
@@ -43,10 +44,19 @@ class RiderProfileStore(context: Context) {
             prefs[KEY_BIKE_WEIGHT_KG] = profile.bikeWeightKg
             prefs[KEY_FTP_WATTS] = profile.ftpWatts
             prefs[KEY_MAX_HR_BPM] = profile.maxHrBpm
+            prefs[KEY_RESTING_HR_BPM] = profile.restingHrBpm
             prefs[KEY_TIRE_TYPE] = profile.tireType.name
             prefs[KEY_RIDING_POSITION] = profile.ridingPosition.name
             prefs[KEY_AGE_YEARS] = profile.ageYears
             prefs[KEY_HEIGHT_CM] = profile.heightCm
+        }
+    }
+
+    /** v0.8.0 — write only the cached athletic RHR (called from BioLabRepository
+     *  when it computes a fresh sleep-window RHR). Doesn't touch other fields. */
+    suspend fun saveRestingHrBpm(restingHrBpm: Int) {
+        dataStore.edit { prefs ->
+            prefs[KEY_RESTING_HR_BPM] = restingHrBpm
         }
     }
 
@@ -55,6 +65,7 @@ class RiderProfileStore(context: Context) {
         private val KEY_BIKE_WEIGHT_KG = floatPreferencesKey("bike_weight_kg")
         private val KEY_FTP_WATTS = intPreferencesKey("ftp_watts")
         private val KEY_MAX_HR_BPM = intPreferencesKey("max_hr_bpm")
+        private val KEY_RESTING_HR_BPM = intPreferencesKey("resting_hr_bpm")
         private val KEY_TIRE_TYPE = stringPreferencesKey("tire_type")
         private val KEY_RIDING_POSITION = stringPreferencesKey("riding_position")
         private val KEY_AGE_YEARS = intPreferencesKey("age_years")

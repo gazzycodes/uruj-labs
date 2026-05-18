@@ -143,6 +143,16 @@ class BioLabRepository(context: Context) {
             autoDetectedMaxHr > profile.maxHrBpm || !maxHrIsFormulaDefault
 
         val effectiveRestingHr = sleepingRhr?.medianBpm
+        // v0.8.0 — cache the computed athletic RHR back into RiderProfile so
+        // the audio coach + ride start can build Karvonen zones without
+        // re-running this entire BioLab pipeline. Best-effort; if save fails
+        // the next BioLab refresh will retry.
+        if (effectiveRestingHr != null && effectiveRestingHr in 30..120 &&
+            effectiveRestingHr != profile.restingHrBpm
+        ) {
+            runCatching { profileStore.saveRestingHrBpm(effectiveRestingHr) }
+                .onFailure { Log.w(TAG, "[v0.8.0] RHR cache write failed", it) }
+        }
         val restingHrSourceLabel = sleepingRhr?.let {
             val nights = it.nightsCount
             val plural = if (nights == 1) "night" else "nights"

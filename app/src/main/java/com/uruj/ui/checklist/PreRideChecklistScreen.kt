@@ -209,6 +209,13 @@ fun PreRideChecklistScreen(
             items(state.items, key = { it.id }) { item ->
                 CheckRow(item = item, onFix = { launchFix(item.id) })
             }
+            // v0.8.0 — session intent picker just above START RIDE. Default
+            // last-picked (sticks across rides) so user doesn't pick again
+            // if they ride twice in a day. Can also override mid-ride from
+            // the HUD.
+            item("session_intent_picker") {
+                SessionIntentPicker()
+            }
             item("start_button") {
                 Button(
                     onClick = onStartRide,
