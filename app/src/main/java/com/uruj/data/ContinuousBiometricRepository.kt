@@ -140,34 +140,34 @@ class ContinuousBiometricRepository(context: Context) {
     }
 
     /**
-     * Per-night HRV history. Reads each day's NDJSON and computes one
-     * RMSSD per overnight sleep window. Used for 7d baseline + trend charts.
+     * Per-night HRV history sliced by ACTUAL Samsung sleep windows. Caller
+     * supplies the sessions list (typically via `LastSleepReader.listLastNDays`)
+     * which gives us the real wake-to-sleep boundaries instead of the
+     * hardcoded 22:00-09:00 heuristic.
      *
-     * Approximate sleep window: previous day's 22:00 to this day's 09:00.
-     * This is a heuristic — when v0.7.x adds Samsung sleep-window lookup,
-     * this becomes more precise.
+     * Why this matters: the heuristic window was always wider than real
+     * sleep, so it included pre-sleep awake time + post-wake awake time,
+     * both of which have lower HRV than deep sleep. Result was a per-night
+     * RMSSD lower than the Bio Lab Autonomic card (which always used the
+     * Samsung window). v0.7.4 follow-up fix.
+     *
+     * Returns one DailyHrv per sleep session that produced a valid HRV
+     * computation (≥2 valid 5-min windows or fallback flat compute).
+     * Sessions are bucketed to the LocalDate of their `endedAt` — that's
+     * the calendar date the rider woke up, which is how URUJ talks about
+     * "tonight's sleep" elsewhere.
      */
-    fun dailyOvernightHrvHistory(days: Int): List<DailyHrv> {
+    fun dailyOvernightHrvHistoryFromSessions(
+        sessions: List<com.uruj.data.LastSleepReader.Result>,
+    ): List<DailyHrv> {
         val zone = ZoneId.systemDefault()
-        val today = LocalDate.now(zone)
         val results = mutableListOf<DailyHrv>()
-        for (offset in 0 until days) {
-            val day = today.minusDays(offset.toLong())
-            val nightStart = day.minusDays(1).atTime(22, 0).atZone(zone).toInstant()
-            val nightEnd = day.atTime(9, 0).atZone(zone).toInstant()
-            val hrv = computeHrvForWindow(nightStart, nightEnd) ?: continue
+        for (session in sessions) {
+            val hrv = computeHrvForWindow(session.startedAt, session.endedAt) ?: continue
+            val day = session.endedAt.atZone(zone).toLocalDate()
             results += DailyHrv(date = day, hrv = hrv)
         }
-        return results
-    }
-
-    /**
-     * Counts how many of the last `days` days have a valid (non-null)
-     * overnight HRV reading. Used by Readiness to switch between absolute-
-     * tier scoring (days 1-6) and ratio-based scoring (day 7+).
-     */
-    fun daysWithOvernightHrvIn(days: Int): Int {
-        return dailyOvernightHrvHistory(days).size
+        return results.sortedByDescending { it.date }
     }
 
     /** Returns the dates that have continuous-monitoring data. Newest first. */

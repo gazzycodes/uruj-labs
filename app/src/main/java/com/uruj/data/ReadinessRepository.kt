@@ -282,7 +282,12 @@ class ReadinessRepository(context: Context) {
                 hrvToday = computedHrv.rmssdMs
                 hrvSource = "ble_strap"
                 // Count days of overnight HRV data — drives scoring mode.
-                val recentNights = continuousBiometric.dailyOvernightHrvHistory(7)
+                // v0.7.4: use Samsung sleep windows (same source as Bio Lab
+                // Autonomic card + the trend chart) so day count + baseline
+                // agree across surfaces.
+                val recentSleeps = lastSleepReader.listLastNDays(client, granted, 7)
+                val recentNights = continuousBiometric
+                    .dailyOvernightHrvHistoryFromSessions(recentSleeps)
                 hrvDaysOfDataIn7d = recentNights.size
                 if (recentNights.size >= 2) {
                     val sorted = recentNights.map { it.hrv.rmssdMs }.sorted()
