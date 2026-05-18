@@ -53,24 +53,42 @@ class WearTimeCalculator {
 
     /**
      * @param strapSampleTimestampsMs epoch-ms timestamps of strap samples
-     *   (e.g. from 24/7 NDJSON `bpm > 0` samples in the window)
+     *   (e.g. from 24/7 NDJSON `bpm > 0` samples in the window). Strap
+     *   writes per-second cadence → bucketize at 1-minute resolution.
      * @param bandSampleTimestampsMs epoch-ms timestamps of band HR samples
-     *   (e.g. from HC HeartRateRecord samples)
+     *   (e.g. from HC HeartRateRecord samples). Band at IDLE writes 1 sample
+     *   per 10-15 min, so 1-min bucketing would undercount wear. v0.7.9 fix:
+     *   each band sample marks ±7.5 min around it as "worn" (inference
+     *   window). A continuously-worn-at-rest period correctly reads ~100%
+     *   instead of ~10%.
      * @param windowStartMs window start (inclusive)
      * @param windowEndMs window end (exclusive)
+     * @param bandInferenceWindowMinutes how far on either side of a band
+     *   sample to mark as worn. Default 15 = matches band's max-idle
+     *   cadence. Lowering to 5 makes the band stat more conservative
+     *   (only counts the tighter window around each sample); raising to
+     *   30 is more generous.
      */
     fun compute(
         strapSampleTimestampsMs: List<Long>,
         bandSampleTimestampsMs: List<Long>,
         windowStartMs: Long,
         windowEndMs: Long,
+        bandInferenceWindowMinutes: Int = 15,
     ): Result {
         val totalMinutes = ((windowEndMs - windowStartMs) / 60_000L)
             .toInt()
             .coerceAtLeast(1)
 
+        // Strap: 1-min buckets (per-second cadence supports this resolution)
         val strapWorn = bucketByMinute(strapSampleTimestampsMs, windowStartMs, totalMinutes)
-        val bandWorn = bucketByMinute(bandSampleTimestampsMs, windowStartMs, totalMinutes)
+        // Band: inference window ±half-window around each sample
+        val bandWorn = bucketWithInference(
+            samples = bandSampleTimestampsMs,
+            windowStartMs = windowStartMs,
+            totalMinutes = totalMinutes,
+            inferenceWindowMin = bandInferenceWindowMinutes,
+        )
         val combinedWorn = BooleanArray(totalMinutes) { i ->
             strapWorn[i] || bandWorn[i]
         }
@@ -96,6 +114,30 @@ class WearTimeCalculator {
             if (t < windowStartMs || t >= endMs) continue
             val idx = ((t - windowStartMs) / 60_000L).toInt()
             if (idx in arr.indices) arr[idx] = true
+        }
+        return arr
+    }
+
+    /**
+     * v0.7.9 — fill ±halfWindow minutes around each sample. Used for band
+     * which writes only at ~10-15 min cadence at rest; without this
+     * inference, idle-worn bands would falsely read as ~10% wear.
+     */
+    private fun bucketWithInference(
+        samples: List<Long>,
+        windowStartMs: Long,
+        totalMinutes: Int,
+        inferenceWindowMin: Int,
+    ): BooleanArray {
+        val arr = BooleanArray(totalMinutes)
+        val endMs = windowStartMs + totalMinutes * 60_000L
+        val halfWindow = inferenceWindowMin / 2
+        for (t in samples) {
+            if (t < windowStartMs || t >= endMs) continue
+            val centerIdx = ((t - windowStartMs) / 60_000L).toInt()
+            val startIdx = (centerIdx - halfWindow).coerceAtLeast(0)
+            val endIdx = (centerIdx + halfWindow).coerceAtMost(totalMinutes - 1)
+            for (i in startIdx..endIdx) arr[i] = true
         }
         return arr
     }

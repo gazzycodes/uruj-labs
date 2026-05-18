@@ -58,17 +58,27 @@ class WearTimeRepository(context: Context) {
         val strapTimestamps = continuousRepo.hrSamplesForWindow(start, end)
             .map { it.first.toEpochMilli() }
         val bandTimestamps = readBandSampleTimestamps(start, end)
-        if (strapTimestamps.isEmpty() && bandTimestamps.isEmpty()) {
+        // v0.7.9 — also read recent band samples (last 24h beyond the window
+        // start if needed) to find "most recent band HR sample anywhere" for
+        // the sync-lag indicator. If today's window has NO band samples,
+        // user still wants to see "last band sync was 4h ago".
+        val mostRecentBandSampleMs = readMostRecentBandSampleTimestamp(
+            lookbackStart = start.minus(java.time.Duration.ofDays(2)),
+            lookbackEnd = end,
+        )
+        // v0.7.9 — same for strap (last NDJSON sample anywhere)
+        val mostRecentStrapSampleMs = (strapTimestamps.maxOrNull() ?: 0L)
+            .takeIf { it > 0L } ?: run {
+                continuousRepo.hrSamplesForWindow(
+                    start.minus(java.time.Duration.ofDays(2)),
+                    end,
+                ).maxOfOrNull { it.first.toEpochMilli() } ?: 0L
+            }
+        if (strapTimestamps.isEmpty() && bandTimestamps.isEmpty() &&
+            mostRecentStrapSampleMs == 0L && mostRecentBandSampleMs == 0L) {
             return null
         }
-        val strapPaired = strapTimestamps.isNotEmpty() ||
-            // Even if strap had ZERO samples in window, treat as "paired" if
-            // there are any samples in the last 7 days (rider has paired the
-            // strap but it might just be off RIGHT NOW). Drives UI label.
-            continuousRepo.hrSamplesForWindow(
-                end.minus(java.time.Duration.ofDays(7)),
-                end,
-            ).isNotEmpty()
+        val strapPaired = strapTimestamps.isNotEmpty() || mostRecentStrapSampleMs > 0L
         val result = calc.compute(
             strapSampleTimestampsMs = strapTimestamps,
             bandSampleTimestampsMs = bandTimestamps,
@@ -80,8 +90,21 @@ class WearTimeRepository(context: Context) {
             windowEndMs = end.toEpochMilli(),
             result = result,
             strapEverPaired = strapPaired,
-            bandAvailable = bandTimestamps.isNotEmpty(),
+            bandAvailable = bandTimestamps.isNotEmpty() || mostRecentBandSampleMs > 0L,
+            mostRecentStrapSampleMs = mostRecentStrapSampleMs.takeIf { it > 0L },
+            mostRecentBandSampleMs = mostRecentBandSampleMs.takeIf { it > 0L },
         )
+    }
+
+    /**
+     * v0.7.9 — find the most recent band HR sample anywhere in the lookback
+     * window. Used for the sync-lag indicator on the wear-time card.
+     */
+    private suspend fun readMostRecentBandSampleTimestamp(
+        lookbackStart: Instant,
+        lookbackEnd: Instant,
+    ): Long {
+        return readBandSampleTimestamps(lookbackStart, lookbackEnd).maxOrNull() ?: 0L
     }
 
     private suspend fun readBandSampleTimestamps(
@@ -129,6 +152,16 @@ data class WearTimeSnapshot(
     /** True if the strap is paired (regardless of whether it captured in
      *  the window — drives "strap charging?" UX hint). */
     val strapEverPaired: Boolean,
-    /** True if HC band samples were available for the window. */
+    /** True if HC band samples were available for the window OR in the
+     *  2-day lookback (band sync may lag — having recent samples means
+     *  it's actively pairing). */
     val bandAvailable: Boolean,
+    /** v0.7.9 — epoch ms of the most recent strap sample seen anywhere in
+     *  the 2-day lookback. Null if strap never produced a sample. UI shows
+     *  "strap synced X min ago" so user can verify it's alive. */
+    val mostRecentStrapSampleMs: Long? = null,
+    /** v0.7.9 — epoch ms of the most recent HC band HR sample. Null if no
+     *  band sample in the 2-day lookback. UI shows "band synced X min ago"
+     *  to make HC sync lag visible. */
+    val mostRecentBandSampleMs: Long? = null,
 )
