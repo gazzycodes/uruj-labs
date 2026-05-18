@@ -265,6 +265,7 @@ private fun DiagnosticsLine(snapshot: ReadinessSnapshot) {
         }
         val hrvLabel = when (diag.hrvSourceLabel) {
             "direct" -> "${diag.hrvRecords7d} HRV(direct)"
+            "ble_strap" -> "HRV(strap) ✓"  // v0.7.0 — real RMSSD from BLE
             "sleep" -> "HRV(sleep) ✓"
             "proxy" -> "HRV(HR-proxy)"
             else -> "${diag.hrvRecords7d} HRV"
@@ -432,11 +433,28 @@ private fun reasonFor(label: String, score: Int, detail: String): String = when 
             else -> ""
         }
     }
-    "HRV" -> when {
-        score >= 90 -> "autonomic system primed ✓"
-        score >= 70 -> "near baseline — normal variance"
-        score >= 40 -> "below baseline — watch fatigue"
-        else -> "Samsung Fit Band 3 doesn't write HRV; chest strap (v1.5) unlocks real RMSSD"
+    "HRV" -> {
+        // v0.7.0 follow-up — detail strings now include the actual RMSSD value
+        // when we're in absolute-tier mode (days 1-6). reasonFor adapts:
+        // - "first reading" or "baseline building (N/7)" → use tier language
+        // - "+X% vs 7d avg" → use ratio language
+        val isAbsoluteMode = detail.contains("first reading") ||
+            detail.contains("baseline building")
+        when {
+            isAbsoluteMode -> when {
+                score >= 100 -> "elite parasympathetic dominance ✓"
+                score >= 90 -> "trained athlete range ✓"
+                score >= 75 -> "average healthy adult range"
+                score >= 50 -> "below athletic average"
+                else -> "below athletic average — check trend after a week"
+            }
+            else -> when {
+                score >= 90 -> "autonomic system primed ✓"
+                score >= 70 -> "near baseline — normal variance"
+                score >= 40 -> "below baseline — watch fatigue"
+                else -> "well below baseline — significant recovery deficit"
+            }
+        }
     }
     "Resting HR" -> when {
         score >= 100 -> "RHR below baseline → strong recovery"
@@ -600,29 +618,65 @@ private fun SleepInfo(component: ReadinessComponent?) {
 private fun HrvInfo(component: ReadinessComponent?) {
     InfoSection(
         "What it is",
-        "Variation between consecutive heartbeats. When your body is well-" +
-            "recovered, the gaps between beats vary more. When stressed, they " +
-            "become more uniform.",
+        "RMSSD — Root Mean Square of Successive Differences. Measures the " +
+            "beat-to-beat variation in your heart rate. When well-recovered, " +
+            "gaps between beats vary more (high RMSSD). When stressed or " +
+            "sympathetic-dominant, they become more uniform (low RMSSD).",
     )
     InfoSection(
         "Why it matters",
-        "Best single signal of nervous-system recovery. Pro athletes track this " +
-            "daily — it predicts how you'll respond to training BEFORE you ride.",
+        "The single best non-invasive marker of parasympathetic (vagal) tone. " +
+            "Predicts how you'll respond to training BEFORE you ride, catches " +
+            "illness onset 1-3 days early, quantifies overtraining patterns.",
     )
     InfoSection(
-        "Why URUJ shows nothing right now",
-        "Samsung Fit Band 3 does NOT write real HRV records to Health Connect. " +
-            "Their stress feature uses raw heartbeat-interval data they keep on " +
-            "the band — not exposed to apps like ours.\n\n" +
-            "URUJ refuses to fake an HRV number with a worse proxy (std-dev of " +
-            "HR samples is NOT real RMSSD HRV).",
+        "How URUJ computes it (methodology)",
+        "Real ECG-precision RR intervals from your Magene H613 chest strap " +
+            "(via 24/7 monitoring). The math:\n\n" +
+            "1. Reconstruct beat timestamps from each BLE notification\n" +
+            "2. Split data into 5-minute windows (Task Force 1996 standard)\n" +
+            "3. Per window: filter physiological 300-2000 ms RR, drop pairs " +
+            "with >20% delta (ectopic), require ≥30 clean consecutive-pair diffs\n" +
+            "4. Compute RMSSD per window, take median across valid windows\n\n" +
+            "Same methodology Polar / Kubios / EliteHRV / HRV4Training use. " +
+            "NOT a PPG proxy. NOT a std-dev hack. Natural overnight breathing — " +
+            "not a paced-breathing peak measurement.",
     )
     InfoSection(
-        "What unlocks real HRV",
-        "BLE chest strap — Polar H9 / CooSpo H6 / Magene H64. Roughly ₹2,500-5,000.\n\n" +
-            "Streams real beat-to-beat RR intervals → genuine RMSSD HRV, " +
-            "continuous, accurate. Planned for URUJ v1.5.",
+        "Reference ranges (athletic norms)",
+        "80+ ms — Elite parasympathetic dominance\n" +
+            "50-80 ms — Trained athlete range\n" +
+            "30-50 ms — Average healthy adult\n" +
+            "20-30 ms — Below athletic average\n" +
+            "<20 ms — Below athletic average — check trend",
     )
+    InfoSection(
+        "Why this differs from Elite HRV / morning readings",
+        "Apps that measure morning seated HRV (Elite HRV, HRV4Training, Whoop " +
+            "spot reads) use PACED BREATHING — they tell you 'breathe in / breathe " +
+            "out' at ~5 breaths per minute. That maximizes Respiratory Sinus " +
+            "Arrhythmia and inflates RMSSD 1.5-3× over natural breathing for the " +
+            "SAME person.\n\n" +
+            "URUJ measures your actual overnight autonomic state with natural " +
+            "breathing during sleep. If Elite HRV gives you 25 ms and URUJ gives " +
+            "you 12 ms on the same body — neither is wrong. They answer different " +
+            "questions: 'maximum vagal capacity when forced' vs 'autonomic state " +
+            "while you sleep.'",
+    )
+    InfoSection(
+        "Baseline building period",
+        "First 1-6 nights: we score against ABSOLUTE tier ranges (above). " +
+            "A real 60 ms scores well even without your personal baseline.\n\n" +
+            "Day 7+: we switch to RATIO vs your personal 7-day median. " +
+            "Catches subtle changes vs YOUR normal (a 50 ms HRV that's normal " +
+            "for you can be a warning sign for someone whose baseline is 80 ms).",
+    )
+    if (component?.detail != null && component.score != null) {
+        YouSection(
+            "Reading: ${component.detail}\n" +
+                "Score: ${component.score}/100"
+        )
+    }
 }
 
 @Composable

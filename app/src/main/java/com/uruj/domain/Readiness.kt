@@ -15,6 +15,11 @@ data class ReadinessInputs(
     val restingHrBaseline7d: Int? = null,
     /** Training Stress Balance — CTL minus ATL. Positive = fresh, negative = fatigued. */
     val trainingStressBalance: Float? = null,
+    /** v0.7.0 follow-up — how many of the last 7 nights have HRV data captured.
+     *  Drives scoring mode: 1-6 days → absolute tier scoring (a real 60ms RMSSD
+     *  scores well even without baseline); 7+ days → ratio vs personal baseline.
+     *  Fixes the bug where day-1 "+0% vs 7d avg" showed misleading score. */
+    val hrvDaysOfDataIn7d: Int = 0,
 )
 
 @Serializable

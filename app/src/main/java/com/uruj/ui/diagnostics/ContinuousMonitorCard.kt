@@ -138,7 +138,7 @@ fun ContinuousMonitorCard() {
             } else {
                 "Pair a chest strap via SCAN & PAIR below, then turn ON. Persistent BLE " +
                     "connection independent of rides. Captures HR + RR intervals 24/7 to NDJSON. " +
-                    "Costs ~5-10% extra battery per day."
+                    "Costs ~5-10% extra phone battery per day (strap battery drains separately, ~50h per full charge)."
             },
             color = UrujMuted,
             fontSize = 11.sp,

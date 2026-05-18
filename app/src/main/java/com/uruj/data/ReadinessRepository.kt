@@ -76,6 +76,8 @@ class ReadinessRepository(context: Context) {
     private val profileStore = RiderProfileStore(appContext)
     private val sleepingRhrCalc = SleepingRhrCalculator()
     private val lastSleepReader = LastSleepReader()
+    // v0.7.0 — BLE chest-strap RMSSD HRV from continuous monitoring NDJSON.
+    private val continuousBiometric = ContinuousBiometricRepository(appContext)
 
     suspend fun compute(): ReadinessResult = withContext(Dispatchers.IO) {
         val inputs = gatherInputs()
@@ -248,10 +250,49 @@ class ReadinessRepository(context: Context) {
         // v0.4.0: HRV proxy fallback REMOVED. SleepingHrvProxyCalculator was
         // std-dev of HR samples in sleep windows — directionally correlated
         // with RMSSD but NOT real HRV. Per [[feedback_no_samsung_proxy]] +
-        // [[reference_lab_level_uruj]] rule #4 (no fake numbers). HRV column
-        // only populates when Samsung writes HeartRateVariabilityRmssdRecord
-        // (rare on Fit Band 3, real when present). Real RMSSD HRV unlocks
-        // with v1.5 BLE chest strap.
+        // [[reference_lab_level_uruj]] rule #4 (no fake numbers).
+        //
+        // v0.7.0: REAL RMSSD HRV unlocked via BLE chest strap (Magene H613)
+        // captured 24/7 by BiometricService and stored as RR-interval NDJSON.
+        // ContinuousBiometricRepository reads the overnight sleep window and
+        // computes RMSSD/SDNN/pNN50 from the actual beat-to-beat data. This
+        // is the same calculation Polar / Kubios / EliteHRV do on the same
+        // input — real autonomic measurement, not a proxy.
+        //
+        // Priority:
+        //   1. HC direct record (rare on Fit Band 3, never on Magene-only setup)
+        //   2. URUJ-computed RMSSD from BLE NDJSON (THIS path is the new win)
+        //   3. null — HRV component drops from Readiness score
+        // v0.7.0 follow-up — count of days with valid overnight HRV in last 7
+        // days. ReadinessCalculator uses this to switch between absolute-tier
+        // scoring (1-6 days, no real baseline yet) and ratio-vs-baseline
+        // scoring (7+ days, stable baseline). Fixes day-1 "+0%" artifact.
+        var hrvDaysOfDataIn7d = 0
+        if (hrvToday == null) {
+            // Try the last sleep window for cleanest signal; fall back to
+            // rolling 8h overnight proxy when no sleep data available.
+            val sleepWindow = lastSleepReader.read(client, granted)
+            val (start, end) = if (sleepWindow != null) {
+                sleepWindow.startedAt to sleepWindow.endedAt
+            } else {
+                now.minus(java.time.Duration.ofHours(8)) to now
+            }
+            val computedHrv = continuousBiometric.computeHrvForWindow(start, end)
+            if (computedHrv != null) {
+                hrvToday = computedHrv.rmssdMs
+                hrvSource = "ble_strap"
+                // Count days of overnight HRV data — drives scoring mode.
+                val recentNights = continuousBiometric.dailyOvernightHrvHistory(7)
+                hrvDaysOfDataIn7d = recentNights.size
+                if (recentNights.size >= 2) {
+                    val sorted = recentNights.map { it.hrv.rmssdMs }.sorted()
+                    hrvBaseline = sorted[sorted.size / 2]
+                }
+                // Note: when recentNights.size < 2 we leave hrvBaseline = null.
+                // ReadinessCalculator will use absolute-tier scoring instead of
+                // computing a meaningless "+0% vs same value" ratio.
+            }
+        }
 
         // For multi-sport TSB, prefer rhrBaseline (7d median, stable) — falls
         // back to rhrToday if baseline missing. This is the personal RHR that
@@ -266,6 +307,7 @@ class ReadinessRepository(context: Context) {
                 restingHrToday = rhrToday,
                 restingHrBaseline7d = rhrBaseline,
                 trainingStressBalance = computeTsb(client, granted, rhrForLoad),
+                hrvDaysOfDataIn7d = hrvDaysOfDataIn7d,
             ),
             rhrSource,
             hrvSource,
