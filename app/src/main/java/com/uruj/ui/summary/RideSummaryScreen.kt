@@ -444,6 +444,22 @@ private fun TimeInZoneCard(
                 }
             }
         }
+        // v0.8.5 — zone-system disclosure. TIZ uses %max-HR thresholds
+        // (Z1<60% / Z2<70% / Z3<80% / Z4<90% / Z5≥90%) — matches the route
+        // map polyline coloring for consistency. Bio Lab's HR card displays
+        // Karvonen zones (HR-Reserve-based, personalized via sleeping RHR)
+        // which use slightly different boundaries. Honest disclosure now;
+        // full unification on Karvonen across TIZ + map + audio coach is
+        // tracked as task #147 for a future PR.
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Zones above use %max-HR thresholds (industry standard for map " +
+                "coloring). Bio Lab uses Karvonen zones (personalized via " +
+                "sleeping RHR) — boundaries differ by ~3-5 bpm.",
+            color = UrujMuted,
+            fontSize = 10.sp,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+        )
         // Polarized 80/20 compliance line — Blummenfelt's discipline benchmark.
         Spacer(Modifier.height(6.dp))
         Column(modifier = Modifier.padding(horizontal = 12.dp)) {

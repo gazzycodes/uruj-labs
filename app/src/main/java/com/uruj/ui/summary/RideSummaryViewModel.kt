@@ -100,15 +100,31 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
         startHcEnrichmentFlow(sessionId, startedAtMs, endedAtMs)
     }
 
-    /** v0.8.2 — compute HR stats + TIZ from NDJSON samples, persist + emit. */
+    /** v0.8.2 — compute HR stats + TIZ from NDJSON samples, persist + emit.
+     *  v0.8.5 — AVG / MAX now compute over MOVING-TIME samples only (matches
+     *  Strava / Garmin convention). Pre-v0.8.5 averaged all samples including
+     *  traffic-light stops + auto-paused segments where HR dropped to rest,
+     *  which dragged the displayed AVG below what the rider intuitively
+     *  expected. TIZ continues to use the full sample set since its
+     *  time-weighted math already handles per-sample contribution correctly. */
     private fun applyHrEnrichment(
         sessionId: String,
         endMs: Long,
         samples: List<RideHrSample>,
     ) {
         if (samples.isEmpty()) return
-        val avg = samples.map { it.bpm }.average().toInt()
-        val max = samples.maxOf { it.bpm }
+        // Moving-time filter for the displayed AVG / MAX HR. Excludes
+        // auto-paused samples + samples where the rider wasn't pedalling
+        // (speed below MOVING_SPEED_THRESHOLD_MPS). Falls back to the full
+        // sample set if no samples qualify as "moving" (e.g. stationary
+        // indoor trainer ride that never breaks the speed threshold) — better
+        // to show a number than to render the card empty.
+        val movingSamples = samples.filter { it.isMoving }
+        val statSamples = if (movingSamples.size >= 30) movingSamples else samples
+        val avg = statSamples.map { it.bpm }.average().toInt()
+        val max = statSamples.maxOf { it.bpm }
+        // Sample count + source breakdown reflect ALL samples in the ride
+        // (so the rider sees the full data coverage), not just moving-time.
         val count = samples.size
         val breakdown = samples.groupingBy { it.source }.eachCount()
 

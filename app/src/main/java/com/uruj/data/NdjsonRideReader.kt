@@ -86,6 +86,12 @@ class NdjsonRideReader(context: Context) {
                     timestampMs = s.timestampMs,
                     bpm = bpm,
                     source = mapSourceString(s.hrSource),
+                    // v0.8.5 — carry speed + pause state forward so post-ride
+                    // analysis can filter to moving-time samples (matches Strava
+                    // convention: AVG HR excludes traffic stops + auto-paused
+                    // segments where HR drops to rest).
+                    speedMps = s.speedMetersPerSecond,
+                    isPaused = s.isPaused,
                 )
             }
 
@@ -106,9 +112,35 @@ class NdjsonRideReader(context: Context) {
     }
 }
 
-/** v0.8.2 — one HR reading from a ride's NDJSON, with provenance. */
+/**
+ * v0.8.2 — one HR reading from a ride's NDJSON, with provenance.
+ * v0.8.5 — adds speedMps + isPaused so post-ride analysis can apply the
+ * standard "moving-time only" filter for AVG/MAX HR (matches Strava /
+ * Garmin convention — traffic-light stops at rest HR don't drag down
+ * the displayed average).
+ */
 data class RideHrSample(
     val timestampMs: Long,
     val bpm: Int,
     val source: com.uruj.domain.SensorSource,
-)
+    val speedMps: Float = 0f,
+    val isPaused: Boolean = false,
+) {
+    /**
+     * v0.8.5 — moving-time filter. Sample counts as "moving" when the
+     * recorder wasn't auto-paused AND speed exceeded a walking threshold.
+     * Used to exclude rest-HR samples from AVG HR / MAX HR displays so
+     * the numbers match what cyclists see in Strava / Garmin Connect.
+     */
+    val isMoving: Boolean
+        get() = !isPaused && speedMps >= MOVING_SPEED_THRESHOLD_MPS
+
+    companion object {
+        /**
+         * v0.8.5 — 1.8 kph. Just above the auto-pause floor; excludes
+         * dismounts + traffic-light stops that hadn't yet triggered
+         * auto-pause but are not effort time.
+         */
+        const val MOVING_SPEED_THRESHOLD_MPS = 0.5f
+    }
+}
