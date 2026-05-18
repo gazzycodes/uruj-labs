@@ -81,6 +81,11 @@ data class RideState(
      *  falling back to latestSample.hrBpm (HC-batched). Null when strap
      *  disconnected — UI shows OFFLINE state. */
     val bleLiveBpm: Int? = null,
+    /** v0.8.0 — active session intent (audio coach target). Updated at ride
+     *  start from SessionIntentStore + on mid-ride overrides. Drives the HUD
+     *  session indicator + the audio coach's zone-discipline cues. Default
+     *  EXPLORATORY means no coaching (silent). */
+    val sessionIntent: com.uruj.domain.SessionIntent = com.uruj.domain.SessionIntent.EXPLORATORY,
 ) {
     val averageSpeedMovingKph: Float
         get() = if (movingTimeMs > 0) {

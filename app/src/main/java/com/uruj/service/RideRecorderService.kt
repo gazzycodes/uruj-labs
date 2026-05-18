@@ -358,6 +358,25 @@ class RideRecorderService : Service() {
         var latestAccel: AccelerometerSample? = null
         var latestHr: HrSample? = null
         var latestDemElevation: Float? = null
+        // v0.8.0 — audio coach state. Karvonen zones + session intent looked up
+        // once at ride start; coach is rate-limited internally.
+        val karvonenZones = com.uruj.power.KarvonenZonesCalculator()
+            .compute(profile.maxHrBpm, profile.restingHrBpm.coerceAtLeast(40))
+        val sessionCoach = com.uruj.audio.SessionCoach()
+        // Read session intent + observe changes for mid-ride overrides
+        val sessionIntentStore = com.uruj.data.SessionIntentStore(this@RideRecorderService)
+        var currentIntent = sessionIntentStore.current()
+        RideStateHolder.update { it.copy(sessionIntent = currentIntent) }
+        launch {
+            sessionIntentStore.intent.collect { newIntent ->
+                if (newIntent != currentIntent) {
+                    currentIntent = newIntent
+                    sessionCoach.onIntentChanged(System.currentTimeMillis())
+                    RideStateHolder.update { it.copy(sessionIntent = newIntent) }
+                    Log.d(TAG, "[coach] session intent changed → $newIntent")
+                }
+            }
+        }
         // v0.4.4 fix continued — seed the running accumulators so resume extends
         // prior totals instead of restarting from zero. See note above.
         // For power-average reconstruction: powerSum + powerSampleCount aren't
@@ -718,6 +737,25 @@ class RideRecorderService : Service() {
                         avgKph = RideStateHolder.state.value.averageSpeedMovingKph,
                         avgWatts = avgPower,
                     )
+                }
+
+                // v0.8.0 — audio coach zone-discipline check. Live BLE HR
+                // (sub-100ms) takes precedence; HC HR (batched) is the
+                // fallback. Silent if no HR, EXPLORATORY intent, or no zones.
+                if (karvonenZones != null && currentIntent.hasTarget()) {
+                    val hrForCoach = RideStateHolder.state.value.bleLiveBpm
+                        ?: latestHr?.bpm?.toInt()
+                        ?: 0
+                    val cue = sessionCoach.tick(
+                        hrBpm = hrForCoach,
+                        zones = karvonenZones,
+                        intent = currentIntent,
+                        nowMs = location.timestampMs,
+                    )
+                    if (!cue.isNullOrBlank()) {
+                        Log.d(TAG, "[coach] $cue")
+                        tts?.say(cue)
+                    }
                 }
 
                 // Wind component: only when GPS is reliable AND we have weather + bike heading.

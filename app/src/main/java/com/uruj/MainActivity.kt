@@ -4,8 +4,10 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import android.graphics.Color as AndroidColor
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -151,7 +153,15 @@ private sealed interface AppScreen {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // v0.8.0 — force LIGHT system bar icons (white time/battery/signal)
+        // because URUJ is always a dark-themed app. Default `enableEdgeToEdge`
+        // tries to auto-detect via the activity's background, which on
+        // some OEMs (OnePlus / OxygenOS) misreads and leaves icons dark on
+        // a dark background → invisible status bar.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
+        )
         // v0.6.0 — start 24/7 biometric service on app launch if user has
         // toggled it on. Service is foreground + sticky, so once running it
         // survives app close, screen off, and most OEM Doze. Reboot doesn't

@@ -94,6 +94,9 @@ fun HudScreen(onStopRide: () -> Unit) {
                 .padding(horizontal = 20.dp, vertical = 12.dp),
         ) {
             HudTopBar(state)
+            // v0.8.0 — session intent indicator + CHANGE button (override mid-ride).
+            Spacer(Modifier.height(2.dp))
+            SessionIntentBar(state)
             // v0.5.1 — BLE chest strap row, only shown when a paired strap exists
             // for this ride. Off-screen otherwise so non-strap users don't see clutter.
             if (state.bleStrapName != null) {

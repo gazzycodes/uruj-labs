@@ -16,6 +16,12 @@ data class RiderProfile(
     val bikeWeightKg: Float = 10f,
     val ftpWatts: Int = 200,
     val maxHrBpm: Int = 190,
+    /** v0.8.0 — athletic resting HR cache for Karvonen zone math at ride
+     *  start. Updated by BioLabRepository whenever it computes a fresh
+     *  sleep-window RHR. Default 50 (athletic floor) ensures Karvonen
+     *  zones compute reasonably for first-time users before any sleep
+     *  data has been read. */
+    val restingHrBpm: Int = 50,
     val tireType: TireType = TireType.Road,
     val ridingPosition: RidingPosition = RidingPosition.Upright,
     val ageYears: Int = 30,
