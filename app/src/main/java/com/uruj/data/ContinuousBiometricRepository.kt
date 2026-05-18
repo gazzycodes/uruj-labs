@@ -108,8 +108,25 @@ class ContinuousBiometricRepository(context: Context) {
     fun computeHrvForWindow(start: Instant, end: Instant): HrvCalculator.TimeDomainHrv? {
         val samples = samplesForWindow(start, end)
         val beats = samplesToBeats(samples)
-        Log.d(TAG, "[hrv] window $start..$end → ${samples.size} samples, ${beats.size} beats")
-        return hrvCalc.computeWindowed(beats)
+        val result = hrvCalc.computeWindowed(beats)
+        if (result == null) {
+            // Fallback: try a more lenient flat-list compute. Better to surface
+            // a less-precise number than to show "no data" when we have 40k+
+            // beats sitting on disk. Logged so we can tell which path fired.
+            val flat = hrvCalc.compute(beats)
+            Log.d(
+                TAG,
+                "[hrv] window $start..$end → ${samples.size} samples, ${beats.size} beats — " +
+                    "windowed=null, flatFallback=${flat?.rmssdMs?.let { "%.1f".format(it) } ?: "null"}",
+            )
+            return flat
+        }
+        Log.d(
+            TAG,
+            "[hrv] window $start..$end → ${samples.size} samples, ${beats.size} beats, " +
+                "windows=${result.windowCount}, rmssd=${"%.1f".format(result.rmssdMs)} ms",
+        )
+        return result
     }
 
     /**

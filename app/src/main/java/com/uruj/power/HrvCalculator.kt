@@ -12,10 +12,10 @@ import kotlin.math.sqrt
  *    verify that RR pairs being differenced are TRULY consecutive heartbeats.
  *
  * 2. Two beats are "consecutive" iff (curr.timestampMs - prev.timestampMs)
- *    matches curr.rrMs within ±50 ms (BLE transmission jitter tolerance).
- *    Across BLE disconnects, sleep-stage transitions with missed beats, or
- *    notification gaps, this rejects pseudo-consecutive pairs that would
- *    otherwise corrupt RMSSD.
+ *    matches curr.rrMs within tolerance = max(150 ms, 30% of expected RR).
+ *    Generous enough to absorb typical Android BLE scheduling jitter (30-200
+ *    ms variance is normal under load), tight enough to reject genuine
+ *    missed-beat gaps (which would be ~2× RR or more).
  *
  * 3. Physiological range filter on every RR: 300-2000 ms (= 30-200 BPM).
  *    Anything outside is sensor noise or artifact, dropped.
@@ -39,9 +39,9 @@ import kotlin.math.sqrt
  *    with circadian/sleep-stage drift (which is captured by SDNN, NOT RMSSD).
  *
  * 9. Minimum sample requirements: ≥30 clean RR for short-window mode,
- *    ≥60 clean RR per 5-min window in windowed mode, ≥3 valid windows for
- *    a windowed result. Below these, return null rather than report a
- *    statistically meaningless number.
+ *    ≥30 clean consecutive-pair diffs per 5-min window in windowed mode,
+ *    ≥2 valid windows for a windowed result. Below these, return null rather
+ *    than report a statistically meaningless number.
  */
 class HrvCalculator {
 
@@ -170,9 +170,21 @@ class HrvCalculator {
 
     /**
      * Returns the list of true consecutive-pair RR diffs (ms). Walks the
-     * sorted beat list, keeps only pairs where (current.timestamp -
-     * previous.timestamp) matches current.rrMs within tolerance AND the
-     * delta is within ectopic threshold.
+     * sorted beat list, keeps only pairs that pass:
+     *
+     * 1. Timestamp consecutiveness: `actualGap = curr.timestamp - prev.timestamp`
+     *    should be close to `expectedGap = curr.rrMs`. We allow up to 30% jitter
+     *    OR 150 ms (whichever is larger). This is generous enough to absorb
+     *    typical Android BLE scheduling jitter (30-200 ms variance is common
+     *    under normal load), tight enough to reject genuine missed-beat gaps
+     *    (which would be 2× RR or more).
+     *
+     * 2. Ectopic / artifact filter: drop pairs with >20% RR delta (likely PVC
+     *    or PAC). Kubios convention.
+     *
+     * Within a single BLE notification, timestamps are precisely back-calculated
+     * from the same arrival timestamp so cross-RR pairs always satisfy (1) at
+     * 100% precision. Cross-notification pairs are where the tolerance matters.
      */
     private fun consecutiveDiffsMs(sorted: List<Beat>): List<Int> {
         if (sorted.size < 2) return emptyList()
@@ -182,8 +194,11 @@ class HrvCalculator {
             val curr = sorted[i]
             val expectedGap = curr.rrMs.toLong()
             val actualGap = curr.timestampMs - prev.timestampMs
-            // Consecutive iff actual ≈ expected
-            if (abs(actualGap - expectedGap) > CONSECUTIVE_TOLERANCE_MS) continue
+            // Generous percentage-based tolerance — 30% of expected RR, with
+            // a floor of 150 ms (so very short RR at high HR don't reject
+            // legitimate pairs).
+            val tolerance = maxOf(MIN_TOLERANCE_MS, (expectedGap * 0.30).toLong())
+            if (abs(actualGap - expectedGap) > tolerance) continue
             // Ectopic / artifact filter
             val deltaPct = abs(curr.rrMs - prev.rrMs).toFloat() / prev.rrMs
             if (deltaPct > ECTOPIC_THRESHOLD) continue
@@ -231,9 +246,11 @@ class HrvCalculator {
         const val PHYSIOLOGICAL_MIN = 300
         const val PHYSIOLOGICAL_MAX = 2000
 
-        /** Two beats are "consecutive" iff their timestamp gap matches the
-         *  RR within this tolerance (BLE jitter). 50 ms is generous. */
-        const val CONSECUTIVE_TOLERANCE_MS = 50L
+        /** Minimum floor for the timestamp-consecutiveness tolerance. The
+         *  actual tolerance used per-pair is max(MIN_TOLERANCE_MS, 30% × RR).
+         *  150 ms absorbs typical Android BLE scheduling jitter without
+         *  accepting genuine missed-beat gaps. */
+        const val MIN_TOLERANCE_MS = 150L
 
         /** Ectopic filter: drop consecutive pairs differing >20% of prev RR. */
         const val ECTOPIC_THRESHOLD = 0.20f
@@ -241,16 +258,16 @@ class HrvCalculator {
         /** Minimum clean beats required for short-window HRV (≈30s @ HR60). */
         const val MIN_BEATS = 30
 
-        /** Minimum clean consecutive-pair diffs per window. ~60 diffs ≈ 1min
-         *  of clean continuous data at HR 60 — robust RMSSD baseline. */
-        const val MIN_DIFFS = 60
+        /** Minimum clean consecutive-pair diffs per window. ~30 diffs ≈ 30s
+         *  of clean continuous data at HR 60 — statistically robust RMSSD. */
+        const val MIN_DIFFS = 30
 
         /** Default windowed-mode window size: 5 minutes. Research standard
          *  for short-term HRV (Task Force 1996). */
         const val DEFAULT_WINDOW_MS = 5L * 60L * 1000L
 
-        /** Minimum valid windows for windowed-mode result. <3 = result not
+        /** Minimum valid windows for windowed-mode result. <2 = result not
          *  statistically robust → return null instead of misleading number. */
-        const val MIN_WINDOWS = 3
+        const val MIN_WINDOWS = 2
     }
 }
