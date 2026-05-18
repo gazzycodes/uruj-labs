@@ -167,10 +167,11 @@ fun LiveScreen(onBack: () -> Unit) {
             Text(
                 "Each bar = one heartbeat. Bar HEIGHT = RR interval length. " +
                     "Visible variance = real HRV; flat = noise or autonomic " +
-                    "suppression.",
+                    "suppression. Color = your personal zone for that beat's " +
+                    "implied HR.",
                 color = UrujMuted.copy(alpha = 0.8f), fontSize = 10.sp,
             )
-            RrIntervalBars(beats = live.recentBeats.takeLast(30))
+            RrIntervalBars(beats = live.recentBeats.takeLast(30), zones = zones)
 
             // ── Rolling RMSSD + zone block ──
             Row(
@@ -262,7 +263,10 @@ private fun HeroBpm(live: LiveStateHolder.State, zones: KarvonenZonesCalculator.
 }
 
 @Composable
-private fun RrIntervalBars(beats: List<LiveStateHolder.Beat>) {
+private fun RrIntervalBars(
+    beats: List<LiveStateHolder.Beat>,
+    zones: KarvonenZonesCalculator.Result?,
+) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -289,7 +293,13 @@ private fun RrIntervalBars(beats: List<LiveStateHolder.Beat>) {
             beats.forEachIndexed { i, beat ->
                 val x = padX + (i.toFloat() / beats.size.coerceAtLeast(1)) * plotW
                 val y = yFor(beat.rrMs)
-                val color = barColorForRr(beat.rrMs)
+                // v0.8.3 fix — color each bar by the rider's actual Karvonen
+                // zone for the BPM implied by this RR (was hardcoded RR
+                // thresholds that didn't match user's personal zones; e.g.
+                // user with Z1 starting at 119 bpm saw rest bars colored as
+                // "Z3 tempo" because RR ~820ms hit my generic Z3 threshold).
+                val impliedBpm = (60_000f / beat.rrMs.toFloat().coerceAtLeast(1f)).toInt()
+                val color = barColorForBpm(impliedBpm, zones)
                 drawRect(
                     color = color,
                     topLeft = Offset(x, y),
@@ -303,12 +313,28 @@ private fun RrIntervalBars(beats: List<LiveStateHolder.Beat>) {
     }
 }
 
-private fun barColorForRr(rrMs: Int): Color = when {
-    rrMs > 1200 -> UrujZone1     // very slow / recovery
-    rrMs > 900 -> UrujZone2      // easy
-    rrMs > 700 -> UrujZone3      // moderate
-    rrMs > 550 -> UrujZone4      // hard
-    else -> UrujZone5             // very fast / max
+/**
+ * v0.8.3 — bar color uses the rider's personal Karvonen zones. Below Z1's
+ * lower bound (rest below recovery threshold) is shown as a dim muted color
+ * because there's no zone-tier for "sub-recovery." Above Z5 is capped at
+ * Z5 color.
+ */
+private fun barColorForBpm(bpm: Int, zones: KarvonenZonesCalculator.Result?): Color {
+    if (zones == null) return UrujMuted
+    // Below Z1 lower → muted (rider is sub-recovery effort)
+    val z1Lower = zones.zones.firstOrNull()?.lowerBpm ?: 0
+    if (bpm < z1Lower) return UrujMuted
+    for (z in zones.zones) {
+        if (bpm <= z.upperBpm) return when (z.number) {
+            1 -> UrujZone1
+            2 -> UrujZone2
+            3 -> UrujZone3
+            4 -> UrujZone4
+            5 -> UrujZone5
+            else -> UrujMuted
+        }
+    }
+    return UrujZone5
 }
 
 @Composable

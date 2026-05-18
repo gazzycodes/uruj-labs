@@ -184,23 +184,11 @@ fun HrWaveform(
                 )
                 drawCircle(color = accent, radius = 5f, center = Offset(lastX, lastY))
 
-                // Current BPM big text near the dot
-                if (showCurrentBpm) {
-                    val bpmText = "${visibleBeats.last().bpm}"
-                    drawText(
-                        textMeasurer = textMeasurer,
-                        text = bpmText,
-                        style = TextStyle(
-                            color = accent,
-                            fontSize = 22.sp,
-                            fontWeight = FontWeight.Black,
-                        ),
-                        topLeft = Offset(
-                            x = (lastX - bpmText.length * 12f).coerceAtLeast(plotLeft + 4f),
-                            y = (lastY - 32f).coerceAtLeast(plotTop + 2f),
-                        ),
-                    )
-                }
+                // v0.8.3 — current BPM in-canvas text removed. It wrapped
+                // vertically at the right edge ("7" stacked above "3") and
+                // is redundant with the Hero BPM card directly above the
+                // waveform. The pulse dot already conveys "current beat
+                // here." Cleaner without the duplicate.
             } else {
                 // No beats yet → placeholder text
                 drawText(
