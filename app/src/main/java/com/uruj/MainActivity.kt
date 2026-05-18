@@ -142,6 +142,9 @@ private sealed interface AppScreen {
     data object BioLab : AppScreen
     data object OrthostaticTest : AppScreen
     data object HrvTrend : AppScreen
+    data object Hrr1Trend : AppScreen
+    data object CarTrend : AppScreen
+    data object OrthostaticTrend : AppScreen
     data class ViewingPastRide(val summary: StoredRideSummary) : AppScreen
 }
 
@@ -271,11 +274,23 @@ class MainActivity : ComponentActivity() {
                             onBack = { screen = AppScreen.Checklist },
                             onOpenOrthostatic = { screen = AppScreen.OrthostaticTest },
                             onOpenHrvTrend = { screen = AppScreen.HrvTrend },
+                            onOpenHrr1Trend = { screen = AppScreen.Hrr1Trend },
+                            onOpenCarTrend = { screen = AppScreen.CarTrend },
+                            onOpenOrthostaticTrend = { screen = AppScreen.OrthostaticTrend },
                         )
                         AppScreen.OrthostaticTest -> com.uruj.ui.orthostatic.OrthostaticTestScreen(
                             onBack = { screen = AppScreen.BioLab },
                         )
                         AppScreen.HrvTrend -> com.uruj.ui.trend.HrvTrendScreen(
+                            onBack = { screen = AppScreen.BioLab },
+                        )
+                        AppScreen.Hrr1Trend -> com.uruj.ui.trend.Hrr1TrendScreen(
+                            onBack = { screen = AppScreen.BioLab },
+                        )
+                        AppScreen.CarTrend -> com.uruj.ui.trend.CarTrendScreen(
+                            onBack = { screen = AppScreen.BioLab },
+                        )
+                        AppScreen.OrthostaticTrend -> com.uruj.ui.trend.OrthostaticTrendScreen(
                             onBack = { screen = AppScreen.BioLab },
                         )
                         is AppScreen.ViewingPastRide -> RideSummaryScreen(
