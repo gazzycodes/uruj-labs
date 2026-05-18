@@ -118,6 +118,9 @@ class RouteMapViewModel(application: Application) : AndroidViewModel(application
             if (HealthPermission.getReadPermission(HeartRateRecord::class) !in granted) {
                 return@runCatching emptyList()
             }
+            // v0.8.5 — observability so HC pressure is visible in logcat.
+            // Route map opens once per ride-summary visit, not a hot path.
+            com.uruj.data.HcReadGuard.recordRead("routemap.hr-samples")
             val rangeStart = Instant.ofEpochMilli(rideStartMs).minusSeconds(120)
             val rangeEnd = Instant.ofEpochMilli(rideEndMs).plusSeconds(120)
             client.readRecords(

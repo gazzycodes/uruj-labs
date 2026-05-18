@@ -21,8 +21,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -88,10 +90,23 @@ fun HudScreen(onStopRide: () -> Unit) {
             .background(MaterialTheme.colorScheme.background)
             .windowInsetsPadding(WindowInsets.systemBars),
     ) {
+        // v0.8.5 — STOP button MUST always be visible. v0.8.0 SessionIntentBar
+        // + v0.8.1 HudWaveform added content above; on a OnePlus-class display
+        // total content exceeded screen height and pushed STOP offscreen.
+        // Rider had no way to end the ride from the HUD on today's 37.78km ride.
+        //
+        // Architecture: scrollable upper content + FIXED STOP at BottomCenter.
+        // STOP is never hidden regardless of scroll position or screen size,
+        // and future additions to the gauge stack can grow without re-pushing
+        // STOP offscreen. Stop button gets a solid-background container so
+        // content scrolling underneath doesn't visually collide.
+        val stopButtonHeightWithPadding = 82.dp  // 58dp button + 12dp top/bottom padding
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 20.dp, vertical = 12.dp),
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 12.dp)
+                .padding(bottom = stopButtonHeightWithPadding),
         ) {
             HudTopBar(state)
             // v0.8.0 — session intent indicator + CHANGE button (override mid-ride).
@@ -120,7 +135,18 @@ fun HudScreen(onStopRide: () -> Unit) {
             PowerBlock(state, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(12.dp))
             StatsGrid(state, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.weight(1f))
+        }
+
+        // Fixed STOP button — always visible at bottom regardless of scroll
+        // position or screen size. Solid background hides any content scrolling
+        // underneath so the button is always clearly readable.
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.background)
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+        ) {
             StopButton(onClick = { showStopConfirm = true })
         }
 

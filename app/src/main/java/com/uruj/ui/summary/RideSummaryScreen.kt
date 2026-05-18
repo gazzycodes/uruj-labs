@@ -134,7 +134,6 @@ fun RideSummaryScreen(
             Spacer(Modifier.height(12.dp))
             PowerCard(state)
             Spacer(Modifier.height(12.dp))
-            HrCard(hrState)
             // Time-in-zone breakdown — only shown when HR samples exist for the ride.
             // v0.8.2 — reads ride NDJSON (strap-first via BLE merger) when available,
             // falling back to HC's post-batch sync. hrSourceBreakdown surfaces which
@@ -142,6 +141,10 @@ fun RideSummaryScreen(
             // vs "from band (batched)" vs "78% strap + 22% band" etc.
             val tiz by viewModel.timeInZone.collectAsStateWithLifecycle()
             val hrSourceBreakdown by viewModel.hrSourceBreakdown.collectAsStateWithLifecycle()
+            // v0.8.5 — HR card label now reflects the actual source. Hardcoded
+            // "from Health Connect" was lying when data came from strap NDJSON
+            // (the typical case for paired-strap rides since v0.8.2).
+            HrCard(hrState, sourceBreakdown = hrSourceBreakdown)
             if (tiz != null) {
                 Spacer(Modifier.height(12.dp))
                 TimeInZoneCard(tiz!!, sourceBreakdown = hrSourceBreakdown)
@@ -266,7 +269,10 @@ private fun PowerCard(state: RideState) {
 }
 
 @Composable
-private fun HrCard(hrState: HrEnrichmentState) {
+private fun HrCard(
+    hrState: HrEnrichmentState,
+    sourceBreakdown: Map<com.uruj.domain.SensorSource, Int> = emptyMap(),
+) {
     when (hrState) {
         is HrEnrichmentState.Done -> {
             Card("HEART RATE", accent = UrujNeonMagenta) {
@@ -291,8 +297,13 @@ private fun HrCard(hrState: HrEnrichmentState) {
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        // v0.8.5 — source-aware label. NDJSON-first path (since v0.8.2)
+                        // means data usually comes from strap, not HC. Pre-v0.8.5 this
+                        // string was hardcoded "from Health Connect" regardless of
+                        // actual provenance.
+                        val sourceLabel = formatHrSampleSource(hrState.sampleCount, sourceBreakdown)
                         Text(
-                            text = "${hrState.sampleCount} samples from Health Connect",
+                            text = sourceLabel,
                             color = UrujMuted,
                             fontSize = 11.sp,
                             modifier = Modifier.weight(1f),
@@ -433,6 +444,22 @@ private fun TimeInZoneCard(
                 }
             }
         }
+        // v0.8.5 — zone-system disclosure. TIZ uses %max-HR thresholds
+        // (Z1<60% / Z2<70% / Z3<80% / Z4<90% / Z5≥90%) — matches the route
+        // map polyline coloring for consistency. Bio Lab's HR card displays
+        // Karvonen zones (HR-Reserve-based, personalized via sleeping RHR)
+        // which use slightly different boundaries. Honest disclosure now;
+        // full unification on Karvonen across TIZ + map + audio coach is
+        // tracked as task #147 for a future PR.
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Zones above use %max-HR thresholds (industry standard for map " +
+                "coloring). Bio Lab uses Karvonen zones (personalized via " +
+                "sleeping RHR) — boundaries differ by ~3-5 bpm.",
+            color = UrujMuted,
+            fontSize = 10.sp,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+        )
         // Polarized 80/20 compliance line — Blummenfelt's discipline benchmark.
         Spacer(Modifier.height(6.dp))
         Column(modifier = Modifier.padding(horizontal = 12.dp)) {
@@ -571,4 +598,39 @@ private fun formatDuration(millis: Long): String {
     val m = (totalSeconds % 3600) / 60
     val s = totalSeconds % 60
     return "%d:%02d:%02d".format(h, m, s)
+}
+
+/**
+ * v0.8.5 — HR card source label, mirrors the TIZ badge format. Returns
+ * "9998 samples from chest strap ✓" / "from band (batched)" / "78% strap +
+ * 22% band" / "from Health Connect" (fallback when breakdown is empty).
+ *
+ * Breakdown is populated by RideSummaryViewModel whenever the NDJSON-first
+ * path produced the data. Empty breakdown = HC-polled fallback path —
+ * preserve the original "from Health Connect" wording in that case so the
+ * label remains accurate.
+ */
+private fun formatHrSampleSource(
+    sampleCount: Int,
+    breakdown: Map<com.uruj.domain.SensorSource, Int>,
+): String {
+    if (breakdown.isEmpty()) {
+        return "$sampleCount samples from Health Connect"
+    }
+    val total = breakdown.values.sum().coerceAtLeast(1)
+    if (breakdown.size == 1) {
+        val only = breakdown.keys.first()
+        val source = when (only) {
+            com.uruj.domain.SensorSource.STRAP -> "from chest strap ✓"
+            com.uruj.domain.SensorSource.BAND -> "from band (batched)"
+            com.uruj.domain.SensorSource.MIXED -> "mixed sources"
+            com.uruj.domain.SensorSource.UNKNOWN_LEGACY -> "legacy (pre-v0.8.2)"
+        }
+        return "$sampleCount samples $source"
+    }
+    val mix = breakdown.entries.sortedByDescending { it.value }.joinToString(" + ") { e ->
+        val pct = (e.value * 100 / total).coerceAtLeast(1)
+        "$pct% ${e.key.displayShort()}"
+    }
+    return "$sampleCount samples — $mix"
 }

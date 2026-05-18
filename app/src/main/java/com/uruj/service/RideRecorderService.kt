@@ -255,6 +255,11 @@ class RideRecorderService : Service() {
         }
         stopSelf()
         RideStateHolder.completeRide()
+        // v0.8.5 — signal post-ride quiet window so HC consumers serve
+        // cache for the next 30s while the user navigates HUD → Summary
+        // → tabs. Bridges the post-ride navigation cascade until normal
+        // cache TTLs cover.
+        com.uruj.data.HcReadGuard.recordRideEnded()
     }
 
     private fun acquireWakeLock() {

@@ -96,7 +96,9 @@ fun BioLabScreen(
                         letterSpacing = 3.sp,
                     )
                     Spacer(Modifier.weight(1f))
-                    TextButton(onClick = { viewModel.refresh() }, enabled = !isLoading) {
+                    // v0.8.5 — explicit REFRESH tap bypasses sticky cache; user
+                    // asked for fresh, give it to them verbatim even if HC blips.
+                    TextButton(onClick = { viewModel.refresh(force = true) }, enabled = !isLoading) {
                         if (isLoading) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(12.dp),

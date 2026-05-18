@@ -134,6 +134,15 @@ class HealthConnectInventoryRepository(context: Context) {
         if (!force && cachedInventory != null && (now - cachedAtMs) < CACHE_TTL_MS) {
             return@withContext cachedInventory!!
         }
+        // v0.8.5 — during the post-ride quiet window, serve cache even if
+        // beyond normal TTL. The user is in the post-ride tab cascade and
+        // fresh inventory would add 16 HC reads to a system that's already
+        // burst-hot. Only the explicit REFRESH tap (force=true) breaks
+        // through this guard.
+        if (!force && cachedInventory != null && HcReadGuard.isPostRideQuietWindow()) {
+            return@withContext cachedInventory!!
+        }
+        HcReadGuard.recordRead("inventory.fresh")
 
         val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
         if (!sdkOk) return@withContext HcDataTypes.all.map {
