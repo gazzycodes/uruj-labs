@@ -2,12 +2,14 @@ package com.uruj.data
 
 import android.content.Context
 import android.util.Log
+import androidx.health.connect.client.HealthConnectClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.time.LocalDate
+import java.time.ZoneId
 
 /**
  * v0.9.8 — disk-persisted daily sleep-hours snapshots.
@@ -115,6 +117,73 @@ class SleepSnapshotRepository(context: Context) {
 
     suspend fun count(): Int = withContext(Dispatchers.IO) {
         baseDir.listFiles { f -> f.isFile && f.extension == "json" }?.size ?: 0
+    }
+
+    /**
+     * v0.9.9 — one-time backfill of historical sleep snapshots from HC's
+     * retention window. Per
+     * [[reference_snapshot_persistence_architecture]] v0.9.9 corollary.
+     *
+     * - One HC read for the [days] range (default 30 = HC's typical retention)
+     * - Buckets results by local-date of session END (matches forward-save semantic)
+     * - Past-date immutability rule rejects overwrites — re-running is a no-op
+     * - Gated by [HcReadGuard.isPostRideQuietWindow] — defers if true
+     * - Logs total snapshots created for audit
+     *
+     * Returns count of NEW snapshots written. 0 = nothing to do (all dates
+     * already on disk, OR HC has no sleep sessions in the window, OR backfill
+     * was deferred by quiet-window).
+     *
+     * Caller is responsible for triggering this lazily — e.g. on first
+     * trend-screen open when `listAll().none { dateIsPast(it) }`. Don't fire
+     * on every Bio Lab refresh.
+     */
+    suspend fun backfillFromHc(
+        client: HealthConnectClient,
+        granted: Set<String>,
+        lastSleepReader: LastSleepReader,
+        days: Int = 30,
+    ): Int = withContext(Dispatchers.IO) {
+        if (HcReadGuard.isPostRideQuietWindow()) {
+            Log.d(TAG, "[v0.9.9] backfill skipped — post-ride quiet window")
+            return@withContext 0
+        }
+        HcReadGuard.recordRead("backfill.sleep")
+        val sessions = runCatching {
+            lastSleepReader.listLastNDays(client, granted, days)
+        }.onFailure { Log.w(TAG, "[v0.9.9] backfill HC read failed", it) }
+            .getOrDefault(emptyList())
+        if (sessions.isEmpty()) {
+            Log.d(TAG, "[v0.9.9] backfill: 0 sessions in HC's last ${days}d")
+            return@withContext 0
+        }
+        val zone = ZoneId.systemDefault()
+        val now = System.currentTimeMillis()
+        var written = 0
+        for (session in sessions) {
+            val date = session.endedAt.atZone(zone).toLocalDate()
+            // Don't write today's via backfill — forward-save path owns today
+            // (might already be a partial mid-morning compute).
+            if (date == LocalDate.now(zone)) continue
+            // Past-immutability already protects us, but skip explicitly to
+            // avoid spamming the "skipping save" log line for every prior day.
+            if (load(date) != null) continue
+            val saved = save(
+                SleepSnapshot(
+                    dateIsoLocal = date.toString(),
+                    hoursTotal = session.hours,
+                    sessionStartMs = session.startedAt.toEpochMilli(),
+                    sessionEndMs = session.endedAt.toEpochMilli(),
+                    source = "samsung-hc",
+                    methodologyVersion = METHODOLOGY_VERSION,
+                    computedAtMs = now,
+                ),
+                date = date,
+            )
+            if (saved) written++
+        }
+        Log.d(TAG, "[v0.9.9] backfill: $written new sleep snapshots from HC (${sessions.size} sessions in window)")
+        written
     }
 
     companion object {

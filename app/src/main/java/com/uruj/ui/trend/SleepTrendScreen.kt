@@ -7,6 +7,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.health.connect.client.HealthConnectClient
+import com.uruj.data.LastSleepReader
 import com.uruj.data.SleepSnapshot
 import com.uruj.data.SleepSnapshotRepository
 import com.uruj.ui.theme.UrujAccent
@@ -42,7 +44,30 @@ fun SleepTrendScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) {
         loading = true
-        snapshots = withContext(Dispatchers.IO) { repo.listAll() }
+        snapshots = withContext(Dispatchers.IO) {
+            // v0.9.9 — lazy one-time backfill on first open. If no past-date
+            // snapshots exist (rider just installed v0.9.8+), pull up to 30
+            // days of sleep history from HC's retention window in one shot.
+            // Idempotent: re-running is a no-op because past dates are
+            // immutable per [[reference_snapshot_persistence_architecture]].
+            val existing = repo.listAll()
+            val hasPastSnapshots = existing.any {
+                it.dateIsoLocal != LocalDate.now(ZoneId.systemDefault()).toString()
+            }
+            if (!hasPastSnapshots) {
+                val sdkOk = HealthConnectClient.getSdkStatus(context) ==
+                    HealthConnectClient.SDK_AVAILABLE
+                if (sdkOk) {
+                    runCatching {
+                        val client = HealthConnectClient.getOrCreate(context)
+                        val granted = client.permissionController.getGrantedPermissions()
+                        repo.backfillFromHc(client, granted, LastSleepReader(), days = 30)
+                    }
+                    return@withContext repo.listAll()
+                }
+            }
+            existing
+        }
         loading = false
     }
 

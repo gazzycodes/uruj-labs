@@ -7,10 +7,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
-import androidx.health.connect.client.HealthConnectClient
 import com.uruj.data.ContinuousBiometricRepository
-import com.uruj.data.LastSleepReader
-import com.uruj.power.HrvCalculator
+import com.uruj.data.SleepSnapshot
+import com.uruj.data.SleepSnapshotRepository
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujZone1
 import com.uruj.ui.theme.UrujZone2
@@ -19,23 +18,29 @@ import com.uruj.ui.theme.UrujZone4
 import com.uruj.ui.theme.UrujZone5
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 
 /**
- * v0.7.4 follow-up — overnight HRV trend now sliced by Samsung's ACTUAL sleep
- * windows (via LastSleepReader.listLastNDays), not the 22:00-09:00 heuristic
- * the v0.7.3 first implementation used. Matches the Bio Lab Autonomic card
- * which always used the Samsung window, so the numbers agree across surfaces.
+ * v0.7.4 — overnight HRV trend.
  *
- * The heuristic-window approach was producing artifically-lower RMSSD because
- * the wider window (22:00-09:00) included pre-sleep + post-wake periods where
- * HRV is naturally lower. Fix: use the real sleep window per night.
+ * v0.9.9 — refactored to DISK-ONLY at render time, honoring the
+ * [[reference_snapshot_persistence_architecture]] rule. Pre-v0.9.9 this
+ * screen called `LastSleepReader.listLastNDays(client, granted, 90)`
+ * directly on render — ~90 HC reads per open. Now it reads sleep windows
+ * from [SleepSnapshotRepository] (disk) and slices the URUJ continuous
+ * NDJSON for the HRV per window. ZERO HC reads at render time.
+ *
+ * Bio Lab Autonomic card still uses live HC sleep window for TONIGHT's
+ * single value (one-shot read, not 90 days). This trend screen is the
+ * longitudinal view → all disk.
  */
 @Composable
 fun HrvTrendScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val continuousRepo = remember { ContinuousBiometricRepository(context) }
-    val sleepReader = remember { LastSleepReader() }
+    val sleepSnapshots = remember { SleepSnapshotRepository(context) }
     var nightlyHrv by remember {
         mutableStateOf<List<NightlyHrvPoint>?>(null)
     }
@@ -44,13 +49,19 @@ fun HrvTrendScreen(onBack: () -> Unit) {
     LaunchedEffect(Unit) {
         loading = true
         nightlyHrv = withContext(Dispatchers.IO) {
-            buildNightlyHrv(context, continuousRepo, sleepReader, days = 90)
+            buildNightlyHrvFromSnapshots(continuousRepo, sleepSnapshots)
         }
         loading = false
     }
 
+    val zone = ZoneId.systemDefault()
+    val todayIso = LocalDate.now(zone).toString()
     val points = nightlyHrv?.sortedBy { it.sleepEndMs }?.map {
-        TrendPoint(labelMs = it.sleepEndMs, y = it.rmssdMs)
+        TrendPoint(
+            labelMs = it.sleepEndMs,
+            y = it.rmssdMs,
+            isToday = it.dateIsoLocal == todayIso,
+        )
     } ?: emptyList()
     val rmssdMax = (points.maxOfOrNull { it.y } ?: 50f).coerceAtLeast(50f) + 10f
 
@@ -84,13 +95,13 @@ fun HrvTrendScreen(onBack: () -> Unit) {
             emptyBody = "Wear the strap to sleep with Samsung Health tracking sleep " +
                 "AND the 24/7 monitoring service enabled. First reading appears " +
                 "tomorrow morning after Samsung writes the sleep record + 24/7 NDJSON " +
-                "captures the window.",
+                "captures the window. Sleep snapshots persist to disk forever, so this " +
+                "trend chart builds without further HC reads.",
             methodologyFootnote = "Each point = one night's median-of-5-min-windows " +
                 "RMSSD from the BLE chest strap, NATURAL breathing during the actual " +
-                "Samsung-detected sleep window (start to wake). NOT a paced morning " +
-                "reading — see Bio Lab Autonomic card for the paced-vs-natural " +
-                "breathing distinction. Tier bands: Plews et al. + Shaffer & Ginsberg " +
-                "2017 athletic norms.",
+                "Samsung-detected sleep window. Sleep windows read from URUJ's local " +
+                "SleepSnapshotRepository (v0.9.8+) — no HC reads at chart render. " +
+                "Tier bands: Plews et al. + Shaffer & Ginsberg 2017 athletic norms.",
             loading = loading,
         ),
         onBack = onBack,
@@ -102,29 +113,35 @@ private data class NightlyHrvPoint(
     val sleepEndMs: Long,
     val rmssdMs: Float,
     val windowCount: Int,
+    val dateIsoLocal: String,
 )
 
-/** Slice the last N days of Samsung sleep windows, compute HRV per window. */
-private suspend fun buildNightlyHrv(
-    context: android.content.Context,
+/**
+ * v0.9.9 — read sleep windows from disk-persisted [SleepSnapshot]s and
+ * slice the URUJ continuous NDJSON per window. Zero HC reads.
+ *
+ * Edge cases:
+ * - No snapshots yet → returns empty (chart shows empty state with guidance
+ *   to wear strap + open URUJ daily)
+ * - Sleep snapshot exists but NDJSON missing for that window → HRV computes
+ *   null → night dropped (consistent with prior behavior)
+ * - Today's snapshot present → renders with brighter `isToday` dot per v0.9.6
+ */
+private suspend fun buildNightlyHrvFromSnapshots(
     continuousRepo: ContinuousBiometricRepository,
-    sleepReader: LastSleepReader,
-    days: Int,
+    sleepSnapshots: SleepSnapshotRepository,
 ): List<NightlyHrvPoint> {
-    val sdkOk = HealthConnectClient.getSdkStatus(context) ==
-        HealthConnectClient.SDK_AVAILABLE
-    if (!sdkOk) return emptyList()
-    val client = runCatching { HealthConnectClient.getOrCreate(context) }
-        .getOrNull() ?: return emptyList()
-    val granted = runCatching { client.permissionController.getGrantedPermissions() }
-        .getOrDefault(emptySet())
-    val sessions = sleepReader.listLastNDays(client, granted, days)
-    return sessions.mapNotNull { s ->
-        val hrv = continuousRepo.computeHrvForWindow(s.startedAt, s.endedAt) ?: return@mapNotNull null
+    val snapshots: List<SleepSnapshot> = sleepSnapshots.listAll()
+    if (snapshots.isEmpty()) return emptyList()
+    return snapshots.mapNotNull { s ->
+        val start = Instant.ofEpochMilli(s.sessionStartMs)
+        val end = Instant.ofEpochMilli(s.sessionEndMs)
+        val hrv = continuousRepo.computeHrvForWindow(start, end) ?: return@mapNotNull null
         NightlyHrvPoint(
-            sleepEndMs = s.endedAt.toEpochMilli(),
+            sleepEndMs = s.sessionEndMs,
             rmssdMs = hrv.rmssdMs,
             windowCount = hrv.windowCount,
+            dateIsoLocal = s.dateIsoLocal,
         )
     }
 }
