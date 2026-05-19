@@ -12,9 +12,12 @@ import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import com.uruj.domain.ReadinessInputs
-import com.uruj.power.ReadinessCalculator
-import com.uruj.power.SleepingRhrCalculator
 import com.uruj.domain.ReadinessResult
+import com.uruj.domain.RecommendationSnapshot
+import com.uruj.power.ReadinessCalculator
+import com.uruj.power.ReadinessReasoner
+import com.uruj.power.RuleBasedReasoner
+import com.uruj.power.SleepingRhrCalculator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Instant
@@ -92,6 +95,13 @@ class ReadinessRepository(context: Context) {
     // v0.9.1 — daily TSB snapshots so the 6-month fitness curve survives
     // beyond HC's 30-day retention window. Same architecture as HRR1/RHR/VO2.
     private val tsbSnapshots = TsbSnapshotRepository(appContext)
+    // v0.9.4 — unified signal pack assembler + reasoner + recommendation
+    // history. See [[reference_readiness_context_architecture]] for the law.
+    private val contextBuilder = ReadinessContextBuilder(appContext)
+    // AI HOOK: swap this for CompositeReasoner(GroqAiReasoner(), RuleBasedReasoner())
+    // when Task #105 / v0.5 ships. Same interface, plug-and-play.
+    private val reasoner: ReadinessReasoner = RuleBasedReasoner()
+    private val recSnapshots = RecommendationSnapshotRepository(appContext)
 
     suspend fun compute(): ReadinessResult = withContext(Dispatchers.IO) {
         val inputs = gatherInputs()
@@ -105,7 +115,67 @@ class ReadinessRepository(context: Context) {
     suspend fun computeWithDiagnostics(): ReadinessSnapshot = withContext(Dispatchers.IO) {
         val diagnostics = collectDiagnostics()
         val gathered = gatherInputsWithSource()
-        val result = calculator.compute(gathered.inputs)
+        val scored = calculator.score(gathered.inputs)
+
+        // v0.9.4 — limited-data path stays simple. Otherwise build the
+        // unified ReadinessContext + run the reasoner. Recommendation
+        // gets persisted to disk so multi-day pattern tracking works.
+        // See [[reference_readiness_context_architecture]].
+        val result = if (scored.dataConfidence < 0.5f) {
+            ReadinessResult(
+                score = scored.score,
+                grade = scored.grade,
+                components = scored.components,
+                recommendation = calculator.buildLimitedDataRecommendation(
+                    scored.score, scored.components, scored.dataConfidence,
+                ),
+                dataConfidence = scored.dataConfidence,
+            )
+        } else {
+            val ctx = contextBuilder.build(
+                inputs = gathered.inputs,
+                rhrSource = gathered.rhrSource,
+                hrvSource = gathered.hrvSource,
+                urujHrvNights7d = gathered.urujHrvNights7d,
+                urujHrvNightlyRmssdMs = gathered.urujHrvNightlyRmssdMs,
+            )
+            val rec = reasoner.reason(ctx, scored.score, scored.components)
+
+            // Persist daily recommendation snapshot — unlocks multi-day rest
+            // tracking + future AI feedback loop. Idempotent overwrite per day.
+            runCatching {
+                recSnapshots.save(
+                    RecommendationSnapshot(
+                        dateIsoLocal = LocalDate.now(ZoneId.systemDefault()).toString(),
+                        score = scored.score,
+                        tier = rec.tier.name,
+                        headline = rec.headline,
+                        duration = rec.duration,
+                        rationale = rec.rationale,
+                        severeFlags = rec.severeFlags,
+                        mildFlags = rec.mildFlags,
+                        missingSignals = ctx.provenance.missingSignals,
+                        computedAtMs = System.currentTimeMillis(),
+                        methodologyVersion = RecommendationSnapshotRepository.METHODOLOGY_VERSION,
+                    ),
+                )
+            }.onFailure {
+                Log.w("URUJ-Readiness", "recommendation snapshot save failed", it)
+            }
+
+            ReadinessResult(
+                score = scored.score,
+                grade = scored.grade,
+                components = scored.components,
+                recommendation = rec.headline,
+                dataConfidence = scored.dataConfidence,
+                recommendationDuration = rec.duration,
+                recommendationRationale = rec.rationale,
+                recommendationInsights = rec.insights,
+                recommendationMissingSignals = rec.missingSignalsCallout,
+            )
+        }
+
         ReadinessSnapshot(
             result = result,
             diagnostics = diagnostics.copy(
@@ -198,6 +268,13 @@ class ReadinessRepository(context: Context) {
         val hrvSource: String?,
         /** Count of overnight HRV nights captured from URUJ NDJSON in last 7d. */
         val urujHrvNights7d: Int,
+        /**
+         * v0.9.4 — per-night RMSSD values, most recent first, last 7d.
+         * Empty when URUJ NDJSON path didn't fire (e.g. HC direct record path
+         * or no strap data). [ReadinessContextBuilder] consumes this to
+         * compute HRV trend direction (RISING/FALLING/FLAT).
+         */
+        val urujHrvNightlyRmssdMs: List<Float>,
     )
 
     /**
@@ -215,6 +292,7 @@ class ReadinessRepository(context: Context) {
                 rhrSource = null,
                 hrvSource = null,
                 urujHrvNights7d = 0,
+                urujHrvNightlyRmssdMs = emptyList(),
             )
         }
         val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
@@ -223,6 +301,7 @@ class ReadinessRepository(context: Context) {
                 rhrSource = null,
                 hrvSource = null,
                 urujHrvNights7d = 0,
+                urujHrvNightlyRmssdMs = emptyList(),
             )
 
         val granted = runCatching { client.permissionController.getGrantedPermissions() }
@@ -307,6 +386,7 @@ class ReadinessRepository(context: Context) {
         // scoring (1-6 days, no real baseline yet) and ratio-vs-baseline
         // scoring (7+ days, stable baseline). Fixes day-1 "+0%" artifact.
         var hrvDaysOfDataIn7d = 0
+        var hrvNightlyRmssdMs: List<Float> = emptyList()
         if (hrvToday == null) {
             // Try the last sleep window for cleanest signal; fall back to
             // rolling 8h overnight proxy when no sleep data available.
@@ -332,6 +412,13 @@ class ReadinessRepository(context: Context) {
                     val sorted = recentNights.map { it.hrv.rmssdMs }.sorted()
                     hrvBaseline = sorted[sorted.size / 2]
                 }
+                // v0.9.4 — preserve per-night RMSSD list (newest first) for
+                // the ReadinessContextBuilder to compute trend direction.
+                // Without this, the reasoner can only see today's absolute
+                // and misses the trajectory (e.g. rider's 12.2 → 8.7 ms
+                // 2026-05-19 morning was a sharp DOWN that today's absolute
+                // alone wouldn't flag as a trend signal).
+                hrvNightlyRmssdMs = recentNights.map { it.hrv.rmssdMs }
                 // Note: when recentNights.size < 2 we leave hrvBaseline = null.
                 // ReadinessCalculator will use absolute-tier scoring instead of
                 // computing a meaningless "+0% vs same value" ratio.
@@ -377,6 +464,7 @@ class ReadinessRepository(context: Context) {
             rhrSource = rhrSource,
             hrvSource = hrvSource,
             urujHrvNights7d = hrvDaysOfDataIn7d,
+            urujHrvNightlyRmssdMs = hrvNightlyRmssdMs,
         )
     }
 
