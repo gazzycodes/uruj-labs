@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -290,6 +291,7 @@ private fun SectionHeader(title: String) {
 private fun BioCard(
     title: String,
     accentColor: Color = UrujAccent,
+    infoOnClick: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     Column(
@@ -299,13 +301,34 @@ private fun BioCard(
             .border(1.dp, UrujSurfaceHigh, RoundedCornerShape(16.dp))
             .padding(16.dp),
     ) {
-        Text(
-            title.uppercase(),
-            color = accentColor,
-            fontWeight = FontWeight.Black,
-            fontSize = 10.sp,
-            letterSpacing = 2.sp,
-        )
+        // v0.9.7 — title row gains optional ⓘ button. Tap opens an
+        // educational dialog with "what it is / why cyclists care / where
+        // to live / FOR YOU RIGHT NOW" content. Lab-grade rule 8 — every
+        // metric self-documents from inside the UI.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                title.uppercase(),
+                color = accentColor,
+                fontWeight = FontWeight.Black,
+                fontSize = 10.sp,
+                letterSpacing = 2.sp,
+                modifier = Modifier.weight(1f),
+            )
+            if (infoOnClick != null) {
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clickable(onClick = infoOnClick),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "ⓘ",
+                        color = UrujAccent,
+                        fontSize = 14.sp,
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         content()
     }
@@ -345,6 +368,7 @@ private fun TrainingLoadCard(@Suppress("UNUSED_PARAMETER") s: BioLabSnapshot, on
     val context = LocalContext.current
     val repo = remember { com.uruj.data.TsbSnapshotRepository(context) }
     var latest by remember { mutableStateOf<com.uruj.data.TsbSnapshot?>(null) }
+    var showInfo by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         latest = withContext(kotlinx.coroutines.Dispatchers.IO) {
             repo.listAll().firstOrNull()
@@ -352,13 +376,14 @@ private fun TrainingLoadCard(@Suppress("UNUSED_PARAMETER") s: BioLabSnapshot, on
     }
     val tsb = latest
     if (tsb == null) {
-        BioCard("Training State — fitness vs fatigue") {
+        BioCard("Training State — fitness vs fatigue", infoOnClick = { showInfo = true }) {
             Text(
                 "TSB snapshots will populate as you open Readiness + record rides. " +
                     "Curve unlocks at ~3 days of data.",
                 color = UrujMuted, fontSize = 12.sp,
             )
         }
+        if (showInfo) TrainingStateInfoDialog(tsb = null, onDismiss = { showInfo = false })
         return
     }
     val accent = when {
@@ -375,7 +400,11 @@ private fun TrainingLoadCard(@Suppress("UNUSED_PARAMETER") s: BioLabSnapshot, on
         tsb.tsb >= -25f -> "SIGNIFICANT FATIGUE"
         else -> "OVER-TRAINED"
     }
-    BioCard("Training State — fitness vs fatigue", accentColor = accent) {
+    BioCard(
+        "Training State — fitness vs fatigue",
+        accentColor = accent,
+        infoOnClick = { showInfo = true },
+    ) {
         Row(verticalAlignment = Alignment.Bottom) {
             val tsbInt = tsb.tsb.toInt()
             Text(
@@ -434,11 +463,17 @@ private fun TrainingLoadCard(@Suppress("UNUSED_PARAMETER") s: BioLabSnapshot, on
             )
         }
     }
+    if (showInfo) TrainingStateInfoDialog(tsb = tsb, onDismiss = { showInfo = false })
 }
 
 @Composable
 private fun Vo2MaxCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
-    BioCard("VO₂ Max — aerobic capacity", accentColor = UrujZone2) {
+    var showInfo by remember { mutableStateOf(false) }
+    BioCard(
+        "VO₂ Max — aerobic capacity",
+        accentColor = UrujZone2,
+        infoOnClick = { showInfo = true },
+    ) {
         val urujVo2 = s.vo2MaxConsensus
         val samsungVo2 = s.vo2MaxFromSamsung
         if (urujVo2 == null && samsungVo2 == null) {
@@ -548,10 +583,12 @@ private fun Vo2MaxCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
             )
         }
     }
+    if (showInfo) Vo2MaxInfoDialog(s = s, onDismiss = { showInfo = false })
 }
 
 @Composable
 private fun HrRecoveryCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
+    var showInfo by remember { mutableStateOf(false) }
     val drop = s.hrr1Median ?: return
     // Color the hero number by the cardiology-grade band.
     val accent = when {
@@ -559,7 +596,11 @@ private fun HrRecoveryCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
         drop >= 12 -> UrujZone3  // amber — average
         else -> UrujZone5        // red — poor / elevated CV risk
     }
-    BioCard("HR Recovery (HRR1) — autonomic health", accentColor = accent) {
+    BioCard(
+        "HR Recovery (HRR1) — autonomic health",
+        accentColor = accent,
+        infoOnClick = { showInfo = true },
+    ) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
                 drop.toString(),
@@ -679,14 +720,16 @@ private fun HrRecoveryCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
             )
         }
     }
+    if (showInfo) Hrr1InfoDialog(s = s, onDismiss = { showInfo = false })
 }
 
 @Composable
 private fun HeartRateCard(s: BioLabSnapshot, onSeeRhrTrend: () -> Unit = {}) {
+    var showInfo by remember { mutableStateOf(false) }
     // v0.4.0 slim — 4 cycling-training-relevant rows only.
     // Cut: today min/max (Samsung mirror), Samsung Direct RHR (same), HRV proxy
     // (misleading fake number). See [[reference_cut_features_v0_4]].
-    BioCard("Heart Rate") {
+    BioCard("Heart Rate", infoOnClick = { showInfo = true }) {
         MetricRow(
             "MAX HR (effective)",
             value = "${s.maxHrBpm} bpm",
@@ -731,11 +774,13 @@ private fun HeartRateCard(s: BioLabSnapshot, onSeeRhrTrend: () -> Unit = {}) {
             }
         }
     }
+    if (showInfo) HeartRateInfoDialog(s = s, onDismiss = { showInfo = false })
 }
 
 @Composable
 private fun KarvonenZonesCard(zones: KarvonenZonesCalculator.Result) {
-    BioCard("Karvonen HR Zones — personalized") {
+    var showInfo by remember { mutableStateOf(false) }
+    BioCard("Karvonen HR Zones — personalized", infoOnClick = { showInfo = true }) {
         Text(
             "Computed from YOUR heart rate reserve (${zones.hrReserve} bpm). More accurate than %-of-max because it accounts for your specific resting HR.",
             color = UrujMuted, fontSize = 11.sp,
@@ -746,6 +791,7 @@ private fun KarvonenZonesCard(zones: KarvonenZonesCalculator.Result) {
             Spacer(Modifier.height(4.dp))
         }
     }
+    if (showInfo) KarvonenInfoDialog(zones = zones, onDismiss = { showInfo = false })
 }
 
 @Composable
@@ -892,6 +938,7 @@ private fun formatHrrSampleDate(ms: Long): String = hrrSampleDateFmt.format(Date
 @Composable
 private fun AutonomicHealthCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
     val rmssd = s.autonomicRmssdMs ?: return
+    var showInfo by remember { mutableStateOf(false) }
     // Color-code RMSSD by athletic-tier ranges. Norms from Plews et al.
     // (elite cyclist HRV) + Shaffer & Ginsberg 2017 (general adult HRV):
     //   <20ms = severely suppressed (illness, overtraining)
@@ -912,7 +959,11 @@ private fun AutonomicHealthCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) 
         rmssd >= 20f -> "Below athletic average"
         else -> "Below athletic average — check trend"
     }
-    BioCard("Autonomic HRV — beat-to-beat parasympathetic", accentColor = accent) {
+    BioCard(
+        "Autonomic HRV — beat-to-beat parasympathetic",
+        accentColor = accent,
+        infoOnClick = { showInfo = true },
+    ) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
                 text = "%.1f".format(rmssd),
@@ -1053,20 +1104,16 @@ private fun CarCard(
     interp: com.uruj.domain.CarInterpretation,
     onSeeTrend: () -> Unit = {},
 ) {
-    var showInfo by androidx.compose.runtime.remember {
-        androidx.compose.runtime.mutableStateOf(false)
-    }
+    var showInfo by remember { mutableStateOf(false) }
     val accent = carTierColor(interp.overallTier)
-    BioCard("CAR — cortisol awakening response", accentColor = accent) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.weight(1f))
-            androidx.compose.material3.TextButton(
-                onClick = { showInfo = true },
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp),
-            ) {
-                Text("ⓘ", color = UrujMuted, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-            }
-        }
+    // v0.9.7 — use BioCard's standard infoOnClick (consistent with all other
+    // Bio Lab cards) instead of the v0.7.2 inline TextButton. Removes ⓘ
+    // duplication; unifies the tooltip pattern across the screen.
+    BioCard(
+        "CAR — cortisol awakening response",
+        accentColor = accent,
+        infoOnClick = { showInfo = true },
+    ) {
         Text(interp.summary, color = accent, fontWeight = FontWeight.Bold, fontSize = 14.sp)
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.Bottom) {
@@ -1152,103 +1199,10 @@ private fun carTierColor(tier: com.uruj.domain.CarTier): Color = when (tier) {
     com.uruj.domain.CarTier.BLUNTED -> UrujZone5
 }
 
-@Composable
-private fun CarInfoDialog(
-    car: com.uruj.domain.CarResult,
-    interpretation: com.uruj.domain.CarInterpretation,
-    onDismiss: () -> Unit,
-) {
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) {
-                Text("CLOSE", color = UrujAccent, fontWeight = FontWeight.Bold)
-            }
-        },
-        title = {
-            Text("CAR — Cortisol Awakening Response", color = UrujText,
-                fontWeight = FontWeight.Black, fontSize = 18.sp)
-        },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                InfoBlock(
-                    "What it is",
-                    "Cortisol surges 50-160% in the first 30-45 min after waking — " +
-                        "the HPA-axis (hypothalamus-pituitary-adrenal) firing up the " +
-                        "body for the day. URUJ proxies this surge via HR + HRV " +
-                        "inflection because we can't measure salivary cortisol " +
-                        "non-invasively. HR climbs, HRV drops, both driven by the " +
-                        "same sympathetic activation that's pumping the cortisol.",
-                )
-                InfoBlock(
-                    "Why athletes care",
-                    "Blunted CAR is a published marker of:\n" +
-                        "• Chronic stress / burnout\n" +
-                        "• Overtraining syndrome\n" +
-                        "• Depression / mood disorders\n" +
-                        "• HPA-axis dysfunction\n\n" +
-                        "Robust CAR = healthy stress-response system. The body's " +
-                        "ability to ACTIVATE in the morning is a separate signal " +
-                        "from its ability to RECOVER overnight. Both matter.",
-                )
-                InfoBlock(
-                    "How URUJ computes it",
-                    "Automatic — no ritual needed. Each morning after Samsung " +
-                        "writes the SleepSessionRecord and 24/7 NDJSON has 45 min " +
-                        "of post-wake data:\n\n" +
-                        "1. Baseline HR + RMSSD over the last 10 min of sleep\n" +
-                        "2. Peak HR detected in 0-45 min post-wake window\n" +
-                        "3. Amplitude = peak − baseline (the morning surge size)\n" +
-                        "4. Latency = minutes from wake to peak\n" +
-                        "5. RMSSD trajectory binned to 5-min, find the trough\n" +
-                        "6. Cached per-day so opening Bio Lab is instant",
-                )
-                InfoBlock(
-                    "Reference ranges",
-                    "Amplitude tiers (HR rise above sleep baseline):\n" +
-                        "  <5 bpm    Blunted — chronic stress marker\n" +
-                        "  5-10 bpm  Suppressed — HPA dampened\n" +
-                        "  10-20 bpm Healthy ✓ normal range\n" +
-                        "  20-30 bpm Robust ✓ strong activation\n" +
-                        "  >30 bpm   Exaggerated — acute stress/anxiety\n\n" +
-                        "Latency tiers (time to peak):\n" +
-                        "  <10 min  Very fast — possible acute stress\n" +
-                        "  10-20 min Fast — robust activation\n" +
-                        "  20-40 min Typical — healthy range\n" +
-                        "  40-60 min Slow — HPA dampened\n" +
-                        "  >60 min  Very slow — blunted",
-                )
-                InfoBlock(
-                    "Honest caveats",
-                    "• URUJ measures the HR/HRV signature of the cortisol surge, " +
-                        "not cortisol itself. Strong correlation in research but " +
-                        "salivary measurement is the lab-gold standard.\n" +
-                        "• Wake events that follow a poor sleep can suppress CAR " +
-                        "amplitude — interpret in context with sleep quality.\n" +
-                        "• Coffee + stress in the first 30 min skew the peak " +
-                        "(more sympathetic activation = bigger spike). For a " +
-                        "clean reading, no caffeine before the 45-min mark.\n" +
-                        "• Naps don't produce CAR (different neuroendocrine pattern).\n" +
-                        "• Trends > single readings. Track week-over-week.",
-                )
-                InfoBlock(
-                    "For YOU right now",
-                    "Amplitude: ${"%.0f".format(car.amplitudeBpm)} bpm " +
-                        "(${interpretation.amplitudeTier.name.lowercase()})\n" +
-                        "Latency: ${"%.0f".format(car.latencyMinutes)} min " +
-                        "(${interpretation.latencyTier.name.lowercase()})\n" +
-                        "RMSSD trough: ${"%.1f".format(car.troughRmssdMs)} ms " +
-                        "(${"%.0f".format(car.rmssdDropPercent)}% drop from baseline)\n" +
-                        "Overall: ${interpretation.summary}",
-                )
-            }
-        },
-        containerColor = UrujSurface,
-    )
-}
+// v0.9.7 — private CarInfoDialog removed. Unified into the public
+// CarInfoDialog in BioLabInfoDialogs.kt which now uses the same section/
+// YouSection pattern as every other Bio Lab card. One tooltip style across
+// the screen.
 
 /**
  * v0.7.1 — launcher card for the manual orthostatic test ritual.
@@ -1278,22 +1232,14 @@ private fun OrthostaticTestLauncherCard(
     var showInfo by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     val interpretation = latest?.let { calc.interpret(it) }
     val tierAccent = interpretation?.let { tierColorForLauncher(it.overallTier) } ?: UrujAccent
-    BioCard("Orthostatic test — sit→stand autonomic snapshot", accentColor = tierAccent) {
-        // Title row with info icon
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.weight(1f))
-            androidx.compose.material3.TextButton(
-                onClick = { showInfo = true },
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp),
-            ) {
-                Text(
-                    "ⓘ",
-                    color = UrujMuted,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-        }
+    BioCard(
+        "Orthostatic test — sit→stand autonomic snapshot",
+        accentColor = tierAccent,
+        infoOnClick = { showInfo = true },
+    ) {
+        // v0.9.7 — ⓘ button moved into BioCard's title row via infoOnClick.
+        // Removes the inline TextButton — one consistent tooltip pattern across
+        // every Bio Lab card.
         if (latest == null) {
             Text(
                 "No reading yet. The 4-minute protocol gives you a second " +

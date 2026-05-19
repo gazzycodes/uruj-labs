@@ -84,8 +84,12 @@ class RhrSnapshotRepository(context: Context) {
     suspend fun save(snapshot: RhrSnapshot, date: LocalDate = LocalDate.now()): Boolean =
         withContext(Dispatchers.IO) {
             val file = File(baseDir, "${date}.json")
-            if (file.exists()) {
-                Log.d(TAG, "skipping save: $date already on disk")
+            // v0.9.7 — today's snapshot is MUTABLE during the day. RHR median
+            // can refine intra-day if Samsung syncs new sleep windows or HC
+            // HR samples. Past dates immutable for trend chart integrity.
+            val today = LocalDate.now()
+            if (date != today && file.exists()) {
+                Log.d(TAG, "skipping save: $date is historical (immutable)")
                 return@withContext false
             }
             runCatching {
