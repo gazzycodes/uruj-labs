@@ -56,6 +56,11 @@ fun RiderProfileScreen(
 ) {
     val saved by viewModel.profile.collectAsStateWithLifecycle()
     var draft by remember(saved) { mutableStateOf(saved) }
+    // v0.9.13 — last successful HC weight sync timestamp from WeightAutoSync.
+    // Surfaces "synced from Samsung X ago" so the rider knows the field
+    // isn't stale (foundation of v0.9.12 was plumbed but the UI wasn't
+    // wired). Null when HC has never synced (manual-only profile).
+    val lastWeightSyncMs by viewModel.lastWeightSyncMs.collectAsStateWithLifecycle()
 
     Box(
         modifier = Modifier
@@ -94,6 +99,27 @@ fun RiderProfileScreen(
             Section("Body & Bike") {
                 NumberField("Rider weight (kg)", draft.riderWeightKg) {
                     draft = draft.copy(riderWeightKg = it)
+                }
+                // v0.9.13 — freshness label for HC-synced weight. Shows the
+                // rider when the value last came from Samsung Health so manual
+                // overrides vs sync staleness is visible. Hidden if HC sync
+                // has never run (no timestamp to display).
+                lastWeightSyncMs?.let { ms ->
+                    val ageSec = (System.currentTimeMillis() - ms) / 1000L
+                    val ageLabel = when {
+                        ageSec < 60 -> "just now"
+                        ageSec < 3600 -> "${ageSec / 60} min ago"
+                        ageSec < 86400 -> "${ageSec / 3600} hr ago"
+                        else -> "${ageSec / 86400} day(s) ago"
+                    }
+                    Text(
+                        text = "↻ synced from Samsung Health $ageLabel",
+                        color = UrujAccent,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.5.sp,
+                        modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
+                    )
                 }
                 NumberField("Bike weight (kg)", draft.bikeWeightKg) {
                     draft = draft.copy(bikeWeightKg = it)
