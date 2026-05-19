@@ -47,6 +47,14 @@ class SessionCoach {
     private var overrideAtMs: Long = 0L
 
     /**
+     * v0.9.15 — rotates the vocab pool index per cue. Within a single ride,
+     * the rider hears 4 different variations before repeating. Across rides
+     * (new SessionCoach instance) the cycle starts fresh — no per-rider
+     * persistence yet, future improvement.
+     */
+    private var cueIndex: Int = 0
+
+    /**
      * @param hrBpm current HR reading (BLE per-beat or recent HC sample)
      * @param zones current Karvonen zones for the rider (from RiderProfile)
      * @param intent active session intent
@@ -120,32 +128,57 @@ class SessionCoach {
         return zones.zones.lastOrNull()?.number ?: 5
     }
 
+    /**
+     * v0.9.15 — vocab expansion. Pre-fix: one phrase per situation, robotic
+     * repetition within a ride. Now: pool of 4 variations per situation,
+     * deterministic rotation by cue-fire counter + ride-start-of-day so the
+     * sequence varies across rides + within a single ride. Tone shifted
+     * from clinical to "real coach talking to you" — short, direct,
+     * encouraging not nagging.
+     *
+     * Coach voice principles applied to the vocab:
+     * - Lead with the action ("ease off", "push", "hold it") not the data
+     * - Acknowledge effort ("you've got the ride", "settle in")
+     * - Direction-specific phrasing — "above" cues vs "below" cues differ
+     *   meaningfully, not just inverted
+     * - Recovery-tier intents (RECOVERY, EXPLORATORY) stay extra-light tone
+     * - Threshold/VO2 cues sharper ("hold it", "push") — match effort
+     */
     private fun buildCue(intent: SessionIntent, currentZone: Int, isAbove: Boolean): String {
-        return when (intent) {
-            SessionIntent.RECOVERY -> when {
-                isAbove && currentZone >= 4 -> "Way too hard. Drop to recovery pace."
-                isAbove -> "Recovery session — ease back to zone 1."
-                else -> ""  // below Z1 means almost stopped; no cue
-            }
-            SessionIntent.ENDURANCE -> when {
-                isAbove && currentZone >= 4 -> "Pulling into threshold. Ease back to zone 2 endurance."
-                isAbove -> "Drifting into zone $currentZone. Ease back to zone 2 endurance."
-                else -> "Below zone 2. Pick up the pace."
-            }
-            SessionIntent.TEMPO -> when {
-                isAbove -> "Above tempo. Ease back to zone 3."
-                else -> "Below tempo. Push harder into zone 3."
-            }
-            SessionIntent.THRESHOLD -> when {
-                isAbove -> "Above threshold. Settle back to zone 4."
-                else -> "Below threshold. Push harder into zone 4."
-            }
-            SessionIntent.VO2 -> when {
-                isAbove -> "Recovery between intervals — let HR drop."
-                else -> "VO2 effort. Push into zone 5."
-            }
-            SessionIntent.EXPLORATORY -> ""
-        }.ifBlank { "Off target. Current zone $currentZone." }
+        val pool = pickVocabPool(intent, currentZone, isAbove)
+        if (pool.isEmpty()) return ""
+        cueIndex++
+        return pool[((cueIndex % pool.size) + pool.size) % pool.size]
+    }
+
+    private fun pickVocabPool(
+        intent: SessionIntent,
+        currentZone: Int,
+        isAbove: Boolean,
+    ): List<String> = when (intent) {
+        SessionIntent.RECOVERY -> when {
+            isAbove && currentZone >= 4 -> POOL_RECOVERY_WAY_OVER
+            isAbove -> POOL_RECOVERY_ABOVE
+            else -> emptyList()  // below Z1 on recovery = fine, no cue
+        }
+        SessionIntent.ENDURANCE -> when {
+            isAbove && currentZone >= 4 -> POOL_ENDURANCE_WAY_OVER
+            isAbove -> POOL_ENDURANCE_ABOVE
+            else -> POOL_ENDURANCE_BELOW
+        }
+        SessionIntent.TEMPO -> when {
+            isAbove -> POOL_TEMPO_ABOVE
+            else -> POOL_TEMPO_BELOW
+        }
+        SessionIntent.THRESHOLD -> when {
+            isAbove -> POOL_THRESHOLD_ABOVE
+            else -> POOL_THRESHOLD_BELOW
+        }
+        SessionIntent.VO2 -> when {
+            isAbove -> POOL_VO2_RECOVERY
+            else -> POOL_VO2_BELOW
+        }
+        SessionIntent.EXPLORATORY -> emptyList()
     }
 
     companion object {
@@ -156,5 +189,89 @@ class SessionCoach {
         const val MIN_CUE_INTERVAL_MS = 60_000L
         /** Quiet period after a mid-ride intent change. */
         const val GRACE_PERIOD_MS = 60_000L
+
+        // region v0.9.15 vocab pools — 4 variations per situation
+        // Coach voice: lead with action, acknowledge effort, direction-specific
+        // phrasing. Tone matches the intensity tier (recovery = soft, threshold
+        // = sharp).
+
+        private val POOL_RECOVERY_WAY_OVER = listOf(
+            "That's threshold work. Pull right back to recovery.",
+            "Whoa — drop the pace. This is a recovery day.",
+            "Way too hard for today. Easy gears, easy breath.",
+            "Stop pushing. Recovery means recovery.",
+        )
+
+        private val POOL_RECOVERY_ABOVE = listOf(
+            "Ease back to zone one. Recovery day.",
+            "Drop the gear, let the heart rate settle.",
+            "Easy spin only. You're above recovery.",
+            "Pull it back. Tomorrow you train, today you recover.",
+        )
+
+        private val POOL_ENDURANCE_WAY_OVER = listOf(
+            "Pulling into threshold. Settle back to zone two.",
+            "Too hot for endurance. Drop a gear and breathe.",
+            "Above zone three. Ease back, save it for the intervals.",
+            "You're cooking. Pull back to zone two — long ride ahead.",
+        )
+
+        private val POOL_ENDURANCE_ABOVE = listOf(
+            "Drifting up. Ease back into zone two.",
+            "Climbing the zones — bring it down to zone two.",
+            "Slight tap on the brakes. Zone two endurance pace.",
+            "Above target. Settle back, conversational pace.",
+        )
+
+        private val POOL_ENDURANCE_BELOW = listOf(
+            "Pick up the pace into zone two.",
+            "You've got more — push to zone two.",
+            "Cruising too easy. Step it up a notch.",
+            "Find the rhythm — zone two endurance.",
+        )
+
+        private val POOL_TEMPO_ABOVE = listOf(
+            "Above tempo. Settle back to zone three.",
+            "Sharpening into threshold — back off to tempo.",
+            "Hold zone three. Save the legs.",
+            "Tempo, not threshold. Ease the watts.",
+        )
+
+        private val POOL_TEMPO_BELOW = listOf(
+            "Push into zone three. Tempo pace.",
+            "Step it up — tempo work today.",
+            "Below target. Find tempo, hold it.",
+            "More gear. Zone three sustained.",
+        )
+
+        private val POOL_THRESHOLD_ABOVE = listOf(
+            "Above threshold. Hold it, don't blow up.",
+            "Too hot — settle back to threshold pace.",
+            "Manage it. Sustain, don't surge.",
+            "Settle. Threshold is hard but steady.",
+        )
+
+        private val POOL_THRESHOLD_BELOW = listOf(
+            "Push to threshold. Hold zone four.",
+            "Step it up — threshold work, no easing.",
+            "More watts. Threshold pace, sustain it.",
+            "Find zone four. Commit to the effort.",
+        )
+
+        private val POOL_VO2_RECOVERY = listOf(
+            "Recovery between intervals. Let it drop.",
+            "Easy spin. Get ready for the next one.",
+            "Breathe. Heart rate down, prep for the push.",
+            "Recover hard. Next interval needs your best.",
+        )
+
+        private val POOL_VO2_BELOW = listOf(
+            "Push to zone five. VO2 effort.",
+            "All in. Maximum sustainable for this interval.",
+            "Bury it — VO2 max work.",
+            "Full effort. Hold zone five.",
+        )
+
+        // endregion
     }
 }
