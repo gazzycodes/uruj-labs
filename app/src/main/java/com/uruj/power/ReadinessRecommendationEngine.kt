@@ -147,8 +147,11 @@ class RuleBasedReasoner : ReadinessReasoner {
         )
         // endregion
 
-        // region Cross-metric insights — bullets below the rationale
-        val insights = buildInsights(today, trends, patterns)
+        // region Cross-metric insights — bullets below the rationale.
+        // v0.9.5 polish: pass severeFlags so we can skip dup info that's
+        // already in the rationale (e.g. CAR exaggerated appears in both
+        // — the rationale line is the source of truth, bullet was noise).
+        val insights = buildInsights(today, trends, patterns, severeFlags)
         // endregion
 
         // region Missing-data callout
@@ -180,13 +183,23 @@ class RuleBasedReasoner : ReadinessReasoner {
         // v0.9.4 — multi-day rest enforcement. Escalate copy when the
         // rider's been resting multiple days; chronic state needs lifestyle
         // attention, not just "rest more."
-        if (tier == ReadinessTier.FullRest && consecutiveRestDays >= 4) {
+        //
+        // v0.9.5 polish: threshold off-by-one fix.
+        // consecutiveRestDays counts PRIOR days only (excludes today).
+        //   consecutiveRestDays=0 → today is day 1 of a streak → no escalation
+        //   consecutiveRestDays=1 → today is day 2 → "Day 2 in red"
+        //   consecutiveRestDays=3 → today is day 4 → "Extended stand-down"
+        // Pre-v0.9.5 conditions (>= 2 / >= 4) were off by one — would have
+        // required 3 / 5 total days before firing. Plus the "two days
+        // running" text was static — wrong for day 3+. Now dynamic.
+        val totalDays = consecutiveRestDays + 1
+        if (tier == ReadinessTier.FullRest && consecutiveRestDays >= 3) {
             return "Extended stand-down" to
-                "4+ days of rest — investigate lifestyle (sleep, stress, fuel, illness)"
+                "$totalDays days of rest — investigate lifestyle (sleep, stress, fuel, illness)"
         }
-        if (tier == ReadinessTier.FullRest && consecutiveRestDays >= 2) {
-            return "Day ${consecutiveRestDays + 1} in red" to
-                "two days running — eat more, sleep more, check chronic load"
+        if (tier == ReadinessTier.FullRest && consecutiveRestDays >= 1) {
+            return "Day $totalDays in red" to
+                "$totalDays days running — eat more, sleep more, check chronic load"
         }
 
         val pool: List<Pair<String, String?>> = when (tier) {
@@ -313,6 +326,12 @@ class RuleBasedReasoner : ReadinessReasoner {
         today: ReadinessContext.TodaySnapshot,
         trends: ReadinessContext.Trends,
         patterns: ReadinessContext.Patterns,
+        /**
+         * v0.9.5 — passed so insights can skip info already surfaced in the
+         * rationale. Avoids "CAR +49 bpm" appearing twice (once as rationale
+         * driver, once as bullet).
+         */
+        severeFlags: List<String>,
     ): List<String> {
         val insights = mutableListOf<String>()
 
@@ -351,10 +370,29 @@ class RuleBasedReasoner : ReadinessReasoner {
             insights += "Readiness < 50 for ${patterns.consecutiveLowReadinessDays} days running — check sleep + load"
         }
 
-        // CAR / today's stress signal (when not already in rationale as driver)
+        // CAR / today's stress signal — surface MILD cases (SUPPRESSED) here
+        // since rationale only lists EXAGGERATED/BLUNTED as severe drivers.
+        // v0.9.5 polish: dedup EXAGGERATED/BLUNTED — already shown as rationale
+        // driver, so the insight bullet was redundant noise. Pass severeFlags
+        // so we can detect "already in rationale" cleanly.
         today.car?.let { car ->
-            if (car.ageHours <= 24f && car.tier == CarTier.EXAGGERATED) {
-                insights += "CAR amplitude ${car.amplitudeBpm.roundToInt()} bpm exaggerated (acute stress)"
+            if (car.ageHours > 24f) return@let
+            when (car.tier) {
+                CarTier.SUPPRESSED ->
+                    insights += "CAR suppressed (${car.amplitudeBpm.roundToInt()} bpm) — HPA-axis dampened, chronic stress watch"
+                CarTier.EXAGGERATED,
+                CarTier.BLUNTED -> {
+                    // Already in rationale via severeFlag — skip dup.
+                }
+                CarTier.NORMAL,
+                CarTier.ROBUST -> {
+                    // Positive signal — surface as insight on otherwise-meh days
+                    // so the rider sees the win, but only when no severe flag
+                    // fired today (don't sugarcoat a bad day with a CAR ✓).
+                    if (severeFlags.isEmpty()) {
+                        insights += "CAR healthy (${car.amplitudeBpm.roundToInt()} bpm) — HPA-axis activating normally"
+                    }
+                }
             }
         }
 
