@@ -75,6 +75,8 @@ fun BioLabScreen(
     onOpenRhrTrend: () -> Unit = {},
     onOpenVo2Trend: () -> Unit = {},
     onOpenTsbTrend: () -> Unit = {},
+    // v0.9.8 — sleep-hours trend (new SleepSnapshotRepository)
+    onOpenSleepTrend: () -> Unit = {},
     viewModel: BioLabViewModel = viewModel(),
 ) {
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -167,6 +169,12 @@ fun BioLabScreen(
             // Shown above VO2 so the rider's first signal is "where am I in
             // the training cycle?" — primary daily decision driver.
             item("tsb_card") { TrainingLoadCard(s, onSeeTrend = onOpenTsbTrend) }
+
+            // v0.9.8 — Sleep pattern card. URUJ's value-add over Samsung
+            // Health is the longitudinal trend (Samsung shows current night
+            // staging — URUJ shows the multi-week arc). Card is minimal —
+            // tap-through to the trend chart is the entire point.
+            item("sleep_card") { SleepPatternCard(onSeeTrend = onOpenSleepTrend) }
 
             // Cycling-training metrics — what URUJ uniquely computes
             item("vo2") { Vo2MaxCard(s, onSeeTrend = onOpenVo2Trend) }
@@ -363,6 +371,85 @@ private fun MetricRow(label: String, value: String, subtitle: String? = null) {
  * CTL + ATL + tier-coloured band. Tapping → TsbTrendScreen for the
  * 6-month fitness-vs-fatigue curve cyclists actually need.
  */
+/**
+ * v0.9.8 — minimal Sleep card. Reads latest [com.uruj.data.SleepSnapshot]
+ * from disk so the rider sees last night's hours inline, plus tap-through
+ * to the trend chart (the actual value-add — multi-week arc).
+ *
+ * Honors the v0.4.0 cut: stages (REM/Deep/Light/Awake) live in Samsung
+ * Health, not URUJ. This card shows hours only — the longitudinal pattern
+ * is URUJ's contribution.
+ */
+@Composable
+private fun SleepPatternCard(onSeeTrend: () -> Unit = {}) {
+    val context = LocalContext.current
+    val repo = remember { com.uruj.data.SleepSnapshotRepository(context) }
+    var latest by remember { mutableStateOf<com.uruj.data.SleepSnapshot?>(null) }
+    var snapshotCount by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        val all = withContext(kotlinx.coroutines.Dispatchers.IO) { repo.listAll() }
+        latest = all.firstOrNull()
+        snapshotCount = all.size
+    }
+    BioCard("Sleep — longitudinal pattern") {
+        val s = latest
+        if (s == null) {
+            Text(
+                "No sleep snapshots yet. Wear band overnight + open URUJ in " +
+                    "the morning. URUJ persists each night's hours to disk so " +
+                    "you can see the multi-week trend — Samsung Health shows " +
+                    "stages, URUJ shows the long arc.",
+                color = UrujMuted, fontSize = 12.sp,
+            )
+        } else {
+            val tier = when {
+                s.hoursTotal in 7f..9f -> UrujZone2 to "Optimal range"
+                s.hoursTotal in 6f..7f -> UrujZone3 to "Acceptable"
+                s.hoursTotal in 9f..10f -> UrujZone3 to "Slightly over"
+                s.hoursTotal in 5f..6f -> UrujZone3 to "Under-slept"
+                s.hoursTotal < 5f -> UrujZone5 to "Severe deficit"
+                else -> UrujZone3 to "Recovery sleep"
+            }
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    "%.1f".format(s.hoursTotal),
+                    color = tier.first,
+                    fontFamily = FontFamily.SansSerif,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 44.sp,
+                    letterSpacing = (-1).sp,
+                )
+                Spacer(Modifier.width(6.dp))
+                Column(modifier = Modifier.padding(bottom = 10.dp)) {
+                    Text("hours last night", color = UrujMuted, fontSize = 10.sp)
+                    Text(tier.second, color = tier.first, fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold)
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "$snapshotCount night${if (snapshotCount == 1) "" else "s"} on " +
+                    "disk · source ${s.source}",
+                color = UrujMuted, fontSize = 10.sp,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Stages (REM / Deep / Light / Awake) live in Samsung Health. URUJ " +
+                "owns the longitudinal pattern — the trend cyclists care about.",
+            color = UrujMuted, fontSize = 10.sp,
+        )
+        Spacer(Modifier.height(10.dp))
+        TextButton(onClick = onSeeTrend, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "SEE SLEEP TREND →",
+                color = UrujAccent, fontWeight = FontWeight.Black,
+                fontSize = 12.sp, letterSpacing = 1.5.sp,
+            )
+        }
+    }
+}
+
 @Composable
 private fun TrainingLoadCard(@Suppress("UNUSED_PARAMETER") s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
     val context = LocalContext.current

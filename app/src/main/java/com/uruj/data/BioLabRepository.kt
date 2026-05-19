@@ -357,22 +357,17 @@ class BioLabRepository(context: Context) {
 
         // v0.7.0 — Autonomic HRV from 24/7 BLE continuous capture. Compute over
         // last sleep window for the cleanest signal (parasympathetic dominance);
-        // fall back to last 24h if no sleep data. Null when 24/7 monitoring
-        // hasn't run yet (Continuous NDJSON empty for this window).
+        // fall back to overnight 8h proxy if no sleep data.
+        // v0.9.8 — use shared [effectiveHrvWindow] helper so Bio Lab + Readiness
+        // agree exactly on HRV window resolution. Pre-v0.9.8: Bio Lab used 24h
+        // fallback, Readiness used 8h fallback → divergent values on fallback
+        // nights.
         val sleepWindow = lastSleepReader.read(client, granted)
-        val hrvWindowStart: Instant
-        val hrvWindowEnd: Instant
-        if (sleepWindow != null) {
-            hrvWindowStart = sleepWindow.startedAt
-            hrvWindowEnd = sleepWindow.endedAt
-        } else {
-            hrvWindowEnd = now
-            hrvWindowStart = now.minus(Duration.ofHours(24))
-        }
+        val (hrvWindowStart, hrvWindowEnd) = effectiveHrvWindow(sleepWindow, now)
         val autonomicHrv = continuousBiometric.computeHrvForWindow(hrvWindowStart, hrvWindowEnd)
         val autonomicSampleCount = autonomicHrv?.sampleCount ?: 0
         val autonomicWindowCount = autonomicHrv?.windowCount ?: 0
-        val autonomicWindowLabel = if (sleepWindow != null) "last sleep" else "last 24h"
+        val autonomicWindowLabel = if (sleepWindow != null) "last sleep" else "last 8h"
         // Count days of overnight HRV captured — drives "baseline building" UX.
         // v0.7.4: use Samsung sleep windows (same as Bio Lab Autonomic card)
         // instead of the old 22:00-09:00 heuristic so the day count agrees

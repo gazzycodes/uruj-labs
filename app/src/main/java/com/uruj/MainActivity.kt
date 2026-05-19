@@ -151,6 +151,8 @@ private sealed interface AppScreen {
     data object RhrTrend : AppScreen
     data object Vo2Trend : AppScreen
     data object TsbTrend : AppScreen
+    // v0.9.8 — sleep-hours trend (driven by new SleepSnapshotRepository)
+    data object SleepTrend : AppScreen
     data object LiveData : AppScreen
     data class ViewingPastRide(val summary: StoredRideSummary) : AppScreen
 }
@@ -339,6 +341,7 @@ class MainActivity : ComponentActivity() {
                             onOpenRhrTrend = { screen = AppScreen.RhrTrend },
                             onOpenVo2Trend = { screen = AppScreen.Vo2Trend },
                             onOpenTsbTrend = { screen = AppScreen.TsbTrend },
+                            onOpenSleepTrend = { screen = AppScreen.SleepTrend },
                         )
                         AppScreen.OrthostaticTest -> com.uruj.ui.orthostatic.OrthostaticTestScreen(
                             onBack = { screen = AppScreen.BioLab },
@@ -362,6 +365,9 @@ class MainActivity : ComponentActivity() {
                             onBack = { screen = AppScreen.BioLab },
                         )
                         AppScreen.TsbTrend -> com.uruj.ui.trend.TsbTrendScreen(
+                            onBack = { screen = AppScreen.BioLab },
+                        )
+                        AppScreen.SleepTrend -> com.uruj.ui.trend.SleepTrendScreen(
                             onBack = { screen = AppScreen.BioLab },
                         )
                         is AppScreen.ViewingPastRide -> RideSummaryScreen(

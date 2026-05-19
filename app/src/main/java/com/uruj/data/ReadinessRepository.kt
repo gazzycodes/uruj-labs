@@ -102,6 +102,13 @@ class ReadinessRepository(context: Context) {
     // when Task #105 / v0.5 ships. Same interface, plug-and-play.
     private val reasoner: ReadinessReasoner = RuleBasedReasoner()
     private val recSnapshots = RecommendationSnapshotRepository(appContext)
+    // v0.9.8 — daily sleep-hours persistence so the trend survives HC's 30d
+    // retention. Sleep is a primary Readiness input; pre-v0.9.8 it lived
+    // only in HC. [[reference_snapshot_persistence_architecture]] rule.
+    private val sleepSnapshots = SleepSnapshotRepository(appContext)
+
+    // v0.9.8 — TSB refresh cooldown. Last refresh epoch-ms. 0L = never.
+    @Volatile private var lastTsbRefreshMs: Long = 0L
 
     suspend fun compute(): ReadinessResult = withContext(Dispatchers.IO) {
         val inputs = gatherInputs()
@@ -121,12 +128,55 @@ class ReadinessRepository(context: Context) {
      *   - Only HC reads needed: ExerciseSessionRecord + HeartRateRecord
      *     (for hrTSS), plus what `historyRepo.listAll()` returns from disk.
      *
-     * Returns the latest TSB scalar (rounded value matches what UI shows)
-     * for any caller that wants to display it inline without a disk read.
-     * Logs nothing if no rides + no HC sessions (rider has no training
-     * data yet — TSB undefined).
+     * v0.9.8 — blast-radius throttle. Worst-case rider with ~50 Samsung
+     * non-cycling sessions in 42d = up to 51 HC reads per call. Without
+     * gates, repeated Bio Lab opens could rapidly inflate HC pressure.
+     *
+     * Two gates:
+     *   1. [HcReadGuard.isPostRideQuietWindow]  — skip during the 30s
+     *      post-ride cascade (same rule the full Bio Lab snapshot already
+     *      respects). The TSB snapshot from the morning is still on disk;
+     *      consumers read the slightly-stale value and the next out-of-
+     *      quiet-window open will refresh.
+     *   2. In-memory cooldown — 5 minutes between refreshes. Bio Lab open
+     *      → refresh fires → second open within 5 min → skip. Caps reads
+     *      at 12/hr in worst case (active rider rapid-tabbing through
+     *      surfaces). HC budget stays in v0.8.4 envelope.
+     *
+     * Force-true is intentionally NOT supported here — manual SYNC paths
+     * trigger the full [computeWithDiagnostics] which writes TSB anyway.
+     *
+     * Returns the latest TSB scalar (or cached/null if skipped).
      */
     suspend fun refreshTsbSnapshotForToday(): Float? = withContext(Dispatchers.IO) {
+        // Gate 1: post-ride quiet window
+        if (HcReadGuard.isPostRideQuietWindow()) {
+            Log.d("URUJ-TSB", "[v0.9.8] refresh skipped — post-ride quiet window")
+            return@withContext null
+        }
+        // Gate 2: 5-minute cooldown, BUT always refresh when today's snapshot
+        // is missing (e.g. first compute of a new calendar day). Without this
+        // bypass the cooldown carried over from yesterday's last open would
+        // block the new day's first save → Bio Lab would show yesterday's TSB.
+        val today = LocalDate.now(ZoneId.systemDefault())
+        val todaySnapshotExists = tsbSnapshots.load(today) != null
+        val now = System.currentTimeMillis()
+        val lastRefresh = lastTsbRefreshMs
+        val cooldownActive = lastRefresh != 0L &&
+            now - lastRefresh < TSB_REFRESH_COOLDOWN_MS
+        if (cooldownActive && todaySnapshotExists) {
+            val ageS = (now - lastRefresh) / 1000L
+            Log.d("URUJ-TSB", "[v0.9.8] refresh skipped — last refresh ${ageS}s ago (<300s cooldown)")
+            return@withContext null
+        }
+        if (cooldownActive && !todaySnapshotExists) {
+            Log.d(
+                "URUJ-TSB",
+                "[v0.9.8] cooldown bypassed — new calendar day, no snapshot for $today yet",
+            )
+        }
+        lastTsbRefreshMs = now
+        HcReadGuard.recordRead("readiness.refresh-tsb")
         val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
         if (!sdkOk) {
             return@withContext computeTsb(null, emptySet(), null)
@@ -399,7 +449,29 @@ class ReadinessRepository(context: Context) {
         // Unified LastSleepReader — same source of truth as Bio Lab. Fixes the
         // v0.3.6 mismatch where Readiness showed 5.3h while Bio Lab showed 9.2h
         // on the same user's data because the two summed different windows.
-        val sleep = lastSleepReader.read(client, granted)?.hours
+        // v0.9.8 — read the full sleep result (window endpoints + hours)
+        // so the snapshot can persist start/end times alongside hours.
+        // Sleep is the largest Readiness input (35% weight); persisting it
+        // unlocks the long-arc sleep trend chart + audit trail.
+        val sleepResult = lastSleepReader.read(client, granted)
+        val sleep = sleepResult?.hours
+        if (sleepResult != null) {
+            runCatching {
+                val sleepDate = LocalDate.now(ZoneId.systemDefault())
+                sleepSnapshots.save(
+                    SleepSnapshot(
+                        dateIsoLocal = sleepDate.toString(),
+                        hoursTotal = sleepResult.hours,
+                        sessionStartMs = sleepResult.startedAt.toEpochMilli(),
+                        sessionEndMs = sleepResult.endedAt.toEpochMilli(),
+                        source = "samsung-hc",
+                        methodologyVersion = SleepSnapshotRepository.METHODOLOGY_VERSION,
+                        computedAtMs = System.currentTimeMillis(),
+                    ),
+                    date = sleepDate,
+                )
+            }.onFailure { Log.w("URUJ-Readiness", "[v0.9.8] sleep snapshot save failed", it) }
+        }
 
         // Try direct record first. If Samsung Fit Band 3 doesn't write HRV (varies by
         // firmware) we fall back to a proxy computed from the HR samples it DOES write —
@@ -475,14 +547,15 @@ class ReadinessRepository(context: Context) {
         var hrvDaysOfDataIn7d = 0
         var hrvNightlyRmssdMs: List<Float> = emptyList()
         if (hrvToday == null) {
-            // Try the last sleep window for cleanest signal; fall back to
-            // rolling 8h overnight proxy when no sleep data available.
-            val sleepWindow = lastSleepReader.read(client, granted)
-            val (start, end) = if (sleepWindow != null) {
-                sleepWindow.startedAt to sleepWindow.endedAt
-            } else {
-                now.minus(java.time.Duration.ofHours(8)) to now
-            }
+            // v0.9.8 — use the shared [effectiveHrvWindow] helper so this
+            // path agrees with Bio Lab's Autonomic card when sleep data
+            // is missing. Pre-v0.9.8: Readiness fell back to 8h, Bio Lab
+            // fell back to 24h → divergent RMSSD values on fallback nights.
+            // Now both surfaces share the same fallback (8h overnight
+            // proxy when no sleep session present — matches deep-sleep
+            // duration typical for trained adults).
+            val sleepWindowResult = lastSleepReader.read(client, granted)
+            val (start, end) = effectiveHrvWindow(sleepWindowResult, now)
             val computedHrv = continuousBiometric.computeHrvForWindow(start, end)
             if (computedHrv != null) {
                 hrvToday = computedHrv.rmssdMs
@@ -859,4 +932,35 @@ class ReadinessRepository(context: Context) {
         }
         return results
     }
+
+    companion object {
+        /**
+         * v0.9.8 — minimum gap between TSB-only refreshes. Caps the
+         * blast-radius from a worst-case rider with many Samsung sessions
+         * (~51 HC reads/refresh) at 12 refreshes/hour. Aligned with the
+         * v0.8.4 HC architecture envelope.
+         */
+        private const val TSB_REFRESH_COOLDOWN_MS = 5L * 60L * 1000L
+    }
 }
+
+/**
+ * v0.9.8 — shared HRV-window resolver. Pre-v0.9.8 [ReadinessRepository]
+ * (8h fallback) and [BioLabRepository] (24h fallback) used different
+ * windows when Samsung sleep data was missing — same overnight HRV could
+ * produce two different displayed RMSSD values across the two surfaces.
+ *
+ * Now both call this helper. When sleep session is present, use its
+ * window (the clean signal). When absent, fall back to 8h overnight
+ * proxy (deep-sleep duration typical for trained adults — matches the
+ * window most HRV apps use for ratio-mode baseline).
+ */
+fun effectiveHrvWindow(
+    sleepResult: LastSleepReader.Result?,
+    now: java.time.Instant,
+): Pair<java.time.Instant, java.time.Instant> =
+    if (sleepResult != null) {
+        sleepResult.startedAt to sleepResult.endedAt
+    } else {
+        now.minus(java.time.Duration.ofHours(8)) to now
+    }
