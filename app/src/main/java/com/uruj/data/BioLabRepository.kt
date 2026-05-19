@@ -63,6 +63,10 @@ class BioLabRepository(context: Context) {
     private val rhrSnapshots = RhrSnapshotRepository(appContext)
     // v0.9.1 — daily VO2 max snapshots (URUJ + Samsung side-by-side).
     private val vo2Snapshots = Vo2SnapshotRepository(appContext)
+    // v0.9.11 — Bio Lab dual-saves SleepSnapshot during snapshot() so a
+    // LAB-tab-direct entry refreshes today's sleep data without waiting
+    // for Readiness compute. Past dates stay immutable per v0.9.8 rule.
+    private val sleepSnapshots = SleepSnapshotRepository(appContext)
 
     suspend fun snapshot(): BioLabSnapshot = withContext(Dispatchers.IO) {
         val profile = profileStore.current()
@@ -363,6 +367,28 @@ class BioLabRepository(context: Context) {
         // fallback, Readiness used 8h fallback → divergent values on fallback
         // nights.
         val sleepWindow = lastSleepReader.read(client, granted)
+        // v0.9.11 — also persist today's sleep snapshot when Bio Lab opens
+        // independently of Checklist (e.g. LAB-tab-direct entry from app
+        // restore). Sleep snapshot was previously only written by Readiness
+        // compute, leaving a gap if Bio Lab ran first. Today-mutable rule
+        // from v0.9.8 lets us safely overwrite; past dates stay immutable.
+        if (sleepWindow != null) {
+            runCatching {
+                val today = java.time.LocalDate.now(java.time.ZoneId.systemDefault())
+                sleepSnapshots.save(
+                    SleepSnapshot(
+                        dateIsoLocal = today.toString(),
+                        hoursTotal = sleepWindow.hours,
+                        sessionStartMs = sleepWindow.startedAt.toEpochMilli(),
+                        sessionEndMs = sleepWindow.endedAt.toEpochMilli(),
+                        source = "samsung-hc",
+                        methodologyVersion = SleepSnapshotRepository.METHODOLOGY_VERSION,
+                        computedAtMs = System.currentTimeMillis(),
+                    ),
+                    date = today,
+                )
+            }.onFailure { Log.w(TAG, "[v0.9.11] sleep snapshot dual-save failed", it) }
+        }
         val (hrvWindowStart, hrvWindowEnd) = effectiveHrvWindow(sleepWindow, now)
         val autonomicHrv = continuousBiometric.computeHrvForWindow(hrvWindowStart, hrvWindowEnd)
         val autonomicSampleCount = autonomicHrv?.sampleCount ?: 0

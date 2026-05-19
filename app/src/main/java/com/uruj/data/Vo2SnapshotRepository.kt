@@ -114,6 +114,66 @@ class Vo2SnapshotRepository(context: Context) {
         baseDir.listFiles { f -> f.isFile && f.extension == "json" }?.size ?: 0
     }
 
+    /**
+     * v0.9.11 — backfill historical VO2 snapshots from the RHR snapshots
+     * already on disk. Pure compute, NO HC reads. Uses the current
+     * profile's MaxHR (the rider's MaxHR doesn't change much month-to-month
+     * for trained athletes; if they re-test, future Bio Lab opens
+     * overwrite-today with the new value via past-immutable rule). Cooper
+     * classification re-applied per historical date.
+     *
+     * For each RhrSnapshot on disk: VO2 ≈ 15.3 × (maxHr / rhrBpm).
+     * Skips today (forward-save owns it). Skips dates already on disk.
+     * Idempotent.
+     *
+     * Returns count of new snapshots created.
+     */
+    suspend fun backfillFromRhr(
+        rhrSnapshots: RhrSnapshotRepository,
+        maxHr: Int,
+    ): Int = withContext(Dispatchers.IO) {
+        val rhrEntries = rhrSnapshots.listAll()
+        if (rhrEntries.isEmpty() || maxHr < 100) {
+            Log.d(TAG, "[v0.9.11] backfill: no RHR entries or invalid maxHr=$maxHr")
+            return@withContext 0
+        }
+        val today = LocalDate.now()
+        var written = 0
+        for (rhr in rhrEntries) {
+            val date = runCatching { LocalDate.parse(rhr.dateIsoLocal) }.getOrNull() ?: continue
+            if (date == today) continue  // forward-save owns today
+            if (load(date) != null) continue  // already backfilled
+            if (rhr.medianBpm < 30 || rhr.medianBpm > 100) continue  // sanity
+            val vo2HrBased = 15.3f * (maxHr.toFloat() / rhr.medianBpm.toFloat())
+            val classification = classifyCooper(vo2HrBased)
+            val saved = save(
+                Vo2Snapshot(
+                    dateIsoLocal = date.toString(),
+                    urujConsensusMlKgMin = vo2HrBased,
+                    urujHrBasedMlKgMin = vo2HrBased,
+                    urujPowerBasedMlKgMin = null,  // historical: no FTP context
+                    samsungMlKgMin = null,
+                    classification = classification,
+                    methodologyVersion = "v0.9.11-backfill-uth-sorensen-from-disk-rhr",
+                    computedAtMs = System.currentTimeMillis(),
+                ),
+                date = date,
+            )
+            if (saved) written++
+        }
+        Log.d(TAG, "[v0.9.11] backfill: $written new VO2 snapshots from disk RHR (${rhrEntries.size} RHR nights)")
+        written
+    }
+
+    /** Cooper classification (male, 20-29). Adjust if rider profile age expands later. */
+    private fun classifyCooper(vo2: Float): String = when {
+        vo2 >= 60f -> "Elite (top 5%)"
+        vo2 >= 52f -> "Excellent"
+        vo2 >= 47f -> "Good"
+        vo2 >= 42f -> "Above average"
+        else -> "Average or below"
+    }
+
     companion object {
         private const val TAG = "URUJ-Vo2Snap"
         const val METHODOLOGY_VERSION = "v0.4.0-uth-sorensen"

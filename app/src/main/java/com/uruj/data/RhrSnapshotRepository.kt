@@ -133,6 +133,104 @@ class RhrSnapshotRepository(context: Context) {
         baseDir.listFiles { f -> f.isFile && f.extension == "json" }?.size ?: 0
     }
 
+    /**
+     * v0.9.11 — one-time backfill from HC retention window.
+     *
+     * Iterates over historical [com.uruj.data.SleepSnapshot] entries (already
+     * persisted by v0.9.9's sleep backfill or forward-saves). For each past
+     * night with a sleep snapshot AND HC HR samples within the sleep window,
+     * runs [com.uruj.power.SleepingRhrCalculator] on that single night's
+     * data and saves the resulting single-night RHR as a [RhrSnapshot].
+     *
+     * Semantic note: forward-saved entries (from BioLab compute) have
+     * `medianBpm` = rolling 8-night median across nights. Backfilled entries
+     * have `medianBpm` = single-night value with `nightsContributing = 1`
+     * + methodology tag "v0.9.11-backfill-single-night-from-hc". Trend chart
+     * mixes both — the methodology tag in the readings list distinguishes.
+     * Future improvement: re-compute rolling median for backfilled days where
+     * 8 days of HC data is still available.
+     *
+     * - One HC HR samples read for the entire retention window
+     * - Buckets per night via sleep snapshot window endpoints
+     * - Past-date immutability rejects overwrites — idempotent re-run
+     * - Gated by [HcReadGuard.isPostRideQuietWindow]
+     */
+    suspend fun backfillFromHc(
+        client: androidx.health.connect.client.HealthConnectClient,
+        granted: Set<String>,
+        sleepSnapshots: SleepSnapshotRepository,
+        sleepingRhrCalc: com.uruj.power.SleepingRhrCalculator,
+        days: Int = 30,
+    ): Int = withContext(Dispatchers.IO) {
+        if (HcReadGuard.isPostRideQuietWindow()) {
+            Log.d(TAG, "[v0.9.11] backfill skipped — post-ride quiet window")
+            return@withContext 0
+        }
+        val sleeps = sleepSnapshots.listAll()
+        if (sleeps.isEmpty()) {
+            Log.d(TAG, "[v0.9.11] backfill: no sleep snapshots — nothing to do")
+            return@withContext 0
+        }
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val hrPerm = androidx.health.connect.client.permission.HealthPermission.getReadPermission(
+            androidx.health.connect.client.records.HeartRateRecord::class,
+        )
+        if (hrPerm !in granted) {
+            Log.d(TAG, "[v0.9.11] backfill skipped — HR perm missing")
+            return@withContext 0
+        }
+        HcReadGuard.recordRead("backfill.rhr")
+        val now = java.time.Instant.now()
+        val from = now.minus(java.time.Duration.ofDays(days.toLong()))
+        val hrSamples = runCatching {
+            client.readRecords(
+                androidx.health.connect.client.request.ReadRecordsRequest(
+                    recordType = androidx.health.connect.client.records.HeartRateRecord::class,
+                    timeRangeFilter = androidx.health.connect.client.time.TimeRangeFilter.between(from, now),
+                    ascendingOrder = false,
+                    pageSize = 5_000,
+                ),
+            ).records.flatMap { it.samples }.map { it.time to it.beatsPerMinute.toInt() }
+        }.onFailure { Log.w(TAG, "[v0.9.11] HR samples read failed", it) }
+            .getOrDefault(emptyList())
+        if (hrSamples.isEmpty()) {
+            Log.d(TAG, "[v0.9.11] backfill: no HC HR samples in window")
+            return@withContext 0
+        }
+        var written = 0
+        for (sleep in sleeps) {
+            val date = runCatching { LocalDate.parse(sleep.dateIsoLocal) }.getOrNull() ?: continue
+            if (date == today) continue  // forward-save path owns today
+            if (load(date) != null) continue  // already backfilled
+            val sleepStart = java.time.Instant.ofEpochMilli(sleep.sessionStartMs)
+            val sleepEnd = java.time.Instant.ofEpochMilli(sleep.sessionEndMs)
+            val nightSamples = hrSamples.filter { (t, _) -> t in sleepStart..sleepEnd }
+            if (nightSamples.size < 30) continue  // not enough data for a reliable median
+            val sleepingResult = sleepingRhrCalc.compute(
+                hcSamples = nightSamples,
+                sleepWindows = listOf(sleepStart to sleepEnd),
+                strapSamples = emptyList(),  // historical: no strap NDJSON for back-dates
+            ) ?: continue
+            val saved = save(
+                RhrSnapshot(
+                    dateIsoLocal = date.toString(),
+                    medianBpm = sleepingResult.mostRecentNightBpm,
+                    mostRecentNightBpm = sleepingResult.mostRecentNightBpm,
+                    mostRecentNightEndMs = sleep.sessionEndMs,
+                    mostRecentNightSource = SensorSource.BAND.name,  // historical = HC band
+                    nightsContributing = 1,
+                    methodologyVersion = "v0.9.11-backfill-single-night-from-hc",
+                    computedAtMs = System.currentTimeMillis(),
+                ),
+                date = date,
+            )
+            if (saved) written++
+        }
+        Log.d(TAG, "[v0.9.11] backfill: $written new RHR snapshots from HC (${sleeps.size} sleep nights available)")
+        written
+    }
+
     companion object {
         private const val TAG = "URUJ-RhrSnap"
 
