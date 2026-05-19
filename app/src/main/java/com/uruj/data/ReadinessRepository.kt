@@ -46,7 +46,8 @@ data class ReadinessDiagnostics(
     val rideSummariesAll: Int,
     /**
      * Short label telling the UI where the RHR input came from. "direct" =
-     * RestingHeartRateRecord existed; "sleep" = derived via SleepingRhrCalculator;
+     * RestingHeartRateRecord existed; "sleep" or "sleep:<sensor>" = derived via
+     * SleepingRhrCalculator (sensor suffix is strap/band/mixed/legacy per v0.7.7);
      * "proxy" = HR-sample percentile fallback (no sleep data); null = no RHR data
      * available at all. Prevents the misleading "0 RHR" diagnostics line when
      * the readiness score actually used a derived value.
@@ -54,11 +55,21 @@ data class ReadinessDiagnostics(
     val rhrSourceLabel: String? = null,
     /**
      * Same idea for HRV. "direct" = HeartRateVariabilityRmssdRecord existed
-     * (rare on Fit Band 3 — needs RR intervals from chest strap); "proxy" =
-     * std-dev of HR samples (Garmin/Fitbit pre-strap pattern); null = no HRV
-     * input available. Real RMSSD HRV unlocks with BLE chest strap (v1.5).
+     * (rare on Fit Band 3 — needs RR intervals from chest strap); "ble_strap" =
+     * computed from URUJ's overnight RR-interval NDJSON via Magene H613 (v0.7.0);
+     * "proxy" = std-dev of HR samples (Garmin/Fitbit pre-strap pattern); null =
+     * no HRV input available.
      */
     val hrvSourceLabel: String? = null,
+    /**
+     * v0.9.3 — count of overnight HRV nights in the last 7 days computed from
+     * URUJ's BLE NDJSON (Magene H613 → 24/7 BiometricService). Separate from
+     * [hrvRecords7d] which counts HC RmssdRecord writes (always 0 unless using
+     * a sensor that writes that record type; Fit Band 3 and H613 both don't).
+     * Surfaces "HRV(strap · 2n) ✓" in the Pipeline label so the rider isn't
+     * misled by HC's "0 HRV records" when URUJ owns the HRV data path.
+     */
+    val urujHrvNights7d: Int = 0,
 )
 
 /**
@@ -93,13 +104,14 @@ class ReadinessRepository(context: Context) {
      */
     suspend fun computeWithDiagnostics(): ReadinessSnapshot = withContext(Dispatchers.IO) {
         val diagnostics = collectDiagnostics()
-        val (inputs, rhrSource, hrvSource) = gatherInputsWithSource()
-        val result = calculator.compute(inputs)
+        val gathered = gatherInputsWithSource()
+        val result = calculator.compute(gathered.inputs)
         ReadinessSnapshot(
             result = result,
             diagnostics = diagnostics.copy(
-                rhrSourceLabel = rhrSource,
-                hrvSourceLabel = hrvSource,
+                rhrSourceLabel = gathered.rhrSource,
+                hrvSourceLabel = gathered.hrvSource,
+                urujHrvNights7d = gathered.urujHrvNights7d,
             ),
             computedAtMs = System.currentTimeMillis(),
         )
@@ -169,32 +181,48 @@ class ReadinessRepository(context: Context) {
             .getOrDefault(0)
     }
 
-    private suspend fun gatherInputs(): ReadinessInputs = gatherInputsWithSource().first
+    private suspend fun gatherInputs(): ReadinessInputs = gatherInputsWithSource().inputs
 
     /**
-     * Returns the inputs PLUS a short label naming where RHR came from:
-     *   "direct" — Samsung wrote RestingHeartRateRecord directly
-     *   "sleep"  — derived via SleepingRhrCalculator from sleep + HR samples
-     *   "proxy"  — HR-sample percentile fallback (last resort)
-     *   null     — no RHR data at all
-     * The UI uses this to replace the misleading "0 RHR" diagnostics line with
-     * "RHR(sleep)" when the readiness score actually had a derived value.
+     * v0.9.3 — named result for [gatherInputsWithSource]. Replaces the prior
+     * Triple<ReadinessInputs, String?, String?> shape so adding new diagnostics
+     * fields (URUJ HRV nights count, future source labels) doesn't require
+     * touching every call site.
      */
-    private suspend fun gatherInputsWithSource(): Triple<ReadinessInputs, String?, String?> {
+    private data class GatheredInputs(
+        val inputs: ReadinessInputs,
+        /** "direct" / "sleep" / "sleep:strap" / "sleep:band" / "sleep:mixed" /
+         *  "sleep:legacy" / "proxy" / null. */
+        val rhrSource: String?,
+        /** "direct" / "ble_strap" / "proxy" / null. */
+        val hrvSource: String?,
+        /** Count of overnight HRV nights captured from URUJ NDJSON in last 7d. */
+        val urujHrvNights7d: Int,
+    )
+
+    /**
+     * Returns the inputs PLUS source labels naming where RHR / HRV came from.
+     * The UI uses these to replace misleading "0 RHR" / "0 HRV" diagnostics
+     * with proper source-aware text when the readiness score actually had
+     * a derived value via SleepingRhrCalculator or URUJ NDJSON.
+     */
+    private suspend fun gatherInputsWithSource(): GatheredInputs {
         // If Health Connect isn't available, fall back to cycling-only TSB.
         val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
         if (!sdkOk) {
-            return Triple(
-                ReadinessInputs(trainingStressBalance = computeTsb(null, emptySet(), null)),
-                null,
-                null,
+            return GatheredInputs(
+                inputs = ReadinessInputs(trainingStressBalance = computeTsb(null, emptySet(), null)),
+                rhrSource = null,
+                hrvSource = null,
+                urujHrvNights7d = 0,
             )
         }
         val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
-            ?: return Triple(
-                ReadinessInputs(trainingStressBalance = computeTsb(null, emptySet(), null)),
-                null,
-                null,
+            ?: return GatheredInputs(
+                inputs = ReadinessInputs(trainingStressBalance = computeTsb(null, emptySet(), null)),
+                rhrSource = null,
+                hrvSource = null,
+                urujHrvNights7d = 0,
             )
 
         val granted = runCatching { client.permissionController.getGrantedPermissions() }
@@ -336,8 +364,8 @@ class ReadinessRepository(context: Context) {
             )
         }
 
-        return Triple(
-            ReadinessInputs(
+        return GatheredInputs(
+            inputs = ReadinessInputs(
                 sleepLastNightHours = sleep,
                 hrvTodayRmssd = hrvToday,
                 hrvBaseline7d = hrvBaseline,
@@ -346,8 +374,9 @@ class ReadinessRepository(context: Context) {
                 trainingStressBalance = tsbDetailed?.tsb,
                 hrvDaysOfDataIn7d = hrvDaysOfDataIn7d,
             ),
-            rhrSource,
-            hrvSource,
+            rhrSource = rhrSource,
+            hrvSource = hrvSource,
+            urujHrvNights7d = hrvDaysOfDataIn7d,
         )
     }
 
