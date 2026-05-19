@@ -147,6 +147,10 @@ private sealed interface AppScreen {
     data object Hrr1Trend : AppScreen
     data object CarTrend : AppScreen
     data object OrthostaticTrend : AppScreen
+    // v0.9.6 — disk-snapshot trend screens for RHR / VO2 / TSB
+    data object RhrTrend : AppScreen
+    data object Vo2Trend : AppScreen
+    data object TsbTrend : AppScreen
     data object LiveData : AppScreen
     data class ViewingPastRide(val summary: StoredRideSummary) : AppScreen
 }
@@ -332,6 +336,9 @@ class MainActivity : ComponentActivity() {
                             onOpenHrr1Trend = { screen = AppScreen.Hrr1Trend },
                             onOpenCarTrend = { screen = AppScreen.CarTrend },
                             onOpenOrthostaticTrend = { screen = AppScreen.OrthostaticTrend },
+                            onOpenRhrTrend = { screen = AppScreen.RhrTrend },
+                            onOpenVo2Trend = { screen = AppScreen.Vo2Trend },
+                            onOpenTsbTrend = { screen = AppScreen.TsbTrend },
                         )
                         AppScreen.OrthostaticTest -> com.uruj.ui.orthostatic.OrthostaticTestScreen(
                             onBack = { screen = AppScreen.BioLab },
@@ -346,6 +353,15 @@ class MainActivity : ComponentActivity() {
                             onBack = { screen = AppScreen.BioLab },
                         )
                         AppScreen.OrthostaticTrend -> com.uruj.ui.trend.OrthostaticTrendScreen(
+                            onBack = { screen = AppScreen.BioLab },
+                        )
+                        AppScreen.RhrTrend -> com.uruj.ui.trend.RhrTrendScreen(
+                            onBack = { screen = AppScreen.BioLab },
+                        )
+                        AppScreen.Vo2Trend -> com.uruj.ui.trend.Vo2TrendScreen(
+                            onBack = { screen = AppScreen.BioLab },
+                        )
+                        AppScreen.TsbTrend -> com.uruj.ui.trend.TsbTrendScreen(
                             onBack = { screen = AppScreen.BioLab },
                         )
                         is AppScreen.ViewingPastRide -> RideSummaryScreen(

@@ -149,14 +149,22 @@ fun TrendChart(
             sortedPoints.forEach { p ->
                 val x = xFor(p.labelMs)
                 val y = yToPixel(p.y, yMin, yMax, plotTop, plotH)
+                // v0.9.6 — saved-vs-fresh visual. Today's freshly-computed
+                // reading gets a brighter ring + bigger inner dot. Historical
+                // dots (disk-persisted from prior days) render at standard
+                // density. Conveys "this dot is TODAY, the rest are saved
+                // history" without UI clutter.
+                val outerAlpha = if (p.isToday) 0.55f else 0.25f
+                val outerRadius = if (p.isToday) 12f else 9f
+                val innerRadius = if (p.isToday) 6.5f else 5f
                 // Outer glow ring
                 drawCircle(
-                    color = lineColor.copy(alpha = 0.25f),
-                    radius = 9f,
+                    color = lineColor.copy(alpha = outerAlpha),
+                    radius = outerRadius,
                     center = Offset(x, y),
                 )
                 // Inner solid dot
-                drawCircle(color = lineColor, radius = 5f, center = Offset(x, y))
+                drawCircle(color = lineColor, radius = innerRadius, center = Offset(x, y))
             }
 
             // ── 6) X-axis labels (date range at endpoints) ─────────────────
@@ -193,6 +201,16 @@ fun TrendChart(
 data class TrendPoint(
     val labelMs: Long,
     val y: Float,
+    /**
+     * v0.9.6 — saved-vs-fresh visual indicator. When true the chart renders
+     * a brighter outline + bigger inner dot so today's freshly-computed
+     * reading visually stands out from disk-persisted historical readings.
+     * Per [[reference_snapshot_persistence_architecture]] every dot here is
+     * persisted to disk daily — this flag distinguishes "today's value just
+     * landed" from "previously-saved historical value." Default false keeps
+     * old call sites working.
+     */
+    val isToday: Boolean = false,
 )
 
 data class TierBand(

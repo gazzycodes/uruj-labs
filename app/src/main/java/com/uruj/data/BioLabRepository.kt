@@ -278,19 +278,29 @@ class BioLabRepository(context: Context) {
         // for max HR auto-detect + sleeping RHR + 30d peak), so passing them
         // through costs nothing.
         val newHrrResult: HrRecoveryCalculator.Result? = if (newSessionEnds.isNotEmpty()) {
-            Log.d(
-                TAG,
-                "[v0.9.1] HRR1 disk-first: ${newSessionEnds.size} new session(s) — computing from HC + strap",
-            )
-            hrrCalc.compute(
+            val result = hrrCalc.compute(
                 exerciseSessionEndTimes = newSessionEnds,
                 hcHrSamples = hrTimed30d,
                 strapHrSamples = strapHrSamples30d,
             )
+            // v0.9.6 — tighter log line. Pre-fix said "21 new session(s)" which
+            // counted ALL exercise-session ends (URUJ + Samsung), most of which
+            // didn't qualify for HRR1 (low effort, no HR coverage). Now reports
+            // evaluated → qualified → on-disk to make the actual outcome
+            // visible. "21 evaluated · 2 qualified · 11 already on disk" tells
+            // the rider the data is right; "21 new session(s) — computing"
+            // implied 21 new readings were about to land, which was misleading.
+            Log.d(
+                TAG,
+                "[v0.9.6] HRR1 disk-first: ${newSessionEnds.size} evaluated · " +
+                    "${result?.samples?.size ?: 0} qualified · " +
+                    "${diskHrrSnapshots.size} already on disk",
+            )
+            result
         } else {
             Log.d(
                 TAG,
-                "[v0.9.1] HRR1 disk-first: all ${diskHrrSnapshots.size} sessions on disk — no new compute",
+                "[v0.9.6] HRR1 disk-first: all ${diskHrrSnapshots.size} sessions on disk — no new compute",
             )
             null
         }
