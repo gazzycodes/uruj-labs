@@ -39,14 +39,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.uruj.BuildConfig
+import com.uruj.data.RiderProfileStore
 import com.uruj.domain.PowerZone
 import com.uruj.power.ElevationTracker
+import com.uruj.power.KarvonenZonesCalculator
 import com.uruj.service.RideState
 import com.uruj.service.RideStateHolder
 import com.uruj.weather.WeatherStatus
@@ -63,7 +66,6 @@ import com.uruj.ui.theme.UrujZone3
 import com.uruj.ui.theme.UrujZone4
 import com.uruj.ui.theme.UrujZone5
 import kotlinx.coroutines.delay
-import kotlin.math.absoluteValue
 
 @Composable
 fun HudScreen(onStopRide: () -> Unit) {
@@ -130,7 +132,10 @@ fun HudScreen(onStopRide: () -> Unit) {
             Spacer(Modifier.height(2.dp))
             WindRow(state)
             Spacer(Modifier.height(4.dp))
-            SpeedHero(state)
+            // v0.9.16 — twin heroes (HR + Speed) at the top so HR never
+            // scrolls offscreen. HR uses Karvonen zone color from the rider's
+            // profile (same source-of-truth as TIZ/Route map/Audio coach).
+            TwinHero(state)
             Spacer(Modifier.height(12.dp))
             PowerBlock(state, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(12.dp))
@@ -509,6 +514,122 @@ private fun SpeedHero(state: RideState) {
     }
 }
 
+/**
+ * v0.9.16 — twin heroes. HR (left) + Speed (right), both hero-sized so they
+ * compete for the rider's glance equally. HR is Karvonen zone-colored using
+ * the rider's profile maxHR + restingHR (single source of truth shared with
+ * TIZ, Route map, Audio coach — see [KarvonenZonesCalculator]).
+ *
+ * Why this exists: pre-v0.9.16 the HEART RATE row sat inside StatsGrid at
+ * 22sp and scrolled offscreen on shorter phones once the v0.8.0/0.8.1 stack
+ * (SessionIntentBar + Waveform + StrapRow) grew the upper section. Rider
+ * had to scroll mid-ride to see live HR — defeats the lab-grade live HR
+ * promise. Twin heroes pin HR + Speed above the scroll seam.
+ *
+ * BLE-first HR (sub-100ms latency on strap), HC-batched fallback. Same
+ * cascade as the old StatsGrid HEART RATE cell — no data-flow change.
+ *
+ * Subtle pulse only when HR is present + above Z3 (effort signal — the
+ * rider's eye gets drawn to high-effort moments, not idle baseline).
+ */
+@Composable
+private fun TwinHero(state: RideState) {
+    val context = LocalContext.current
+    val profileStore = remember { RiderProfileStore(context) }
+    val profile by profileStore.profile.collectAsStateWithLifecycle(
+        initialValue = com.uruj.domain.RiderProfile(),
+    )
+
+    val hr = state.bleLiveBpm ?: state.latestSample?.hrBpm
+    val hrFromBle = state.bleLiveBpm != null
+
+    // Karvonen zone color (0..5; 0 = below Z1). Same classifier every other
+    // HR-zone surface uses. Falls back to muted when HR or profile invalid.
+    val zoneColor = if (hr != null && profile.maxHrBpm > profile.restingHrBpm) {
+        val z = KarvonenZonesCalculator.classifyKarvonenZone(
+            hrBpm = hr,
+            hrMax = profile.maxHrBpm,
+            hrRest = profile.restingHrBpm.coerceAtLeast(40),
+        )
+        when (z) {
+            0, 1 -> UrujZone1
+            2 -> UrujZone2
+            3 -> UrujZone3
+            4 -> UrujZone4
+            else -> UrujZone5
+        }
+    } else UrujMuted
+
+    // Pulse only at Z3+ (tempo / threshold / VO2) — calm baseline reads steady.
+    val infinite = rememberInfiniteTransition(label = "hr_pulse")
+    val pulse by infinite.animateFloat(
+        initialValue = 0.65f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(700),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "hr_pulse_alpha",
+    )
+    val pulseAlpha = if (hr != null && zoneColor != UrujMuted && zoneColor != UrujZone1 && zoneColor != UrujZone2) pulse else 1f
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        // HR — left
+        Column(
+            modifier = Modifier.weight(1f),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = hr?.toString() ?: "—",
+                color = zoneColor.copy(alpha = pulseAlpha),
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Black,
+                fontSize = 84.sp,
+                letterSpacing = (-3).sp,
+                maxLines = 1,
+            )
+            Text(
+                text = when {
+                    hr == null -> "BPM · no source"
+                    hrFromBle -> "BPM · strap"
+                    else -> "BPM · band"
+                },
+                color = UrujMuted,
+                fontWeight = FontWeight.Black,
+                fontSize = 10.sp,
+                letterSpacing = 3.sp,
+                maxLines = 1,
+            )
+        }
+        // Speed — right
+        Column(
+            modifier = Modifier.weight(1f),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = formatSpeed(state.currentSpeedKph),
+                color = UrujAccent,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Black,
+                fontSize = 84.sp,
+                letterSpacing = (-3).sp,
+                maxLines = 1,
+            )
+            Text(
+                text = "KPH",
+                color = UrujMuted,
+                fontWeight = FontWeight.Black,
+                fontSize = 10.sp,
+                letterSpacing = 6.sp,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
 @Composable
 private fun PowerBlock(state: RideState, modifier: Modifier = Modifier) {
     val zone = state.currentZone
@@ -600,12 +721,10 @@ private fun ZoneBar(currentZone: PowerZone?) {
 
 @Composable
 private fun StatsGrid(state: RideState, modifier: Modifier = Modifier) {
-    // v0.5.2 — prefer the BLE live BPM (beat-by-beat, sub-100ms latency)
-    // when a chest strap is streaming. Fall back to HC-batched HR otherwise.
-    val hr = state.bleLiveBpm ?: state.latestSample?.hrBpm
-    val hrAge = if (state.bleLiveBpm != null) 0L else state.latestSample?.hrAgeMs
-    val hrFromBle = state.bleLiveBpm != null
-
+    // v0.9.16 — HEART RATE row removed. HR now lives in [TwinHero] at the
+    // top of the HUD as a hero readout (was 22sp inside this grid; scrolled
+    // offscreen on shorter phones). MAX HR (in-ride peak observed) takes
+    // its slot here so the rider still has the post-ride number in view.
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(16.dp))
@@ -632,17 +751,14 @@ private fun StatsGrid(state: RideState, modifier: Modifier = Modifier) {
         )
         Divider()
         StatRow(
+            // v0.9.16: peak HR seen in-ride. Previously had no visible home
+            // (only surfaced post-ride). Useful live to know whether today's
+            // peak crossed personal milestones.
             left = Stat(
-                label = "HEART RATE",
-                value = hr?.toString() ?: "—",
-                // BLE samples are real-time, no need for "Xs ago" — show the
-                // source instead. HC samples keep the freshness label.
-                unit = when {
-                    hr == null -> "no live source"
-                    hrFromBle -> "strap"
-                    else -> freshnessLabel(hrAge) ?: "live"
-                },
-                accent = if (hr != null) UrujNeonMagenta else UrujMuted,
+                label = "MAX HR",
+                value = if (state.maxHrBpmObserved > 0) state.maxHrBpmObserved.toString() else "—",
+                unit = if (state.maxHrBpmObserved > 0) "bpm" else null,
+                accent = if (state.maxHrBpmObserved > 0) UrujNeonMagenta else UrujMuted,
             ),
             // v0.3.7: 30s-checkpoint heartbeat. Lets the rider verify the
             // service is alive even when the phone is backgrounded (the
@@ -856,12 +972,3 @@ private fun formatDuration(millis: Long): String {
     return "%d:%02d:%02d".format(h, m, s)
 }
 
-private fun freshnessLabel(ageMs: Long?): String? {
-    if (ageMs == null) return null
-    val seconds = ageMs / 1000
-    return when {
-        seconds.absoluteValue < 5 -> "live"
-        seconds < 60 -> "${seconds}s ago"
-        else -> "${seconds / 60}m ago"
-    }
-}
