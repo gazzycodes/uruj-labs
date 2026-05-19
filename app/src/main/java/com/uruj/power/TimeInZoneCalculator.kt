@@ -3,21 +3,30 @@ package com.uruj.power
 import java.time.Instant
 
 /**
- * Computes time spent in each %max-HR zone for a recorded ride. Designed for
- * POST-RIDE analysis on Fit Band 3 — Samsung's HR batch sync lands in Health
- * Connect 5-30 min after workout ends, so live time-in-zone tracking during
- * the ride isn't reliable. After the batch arrives, we time-align the samples
- * and compute accurate zone distribution.
+ * Computes time spent in each Karvonen zone for a recorded ride.
  *
- * Same %max-HR thresholds as RouteMapViewModel (Z1<60%, Z2<70%, Z3<80%,
- * Z4<90%, Z5≥90%) so the visualization (route map polyline) and analysis
- * (this calculator) are consistent.
+ * v0.9.14 — migrated from %max-HR to Karvonen (HR Reserve). The two systems
+ * disagree meaningfully for trained athletes: rider with RHR 43, max 194 at
+ * 130 bpm reads as 67% max (Z2) under old system but 58% HRR (Z1) under
+ * Karvonen. Karvonen is more accurate because it accounts for the rider's
+ * specific reserve range, not just absolute %-of-max which treats untrained
+ * and elite the same.
  *
- * Polarized training compliance metric included — Blummenfelt's discipline
- * benchmark: 80% easy (Z1-Z2), ~0% gray (Z3), 20% hard (Z4-Z5). The Z3 "gray
- * zone" is the common training trap — not easy enough for aerobic base, not
- * hard enough for threshold/VO2 work. Tracking time spent in each band gives
- * the rider an honest weekly compliance signal.
+ * All zone-rendering surfaces (TIZ card, Route map polyline, HUD waveform,
+ * Audio coach, Polarized 80/20) now share
+ * [KarvonenZonesCalculator.classifyKarvonenZone] as the single classifier.
+ *
+ * Past-ride retroactive re-classification: zones are NOT stored in
+ * StoredRideSummary — recomputed on each summary open from saved HR
+ * samples. So past rides re-bucket under the new system automatically.
+ * Same HR data, more accurate math.
+ *
+ * Polarized training compliance metric: 80% easy (Z1-Z2), ~0% gray (Z3),
+ * 20% hard (Z4-Z5). Blummenfelt/Seiler/Stöggl Norwegian-method discipline.
+ * The Z3 "gray zone" trap stays the same concept; thresholds shift slightly
+ * with Karvonen. For trained athletes with low RHR, the new system
+ * typically shows MORE time in Z1-Z2 (better polarized compliance) because
+ * %-of-max under-counted "easy" zone for them.
  */
 class TimeInZoneCalculator {
 
@@ -60,11 +69,16 @@ class TimeInZoneCalculator {
     /**
      * @param samples sorted ascending by timestamp, (Instant, bpm) pairs from HC
      * @param maxHrBpm rider's max HR (formula or measured)
+     * @param restingHrBpm rider's Athletic RHR (sleep-window median). Required
+     *   for Karvonen — Karvonen needs HR Reserve = max - rest. v0.9.14+ all
+     *   callers pass profile.restingHrBpm. Defaults to 50 (athletic floor) if
+     *   the rider profile hasn't populated yet.
      * @param rideEndMs ride end timestamp; used to cap the trailing sample's contribution
      */
     fun compute(
         samples: List<Pair<Instant, Int>>,
         maxHrBpm: Int,
+        restingHrBpm: Int,
         rideEndMs: Long,
     ): Result? {
         if (samples.size < 2 || maxHrBpm <= 0) return null
@@ -89,7 +103,21 @@ class TimeInZoneCalculator {
             if (deltaMs > maxGapMs) continue
             if (deltaMs == 0L) continue
 
-            val zoneIdx = classifyZoneIndex(bpm, maxHrBpm)
+            // v0.9.14 — Karvonen classification. Returns 0..5; we collapse the
+            // "below Z1" bucket (return 0) into Z1 (index 0 here) for the
+            // 5-zone bar chart + polarized compliance compatibility.
+            // KarvonenZonesCalculator.classifyKarvonenZone returns 1-5 for in-
+            // band readings and 0 for sub-recovery (resting / coast). We map
+            // 0 → bar-chart index 0 = Z1, and 1-5 → indices 0-4.
+            val karvonenZone = KarvonenZonesCalculator.classifyKarvonenZone(
+                hrBpm = bpm,
+                hrMax = maxHrBpm,
+                hrRest = restingHrBpm,
+            )
+            val zoneIdx = when (karvonenZone) {
+                0 -> 0      // below Z1 → display as Z1 for bar chart
+                else -> (karvonenZone - 1).coerceIn(0, 4)
+            }
             zoneMs[zoneIdx] = zoneMs[zoneIdx] + deltaMs
             totalMs += deltaMs
             sampleCount++
@@ -109,17 +137,5 @@ class TimeInZoneCalculator {
             hardPct = hardMs.toFloat() / totalMs,
             sampleCount = sampleCount,
         )
-    }
-
-    /** %max-HR zone classification. Z1<60%, Z2<70%, Z3<80%, Z4<90%, Z5≥90%. */
-    private fun classifyZoneIndex(bpm: Int, maxHrBpm: Int): Int {
-        val pct = bpm.toFloat() / maxHrBpm
-        return when {
-            pct < 0.60f -> 0
-            pct < 0.70f -> 1
-            pct < 0.80f -> 2
-            pct < 0.90f -> 3
-            else -> 4
-        }
     }
 }

@@ -80,7 +80,12 @@ class RouteMapViewModel(application: Application) : AndroidViewModel(application
             val zonedPoints = augmentedPoints.map { sample ->
                 ZonedPoint(
                     sample = sample,
-                    zone = sample.hrBpm?.let { hr -> classifyZone(hr, profile.maxHrBpm) },
+                    // v0.9.14 — Karvonen classification using profile RHR.
+                    // Matches TIZ card + HUD + audio coach. Pre-v0.9.14 used
+                    // %max-HR which disagreed with the other surfaces.
+                    zone = sample.hrBpm?.let { hr ->
+                        classifyZone(hr, profile.maxHrBpm, profile.restingHrBpm)
+                    },
                 )
             }
             // Flag now reflects HC-augmented data — when sleep/post-ride sync
@@ -175,26 +180,43 @@ class RouteMapViewModel(application: Application) : AndroidViewModel(application
         private const val TAG = "URUJ-RouteMap"
     }
 
-    /** %max-HR zone classification — universal mapping that doesn't require RHR. */
-    private fun classifyZone(hrBpm: Int, maxHrBpm: Int): HrZone {
-        if (maxHrBpm <= 0) return HrZone.Z1
-        val pct = hrBpm.toFloat() / maxHrBpm
-        return when {
-            pct < 0.60f -> HrZone.Z1
-            pct < 0.70f -> HrZone.Z2
-            pct < 0.80f -> HrZone.Z3
-            pct < 0.90f -> HrZone.Z4
+    /**
+     * v0.9.14 — Karvonen classification delegating to the single source of
+     * truth in [com.uruj.power.KarvonenZonesCalculator.classifyKarvonenZone].
+     * Pre-fix used %max-HR (didn't account for RHR — wrong for trained
+     * athletes). Now agrees with TIZ card + HUD + audio coach + Bio Lab.
+     */
+    private fun classifyZone(hrBpm: Int, maxHrBpm: Int, restingHrBpm: Int): HrZone {
+        val zone = com.uruj.power.KarvonenZonesCalculator.classifyKarvonenZone(
+            hrBpm = hrBpm,
+            hrMax = maxHrBpm,
+            hrRest = restingHrBpm,
+        )
+        // Map shared classifier (0=below Z1, 1-5=Z1-Z5) → polyline HrZone.
+        // "Below Z1" collapses to Z1 for the polyline (no separate band).
+        return when (zone) {
+            0, 1 -> HrZone.Z1
+            2 -> HrZone.Z2
+            3 -> HrZone.Z3
+            4 -> HrZone.Z4
             else -> HrZone.Z5
         }
     }
 }
 
+/**
+ * v0.9.14 — labels updated to reflect Karvonen semantics. The %-of-HRR
+ * range labels (matching [com.uruj.power.KarvonenZonesCalculator] zone
+ * ranges) replace the prior %-of-max labels. Zone NAMES kept identical
+ * (Recovery / Endurance / Tempo / Threshold / VO2 / Sprint) so existing
+ * trend chart + tier-legend semantics carry over.
+ */
 enum class HrZone(val label: String, val rangeLabel: String) {
-    Z1("Recovery", "<60% max"),
-    Z2("Endurance", "60-70% max"),
-    Z3("Tempo", "70-80% max"),
-    Z4("Threshold", "80-90% max"),
-    Z5("VO2 / Sprint", "90%+ max"),
+    Z1("Recovery", "50-60% HRR"),
+    Z2("Endurance", "60-70% HRR"),
+    Z3("Tempo", "70-80% HRR"),
+    Z4("Threshold", "80-90% HRR"),
+    Z5("VO2 / Sprint", "90%+ HRR"),
 }
 
 data class ZonedPoint(val sample: RideSample, val zone: HrZone?)
