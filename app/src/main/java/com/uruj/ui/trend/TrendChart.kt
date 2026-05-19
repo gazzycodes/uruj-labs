@@ -213,6 +213,24 @@ data class TrendPoint(
     val isToday: Boolean = false,
 )
 
+/**
+ * v0.9.10 — date-anchor helper for daily-snapshot trend charts. Backfilled
+ * snapshots all share near-identical `computedAtMs` (written within ms of
+ * each other). Using computedAtMs for chart positioning clusters all
+ * backfilled dots at "now" — wrong. Anchor to local-noon of the snapshot's
+ * dateIsoLocal so each dot positions correctly on the chart x-axis +
+ * readings list date label.
+ */
+fun dateAnchorMs(dateIsoLocal: String, zone: java.time.ZoneId): Long {
+    return runCatching {
+        java.time.LocalDate.parse(dateIsoLocal)
+            .atTime(12, 0)
+            .atZone(zone)
+            .toInstant()
+            .toEpochMilli()
+    }.getOrElse { System.currentTimeMillis() }
+}
+
 data class TierBand(
     val yMin: Float,
     val yMax: Float,

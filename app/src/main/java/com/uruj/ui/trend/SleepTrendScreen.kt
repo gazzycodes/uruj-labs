@@ -73,9 +73,14 @@ fun SleepTrendScreen(onBack: () -> Unit) {
 
     val zone = ZoneId.systemDefault()
     val todayIso = LocalDate.now(zone).toString()
+    // v0.9.10 — labelMs must be the actual sleep night's date (sessionEndMs),
+    // NOT snap.computedAtMs. Backfill writes multiple snapshots within ms;
+    // using computedAtMs caused all backfilled dots to cluster at "today" on
+    // the chart x-axis + readings list. sessionEndMs is the wake timestamp
+    // → properly date-positioned per night.
     val points = snapshots.map { snap ->
         TrendPoint(
-            labelMs = snap.computedAtMs,
+            labelMs = snap.sessionEndMs,
             y = snap.hoursTotal,
             isToday = snap.dateIsoLocal == todayIso,
         )

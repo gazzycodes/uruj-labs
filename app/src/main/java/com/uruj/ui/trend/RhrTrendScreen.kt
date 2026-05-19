@@ -49,9 +49,12 @@ fun RhrTrendScreen(onBack: () -> Unit) {
 
     val zone = ZoneId.systemDefault()
     val todayIso = LocalDate.now(zone).toString()
+    // v0.9.10 — labelMs anchored to local-noon of dateIsoLocal so backfilled
+    // snapshots position correctly on the chart x-axis. Pre-fix used
+    // computedAtMs which clusters all backfill writes at "now".
     val points = snapshots.map { snap ->
         TrendPoint(
-            labelMs = snap.computedAtMs,
+            labelMs = dateAnchorMs(snap.dateIsoLocal, zone),
             y = snap.medianBpm.toFloat(),
             isToday = snap.dateIsoLocal == todayIso,
         )

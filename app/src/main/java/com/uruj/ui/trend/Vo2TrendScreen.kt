@@ -51,9 +51,10 @@ fun Vo2TrendScreen(onBack: () -> Unit) {
 
     val zone = ZoneId.systemDefault()
     val todayIso = LocalDate.now(zone).toString()
+    // v0.9.10 — labelMs date-anchored (see RhrTrendScreen comment).
     val points = snapshots.map { snap ->
         TrendPoint(
-            labelMs = snap.computedAtMs,
+            labelMs = dateAnchorMs(snap.dateIsoLocal, zone),
             y = snap.urujConsensusMlKgMin,
             isToday = snap.dateIsoLocal == todayIso,
         )
