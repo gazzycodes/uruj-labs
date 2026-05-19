@@ -175,13 +175,46 @@ fun ReadinessCard(
             ComponentRow(component, onInfo = { infoFor = component.label })
             Spacer(Modifier.height(4.dp))
         }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = result.recommendation,
-            color = UrujText,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-        )
+        Spacer(Modifier.height(8.dp))
+        // v0.9.3 — recommendation block split into headline + duration + rationale
+        // by ReadinessRecommendationEngine. UI renders 3 lines so the rider sees
+        // the call, the duration cap, and the WHY in plain language. Falls back
+        // to single-line when duration/rationale are null (limited-data path).
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(UrujSurfaceHigh.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            Text(
+                text = result.recommendation,
+                color = UrujText,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 0.3.sp,
+            )
+            val duration = result.recommendationDuration
+            if (!duration.isNullOrBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = duration.uppercase(),
+                    color = UrujAccent,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.5.sp,
+                )
+            }
+            val rationale = result.recommendationRationale
+            if (!rationale.isNullOrBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = rationale,
+                    color = UrujMuted,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+        }
         if (snapshot != null) {
             Spacer(Modifier.height(8.dp))
             DiagnosticsLine(snapshot = snapshot)
@@ -253,22 +286,38 @@ private fun DiagnosticsLine(snapshot: ReadinessSnapshot) {
             )
         }
         Spacer(Modifier.height(2.dp))
-        // RHR label depends on where the score actually pulled its value from.
-        // "0 RHR direct records" is true but misleading when SleepingRhrCalculator
-        // derived the value from sleep + HR samples — the readiness score IS
-        // using a derived RHR even though the direct-record count is zero.
-        val rhrLabel = when (diag.rhrSourceLabel) {
-            "direct" -> "${diag.rhrRecords7d} RHR(direct)"
-            "sleep" -> "RHR(sleep) ✓"
-            "proxy" -> "RHR(HR-proxy)"
-            else -> "${diag.rhrRecords7d} RHR"
+        // v0.9.3 — source-aware labels. Pre-v0.9.3 the rhrSource string could be
+        // "sleep:band" / "sleep:strap" / "sleep:mixed" (v0.7.7 added the sensor
+        // suffix), but the UI only matched the bare "sleep" → fell to the else
+        // branch → showed misleading "0 RHR" when the readiness score WAS using
+        // a derived value. Now startsWith("sleep") catches all variants.
+        val rhrLabel = when {
+            diag.rhrSourceLabel == "direct" -> "${diag.rhrRecords7d} RHR(direct)"
+            diag.rhrSourceLabel?.startsWith("sleep") == true -> {
+                val sensor = diag.rhrSourceLabel.substringAfter(":", "")
+                if (sensor.isNotEmpty()) "RHR(sleep · $sensor) ✓" else "RHR(sleep) ✓"
+            }
+            diag.rhrSourceLabel == "proxy" -> "RHR(HR-proxy)"
+            // Null source = no derived RHR. Be explicit that the count refers to
+            // HC direct writes so the rider knows where the 0 comes from.
+            else -> "${diag.rhrRecords7d} RHR(HC direct)"
         }
+        // v0.9.3 — HRV(strap) gets the URUJ NDJSON nights count so the rider
+        // sees the actual baseline-building progress ("HRV(strap · 2n) ✓" =
+        // 2 of 7 nights captured). HC's RmssdRecord count is meaningless when
+        // URUJ owns the HRV path (Magene H613 doesn't write to HC).
         val hrvLabel = when (diag.hrvSourceLabel) {
             "direct" -> "${diag.hrvRecords7d} HRV(direct)"
-            "ble_strap" -> "HRV(strap) ✓"  // v0.7.0 — real RMSSD from BLE
+            "ble_strap" -> {
+                if (diag.urujHrvNights7d > 0) "HRV(strap · ${diag.urujHrvNights7d}n) ✓"
+                else "HRV(strap) ✓"
+            }
             "sleep" -> "HRV(sleep) ✓"
             "proxy" -> "HRV(HR-proxy)"
-            else -> "${diag.hrvRecords7d} HRV"
+            // Null source = HC has no direct record AND no NDJSON yet. Be explicit
+            // that the count refers to HC direct writes (always 0 with Fit Band 3 /
+            // Magene H613 — neither writes RmssdRecord to HC).
+            else -> "${diag.hrvRecords7d} HRV(HC direct)"
         }
         Text(
             text = "Records (7d): ${diag.sleepRecords7d} sleep · " +

@@ -27,10 +27,25 @@ data class ReadinessResult(
     val score: Int, // 0–100
     val grade: ReadinessGrade,
     val components: List<ReadinessComponent>,
+    /** Headline call. v0.4.x called this the recommendation; v0.9.3 split it into
+     *  headline + duration + rationale (see fields below). This field still carries
+     *  the headline so old call sites keep working. */
     val recommendation: String,
     /** 0.0–1.0 — fraction of input weight that came from real data. <0.5 means most
      *  inputs are missing and the score is unreliable. UI surfaces this to the user. */
     val dataConfidence: Float,
+    /**
+     * v0.9.3 — duration cap or qualifier paired with the headline.
+     * Example: headline "Rest day" + duration "walk + hydrate, that's it".
+     * Nullable on limited-data path or older serialized snapshots.
+     */
+    val recommendationDuration: String? = null,
+    /**
+     * v0.9.3 — why-line surfacing the dominant drivers in plain language.
+     * Example: "TSB −30 + 4.7h sleep + HRV 9 ms — don't dig the hole deeper."
+     * Nullable on limited-data path.
+     */
+    val recommendationRationale: String? = null,
 )
 
 enum class ReadinessGrade(val label: String) {
