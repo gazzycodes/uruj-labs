@@ -154,13 +154,26 @@ class ReadinessRepository(context: Context) {
             Log.d("URUJ-TSB", "[v0.9.8] refresh skipped — post-ride quiet window")
             return@withContext null
         }
-        // Gate 2: 5-minute cooldown
+        // Gate 2: 5-minute cooldown, BUT always refresh when today's snapshot
+        // is missing (e.g. first compute of a new calendar day). Without this
+        // bypass the cooldown carried over from yesterday's last open would
+        // block the new day's first save → Bio Lab would show yesterday's TSB.
+        val today = LocalDate.now(ZoneId.systemDefault())
+        val todaySnapshotExists = tsbSnapshots.load(today) != null
         val now = System.currentTimeMillis()
         val lastRefresh = lastTsbRefreshMs
-        if (lastRefresh != 0L && now - lastRefresh < TSB_REFRESH_COOLDOWN_MS) {
+        val cooldownActive = lastRefresh != 0L &&
+            now - lastRefresh < TSB_REFRESH_COOLDOWN_MS
+        if (cooldownActive && todaySnapshotExists) {
             val ageS = (now - lastRefresh) / 1000L
             Log.d("URUJ-TSB", "[v0.9.8] refresh skipped — last refresh ${ageS}s ago (<300s cooldown)")
             return@withContext null
+        }
+        if (cooldownActive && !todaySnapshotExists) {
+            Log.d(
+                "URUJ-TSB",
+                "[v0.9.8] cooldown bypassed — new calendar day, no snapshot for $today yet",
+            )
         }
         lastTsbRefreshMs = now
         HcReadGuard.recordRead("readiness.refresh-tsb")
