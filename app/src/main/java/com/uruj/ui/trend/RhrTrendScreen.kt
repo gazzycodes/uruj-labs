@@ -7,8 +7,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import com.uruj.data.ReadinessRepository
 import com.uruj.data.RhrSnapshot
 import com.uruj.data.RhrSnapshotRepository
+import com.uruj.data.SleepSnapshotRepository
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujZone2
 import com.uruj.ui.theme.UrujZone3
@@ -43,7 +45,26 @@ fun RhrTrendScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) {
         loading = true
-        snapshots = withContext(Dispatchers.IO) { repo.listAll() }
+        snapshots = withContext(Dispatchers.IO) {
+            // v0.9.11 — lazy backfill on first open. If no past-date RHR
+            // snapshots exist, populate from HC retention (via shared sleep
+            // snapshots + SleepingRhrCalculator per night). Idempotent.
+            val existing = repo.listAll()
+            val hasPastSnapshots = existing.any {
+                it.dateIsoLocal != LocalDate.now(ZoneId.systemDefault()).toString()
+            }
+            if (!hasPastSnapshots) {
+                runCatching {
+                    ReadinessRepository(context).backfillRhrSnapshots(
+                        rhrRepo = repo,
+                        sleepRepo = SleepSnapshotRepository(context),
+                        days = 30,
+                    )
+                }
+                return@withContext repo.listAll()
+            }
+            existing
+        }
         loading = false
     }
 

@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import com.uruj.data.ReadinessRepository
 import com.uruj.data.TsbSnapshot
 import com.uruj.data.TsbSnapshotRepository
 import com.uruj.ui.theme.UrujAccent
@@ -47,7 +48,25 @@ fun TsbTrendScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) {
         loading = true
-        snapshots = withContext(Dispatchers.IO) { repo.listAll() }
+        snapshots = withContext(Dispatchers.IO) {
+            // v0.9.11 — lazy TSB backfill on first open. Runs EWMA loop
+            // once per past day. URUJ rides are permanent (full history)
+            // but Samsung non-cycling sessions ~42d HC retention → older
+            // days may under-count multi-sport load. Trend chart still
+            // shows the shape; methodology tag on backfilled days flags
+            // the limitation.
+            val existing = repo.listAll()
+            val hasPastSnapshots = existing.any {
+                it.dateIsoLocal != LocalDate.now(ZoneId.systemDefault()).toString()
+            }
+            if (!hasPastSnapshots) {
+                runCatching {
+                    ReadinessRepository(context).backfillTsbSnapshots(days = 30)
+                }
+                return@withContext repo.listAll()
+            }
+            existing
+        }
         loading = false
     }
 

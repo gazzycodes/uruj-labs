@@ -217,6 +217,95 @@ class ReadinessRepository(context: Context) {
     }
 
     /**
+     * v0.9.11 — one-time backfill of historical TSB snapshots. Runs
+     * computeTsbDetailed once per past day with that day as the EWMA
+     * anchor. Per-day TsbSnapshot written to disk.
+     *
+     * Limitations:
+     * - URUJ rides are permanent (full history available on disk)
+     * - Samsung non-cycling sessions retained in HC ~42d only — older
+     *   backfill days will under-count multi-sport load. Accepted; the
+     *   trend chart still shows the shape.
+     * - Past-date immutability rejects overwrites — idempotent.
+     * - Gated by HcReadGuard.isPostRideQuietWindow.
+     * - One HC read for ExerciseSessionRecord across the window, reused
+     *   across all per-day computes via the cached `client` reference.
+     *
+     * Returns count of new snapshots created.
+     */
+    suspend fun backfillTsbSnapshots(days: Int = 30): Int = withContext(Dispatchers.IO) {
+        if (HcReadGuard.isPostRideQuietWindow()) {
+            Log.d("URUJ-TSB", "[v0.9.11] backfill skipped — post-ride quiet window")
+            return@withContext 0
+        }
+        HcReadGuard.recordRead("backfill.tsb")
+        val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
+        val client = if (sdkOk) {
+            runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
+        } else null
+        val granted = if (client != null) {
+            runCatching { client.permissionController.getGrantedPermissions() }.getOrDefault(emptySet())
+        } else emptySet()
+        val rhrForLoad = readBaselineRhrOnly(client, granted)
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        var written = 0
+        for (i in 1..days) {
+            val date = today.minusDays(i.toLong())
+            if (tsbSnapshots.load(date) != null) continue  // already backfilled
+            val detailed = computeTsbDetailed(client, granted, rhrForLoad, targetDate = date)
+                ?: continue
+            val saved = tsbSnapshots.save(
+                TsbSnapshot(
+                    dateIsoLocal = date.toString(),
+                    tsb = detailed.tsb,
+                    ctl = detailed.ctl,
+                    atl = detailed.atl,
+                    totalLoad42d = detailed.totalLoad42d,
+                    methodologyVersion = "v0.9.11-backfill-coggan-ewma",
+                    computedAtMs = System.currentTimeMillis(),
+                ),
+                date = date,
+            )
+            if (saved) written++
+        }
+        Log.d("URUJ-TSB", "[v0.9.11] backfill: $written new TSB snapshots over last ${days}d")
+        written
+    }
+
+    /**
+     * v0.9.11 — RHR + VO2 backfill orchestrator. Delegates to the per-repo
+     * helpers. Called from RhrTrendScreen / Vo2TrendScreen / SleepTrendScreen
+     * `LaunchedEffect` on first open after install (lazy + idempotent).
+     */
+    suspend fun backfillRhrSnapshots(
+        rhrRepo: RhrSnapshotRepository,
+        sleepRepo: SleepSnapshotRepository,
+        days: Int = 30,
+    ): Int = withContext(Dispatchers.IO) {
+        val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
+        if (!sdkOk) return@withContext 0
+        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
+            ?: return@withContext 0
+        val granted = runCatching { client.permissionController.getGrantedPermissions() }
+            .getOrDefault(emptySet())
+        rhrRepo.backfillFromHc(client, granted, sleepRepo, sleepingRhrCalc, days)
+    }
+
+    /**
+     * v0.9.11 — VO2 backfill. No HC reads. Reads RHR snapshots from disk
+     * and applies Uth-Sørensen formula with current profile MaxHR. Run
+     * AFTER RHR backfill has populated RHR snapshots.
+     */
+    suspend fun backfillVo2Snapshots(
+        vo2Repo: Vo2SnapshotRepository,
+        rhrRepo: RhrSnapshotRepository,
+    ): Int = withContext(Dispatchers.IO) {
+        val profile = runCatching { profileStore.current() }.getOrNull() ?: return@withContext 0
+        vo2Repo.backfillFromRhr(rhrRepo, maxHr = profile.maxHrBpm)
+    }
+
+    /**
      * Lightweight RHR lookup for TSB compute only. Tries direct
      * RestingHeartRateRecord first (cheap), falls back to sleep-derived
      * (heavier but still cheaper than full Readiness compute).
@@ -609,6 +698,13 @@ class ReadinessRepository(context: Context) {
                 ),
                 date = today,
             )
+            // v0.9.11 — cascade dedup. Pre-fix: full Readiness compute (Checklist
+            // path) wrote TSB snapshot but didn't update lastTsbRefreshMs, so
+            // an immediate Bio Lab open ~8s later triggered the lightweight
+            // refreshTsbSnapshotForToday() to compute TSB AGAIN. Same value,
+            // wasted ~7 HC reads per cascade. Now Checklist path also marks the
+            // refresh — Bio Lab cooldown check sees recent activity and skips.
+            lastTsbRefreshMs = System.currentTimeMillis()
         }
 
         return GatheredInputs(
@@ -748,10 +844,19 @@ class ReadinessRepository(context: Context) {
         client: HealthConnectClient?,
         granted: Set<String>,
         athleticRhr: Int?,
+        /**
+         * v0.9.11 — pass a historical date for backfill. Default = today.
+         * The EWMA loop runs with this date as "day 0", so daysAgo is
+         * computed relative to it. Lets us produce per-day TSB snapshots
+         * for any historical date up to HC's ExerciseSessionRecord
+         * retention (~42d). Older days where HC dropped Samsung sessions
+         * will under-count multi-sport load — accepted limitation.
+         */
+        targetDate: LocalDate = LocalDate.now(ZoneId.systemDefault()),
     ): TsbCompute? {
         val rides = historyRepo.listAll()
         val zone = ZoneId.systemDefault()
-        val todayDate = LocalDate.now(zone)
+        val todayDate = targetDate
         val dailyTss = FloatArray(43)
         var totalLoad = 0f
         val urujRideStarts = mutableListOf<Instant>()

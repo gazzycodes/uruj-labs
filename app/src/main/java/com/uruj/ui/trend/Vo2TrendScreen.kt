@@ -7,6 +7,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import com.uruj.data.ReadinessRepository
+import com.uruj.data.RhrSnapshotRepository
+import com.uruj.data.SleepSnapshotRepository
 import com.uruj.data.Vo2Snapshot
 import com.uruj.data.Vo2SnapshotRepository
 import com.uruj.ui.theme.UrujAccent
@@ -45,7 +48,26 @@ fun Vo2TrendScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) {
         loading = true
-        snapshots = withContext(Dispatchers.IO) { repo.listAll() }
+        snapshots = withContext(Dispatchers.IO) {
+            // v0.9.11 — lazy backfill chain: RHR (one HC read) then VO2
+            // (pure compute from disk RHR + profile MaxHR). Both idempotent
+            // — re-running is a no-op if past dates already on disk.
+            val existing = repo.listAll()
+            val hasPastSnapshots = existing.any {
+                it.dateIsoLocal != LocalDate.now(ZoneId.systemDefault()).toString()
+            }
+            if (!hasPastSnapshots) {
+                val readinessRepo = ReadinessRepository(context)
+                val rhrRepo = RhrSnapshotRepository(context)
+                val sleepRepo = SleepSnapshotRepository(context)
+                runCatching {
+                    readinessRepo.backfillRhrSnapshots(rhrRepo, sleepRepo, days = 30)
+                    readinessRepo.backfillVo2Snapshots(repo, rhrRepo)
+                }
+                return@withContext repo.listAll()
+            }
+            existing
+        }
         loading = false
     }
 
