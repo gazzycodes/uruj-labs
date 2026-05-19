@@ -70,6 +70,10 @@ fun BioLabScreen(
     onOpenHrr1Trend: () -> Unit = {},
     onOpenCarTrend: () -> Unit = {},
     onOpenOrthostaticTrend: () -> Unit = {},
+    // v0.9.6 — disk-snapshot trend screens for RHR / VO2 / TSB
+    onOpenRhrTrend: () -> Unit = {},
+    onOpenVo2Trend: () -> Unit = {},
+    onOpenTsbTrend: () -> Unit = {},
     viewModel: BioLabViewModel = viewModel(),
 ) {
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -158,14 +162,19 @@ fun BioLabScreen(
                 return@LazyColumn
             }
 
+            // v0.9.6 — Training State card (TSB hero + see-trend link).
+            // Shown above VO2 so the rider's first signal is "where am I in
+            // the training cycle?" — primary daily decision driver.
+            item("tsb_card") { TrainingLoadCard(s, onSeeTrend = onOpenTsbTrend) }
+
             // Cycling-training metrics — what URUJ uniquely computes
-            item("vo2") { Vo2MaxCard(s) }
+            item("vo2") { Vo2MaxCard(s, onSeeTrend = onOpenVo2Trend) }
             if (s.hrr1Median != null) {
                 item("hrr1") { HrRecoveryCard(s, onSeeTrend = onOpenHrr1Trend) }
             }
 
             item("cardio_header") { SectionHeader("Cardiovascular") }
-            item("hr_card") { HeartRateCard(s) }
+            item("hr_card") { HeartRateCard(s, onSeeRhrTrend = onOpenRhrTrend) }
             if (s.karvonenZones != null) {
                 item("zones_card") { KarvonenZonesCard(s.karvonenZones) }
             }
@@ -324,8 +333,111 @@ private fun MetricRow(label: String, value: String, subtitle: String? = null) {
     }
 }
 
+/**
+ * v0.9.6 — Training Load (TSB) hero card. Reads the most-recent
+ * [com.uruj.data.TsbSnapshot] directly from disk (independent of
+ * BioLabSnapshot which doesn't carry TSB). Surfaces the headline TSB +
+ * CTL + ATL + tier-coloured band. Tapping → TsbTrendScreen for the
+ * 6-month fitness-vs-fatigue curve cyclists actually need.
+ */
 @Composable
-private fun Vo2MaxCard(s: BioLabSnapshot) {
+private fun TrainingLoadCard(@Suppress("UNUSED_PARAMETER") s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
+    val context = LocalContext.current
+    val repo = remember { com.uruj.data.TsbSnapshotRepository(context) }
+    var latest by remember { mutableStateOf<com.uruj.data.TsbSnapshot?>(null) }
+    LaunchedEffect(Unit) {
+        latest = withContext(kotlinx.coroutines.Dispatchers.IO) {
+            repo.listAll().firstOrNull()
+        }
+    }
+    val tsb = latest
+    if (tsb == null) {
+        BioCard("Training State — fitness vs fatigue") {
+            Text(
+                "TSB snapshots will populate as you open Readiness + record rides. " +
+                    "Curve unlocks at ~3 days of data.",
+                color = UrujMuted, fontSize = 12.sp,
+            )
+        }
+        return
+    }
+    val accent = when {
+        tsb.tsb >= 5f -> UrujZone2          // fresh
+        tsb.tsb >= -5f -> UrujZone2         // balanced
+        tsb.tsb >= -15f -> UrujZone3        // productive fatigue
+        tsb.tsb >= -25f -> UrujZone3        // significant fatigue
+        else -> UrujZone5                    // over-trained
+    }
+    val tierLabel = when {
+        tsb.tsb >= 5f -> "FRESH"
+        tsb.tsb >= -5f -> "BALANCED"
+        tsb.tsb >= -15f -> "PRODUCTIVE FATIGUE"
+        tsb.tsb >= -25f -> "SIGNIFICANT FATIGUE"
+        else -> "OVER-TRAINED"
+    }
+    BioCard("Training State — fitness vs fatigue", accentColor = accent) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            val tsbInt = tsb.tsb.toInt()
+            Text(
+                if (tsb.tsb >= 0f) "+$tsbInt" else "$tsbInt",
+                color = accent,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Black,
+                fontSize = 56.sp,
+                letterSpacing = (-2).sp,
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.padding(bottom = 12.dp)) {
+                Text("TSB", color = UrujMuted, fontWeight = FontWeight.Black,
+                    fontSize = 10.sp, letterSpacing = 1.5.sp)
+                Text("CTL − ATL", color = UrujMuted, fontSize = 10.sp)
+            }
+        }
+        Text(tierLabel, color = accent, fontWeight = FontWeight.Black,
+            fontSize = 12.sp, letterSpacing = 2.sp)
+        Spacer(Modifier.height(8.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(UrujSurfaceHigh.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+            Text("BREAKDOWN", color = UrujMuted, fontWeight = FontWeight.Black,
+                fontSize = 9.sp, letterSpacing = 1.sp)
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "CTL (fitness, 42d EWMA): ${"%.1f".format(tsb.ctl)}",
+                color = UrujText, fontSize = 11.sp,
+            )
+            Text(
+                "ATL (fatigue, 7d EWMA): ${"%.1f".format(tsb.atl)}",
+                color = UrujText, fontSize = 11.sp,
+            )
+            Text(
+                "42d total TSS: ${"%.0f".format(tsb.totalLoad42d)}",
+                color = UrujText, fontSize = 11.sp,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Race-day target +5..+15. Productive training −10..−20. Below −25 = " +
+                "rest mandated. Curve over months shows taper / overload / recovery " +
+                "patterns — what cyclists pay Strava + Garmin to see.",
+            color = UrujMuted, fontSize = 10.sp,
+        )
+        Spacer(Modifier.height(10.dp))
+        TextButton(onClick = onSeeTrend, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "SEE TSB TREND →",
+                color = UrujAccent, fontWeight = FontWeight.Black,
+                fontSize = 12.sp, letterSpacing = 1.5.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun Vo2MaxCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
     BioCard("VO₂ Max — aerobic capacity", accentColor = UrujZone2) {
         val urujVo2 = s.vo2MaxConsensus
         val samsungVo2 = s.vo2MaxFromSamsung
@@ -422,6 +534,17 @@ private fun Vo2MaxCard(s: BioLabSnapshot) {
             Text(
                 "Formula: 15 × (HRmax / HRrest). Cooper classification table. ≈ estimate, not lab measurement.",
                 color = UrujMuted, fontSize = 9.sp,
+            )
+        }
+        // v0.9.6 — daily VO2 snapshots persisted to disk since v0.9.1; trend
+        // chart visualises long-arc aerobic fitness arc. Becomes useful after
+        // ~5 days of data when slope direction stabilises.
+        Spacer(Modifier.height(10.dp))
+        TextButton(onClick = onSeeTrend, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "SEE TREND →",
+                color = UrujAccent, fontWeight = FontWeight.Black,
+                fontSize = 12.sp, letterSpacing = 1.5.sp,
             )
         }
     }
@@ -559,7 +682,7 @@ private fun HrRecoveryCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
 }
 
 @Composable
-private fun HeartRateCard(s: BioLabSnapshot) {
+private fun HeartRateCard(s: BioLabSnapshot, onSeeRhrTrend: () -> Unit = {}) {
     // v0.4.0 slim — 4 cycling-training-relevant rows only.
     // Cut: today min/max (Samsung mirror), Samsung Direct RHR (same), HRV proxy
     // (misleading fake number). See [[reference_cut_features_v0_4]].
@@ -594,6 +717,19 @@ private fun HeartRateCard(s: BioLabSnapshot) {
             "Today's HR min/max and live HRV moved to Samsung Health. Their band firmware sees more.",
             color = UrujMuted, fontSize = 9.sp,
         )
+        // v0.9.6 — Athletic RHR trend link. Daily snapshots persisted to disk
+        // since v0.9.1; trend chart visualises the long-arc athletic-RHR drop
+        // that correlates with VO2 build + training adaptation.
+        if (s.restingHrBpm != null) {
+            Spacer(Modifier.height(10.dp))
+            TextButton(onClick = onSeeRhrTrend, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "SEE ATHLETIC RHR TREND →",
+                    color = UrujAccent, fontWeight = FontWeight.Black,
+                    fontSize = 12.sp, letterSpacing = 1.5.sp,
+                )
+            }
+        }
     }
 }
 
