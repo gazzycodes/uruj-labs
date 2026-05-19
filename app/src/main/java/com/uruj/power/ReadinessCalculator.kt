@@ -89,13 +89,35 @@ class ReadinessCalculator {
             score >= 40 -> ReadinessGrade.Easy
             else -> ReadinessGrade.Rest
         }
-        val recommendation = if (dataConfidence < 0.5f) {
-            buildLimitedDataRecommendation(score, components, dataConfidence)
+        // v0.9.3 — multi-signal recommendation engine. Replaces the single-bucket
+        // text function with tier (FullRest / ActiveRecovery / EasyAerobic /
+        // Moderate / HardGreenLight) chosen by composite score AND severe flags
+        // (TSB ≤ −25, sleep < 5h, HRV < 70% baseline, RHR ≥ +5). Returns
+        // headline + duration + rationale so UI can render verbose, gamified
+        // guidance instead of a single repeated line.
+        return if (dataConfidence < 0.5f) {
+            val recommendation = buildLimitedDataRecommendation(score, components, dataConfidence)
+            ReadinessResult(
+                score = score,
+                grade = grade,
+                components = components,
+                recommendation = recommendation,
+                dataConfidence = dataConfidence,
+                recommendationDuration = null,
+                recommendationRationale = null,
+            )
         } else {
-            buildRecommendation(score, components)
+            val rec = ReadinessRecommendationEngine.build(score, components, inputs)
+            ReadinessResult(
+                score = score,
+                grade = grade,
+                components = components,
+                recommendation = rec.headline,
+                dataConfidence = dataConfidence,
+                recommendationDuration = rec.duration,
+                recommendationRationale = rec.rationale,
+            )
         }
-
-        return ReadinessResult(score, grade, components, recommendation, dataConfidence)
     }
 
     private fun buildLimitedDataRecommendation(
@@ -231,23 +253,7 @@ class ReadinessCalculator {
         return score to detail
     }
 
-    private fun buildRecommendation(score: Int, components: List<ReadinessComponent>): String {
-        val lowestComponent = components
-            .filter { it.score != null }
-            .minByOrNull { it.score ?: 100 }
-        return when {
-            score >= 80 ->
-                "All systems green — push hard. Threshold or VO2 session if planned."
-            score >= 60 -> {
-                val laggard = lowestComponent?.label?.lowercase() ?: "recovery"
-                "Solid baseline, $laggard slightly off — moderate aerobic effort is the play."
-            }
-            score >= 40 ->
-                "Easy spin / zone 2 only. Body is recovering; don't dig the hole deeper."
-            score > 0 ->
-                "Rest day. Walk, stretch, hydrate. Trying to train through this costs more than it earns."
-            else ->
-                "Wear a band overnight + ride a few times to unlock readiness scoring."
-        }
-    }
+    // v0.9.3 — buildRecommendation removed. Replaced by ReadinessRecommendationEngine
+    // which reads raw inputs (not just composite score) for multi-signal tiering,
+    // duration capping, and rotating taglines.
 }
