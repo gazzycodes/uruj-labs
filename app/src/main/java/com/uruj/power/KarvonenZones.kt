@@ -55,5 +55,43 @@ class KarvonenZonesCalculator {
             Triple(0.80f, 0.90f, "Threshold"),
             Triple(0.90f, 1.00f, "VO2 / Sprint"),
         )
+
+        /**
+         * v0.9.14 — single source of truth for HR → Karvonen zone classification.
+         * Every surface that bins HR into zones (TIZ card, Route map polyline,
+         * HUD waveform, Audio coach, Polarized 80/20 compliance) calls THIS
+         * function. Pre-v0.9.14 TIZ + Route map used %-of-max (unpersonalized);
+         * unification on Karvonen gives accurate, RHR-aware zones across every
+         * surface.
+         *
+         * Returns:
+         *   0 = below Z1 (below 50% HRR — true recovery / rest)
+         *   1 = Z1 Recovery (50-60% HRR)
+         *   2 = Z2 Endurance (60-70% HRR)
+         *   3 = Z3 Tempo (70-80% HRR)
+         *   4 = Z4 Threshold (80-90% HRR)
+         *   5 = Z5 VO2/Sprint (≥90% HRR)
+         *
+         * Note: index 0 represents BELOW Z1 — historically TIZ collapsed this
+         * into Z1, but Karvonen recognizes "below recovery zone" (e.g. resting
+         * HR while standing still) as distinct. Callers can map to display
+         * however they want. TimeInZoneCalculator treats 0 as Z1 for the
+         * polarized 80/20 + 5-zone bar chart compatibility.
+         */
+        @JvmStatic
+        fun classifyKarvonenZone(hrBpm: Int, hrMax: Int, hrRest: Int): Int {
+            if (hrMax <= hrRest || hrRest < 30) return 1  // bad inputs → safe Z1
+            val hrr = hrMax - hrRest
+            if (hrr <= 0) return 1
+            val fraction = (hrBpm - hrRest).toFloat() / hrr.toFloat()
+            return when {
+                fraction < 0.50f -> 0      // below Z1 — caller decides display
+                fraction < 0.60f -> 1
+                fraction < 0.70f -> 2
+                fraction < 0.80f -> 3
+                fraction < 0.90f -> 4
+                else -> 5
+            }
+        }
     }
 }

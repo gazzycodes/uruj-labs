@@ -243,9 +243,13 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
             runCatching {
                 val profile = profileStore.current()
                 val timed = samples.map { Instant.ofEpochMilli(it.timestampMs) to it.bpm }
+                // v0.9.14 — Karvonen needs Athletic RHR. Profile holds the
+                // cached value from latest Bio Lab compute (default 50 if
+                // Bio Lab hasn't populated yet — sane athletic floor).
                 val tiz = zoneCalc.compute(
                     samples = timed,
                     maxHrBpm = profile.maxHrBpm,
+                    restingHrBpm = profile.restingHrBpm,
                     rideEndMs = endMs,
                 )
                 _timeInZone.value = tiz
@@ -446,9 +450,11 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
         // duplicate HC query. Profile lookup is cheap (DataStore in-memory).
         runCatching {
             val profile = profileStore.current()
+            // v0.9.14 — Karvonen TIZ (see notes above)
             val tiz = zoneCalc.compute(
                 samples = timed.map { Instant.ofEpochMilli(it.first) to it.second },
                 maxHrBpm = profile.maxHrBpm,
+                restingHrBpm = profile.restingHrBpm,
                 rideEndMs = endMs,
             )
             _timeInZone.value = tiz
