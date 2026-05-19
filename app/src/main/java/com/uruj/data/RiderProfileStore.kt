@@ -60,6 +60,24 @@ class RiderProfileStore(context: Context) {
         }
     }
 
+    /**
+     * v0.9.12 — write only weight (called by [com.uruj.power.WeightAutoSync]
+     * when HC `WeightRecord` exposes a fresh sample from Samsung's scale).
+     * Also writes the last-sync timestamp so the Profile UI can show
+     * "synced from Samsung X ago". Doesn't touch other fields.
+     */
+    suspend fun saveWeightFromHc(weightKg: Float, syncedAtMs: Long) {
+        dataStore.edit { prefs ->
+            prefs[KEY_RIDER_WEIGHT_KG] = weightKg
+            prefs[KEY_LAST_WEIGHT_SYNC_MS] = syncedAtMs
+        }
+    }
+
+    /** v0.9.12 — last successful HC weight sync timestamp, for UI freshness label. */
+    val lastWeightSyncMs: Flow<Long?> = dataStore.data.map { prefs ->
+        prefs[KEY_LAST_WEIGHT_SYNC_MS]
+    }
+
     companion object {
         private val KEY_RIDER_WEIGHT_KG = floatPreferencesKey("rider_weight_kg")
         private val KEY_BIKE_WEIGHT_KG = floatPreferencesKey("bike_weight_kg")
@@ -70,5 +88,6 @@ class RiderProfileStore(context: Context) {
         private val KEY_RIDING_POSITION = stringPreferencesKey("riding_position")
         private val KEY_AGE_YEARS = intPreferencesKey("age_years")
         private val KEY_HEIGHT_CM = intPreferencesKey("height_cm")
+        private val KEY_LAST_WEIGHT_SYNC_MS = androidx.datastore.preferences.core.longPreferencesKey("last_weight_sync_ms")
     }
 }
