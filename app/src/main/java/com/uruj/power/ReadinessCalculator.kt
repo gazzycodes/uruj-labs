@@ -16,72 +16,76 @@ import kotlin.math.roundToInt
  *
  * Missing inputs degrade the score gracefully — when nothing is available, returns
  * a "Connect a wearable" grade rather than crashing or showing a fake number.
+ *
+ * v0.9.4 — recommendation generation moved out to [ReadinessReasoner]
+ * (interface) + [RuleBasedReasoner] (default impl). This calculator now
+ * owns SCORING only; the reasoner owns the verbose recommendation block
+ * (headline + duration + rationale + insights). The orchestration lives
+ * in [com.uruj.data.ReadinessRepository] which assembles inputs + context,
+ * scores via this calculator, then asks the reasoner for the recommendation.
+ * The AI hook (Task #105 / v0.5) plugs in at the reasoner seam — see
+ * [[reference_readiness_context_architecture]].
  */
 class ReadinessCalculator {
 
-    fun compute(inputs: ReadinessInputs): ReadinessResult {
+    /**
+     * v0.9.4 — pure scoring path. Produces components + composite score +
+     * grade + dataConfidence WITHOUT building the recommendation block.
+     * Caller (ReadinessRepository) wraps with the reasoner output to form
+     * the final [ReadinessResult].
+     */
+    data class Scored(
+        val score: Int,
+        val grade: ReadinessGrade,
+        val components: List<ReadinessComponent>,
+        val dataConfidence: Float,
+    )
+
+    fun score(inputs: ReadinessInputs): Scored {
         val components = mutableListOf<ReadinessComponent>()
         var weightedSum = 0f
         var totalWeight = 0f
 
-        scoreSleep(inputs.sleepLastNightHours)?.let { (score, detail) ->
-            components += ReadinessComponent("Sleep", score, detail)
-            weightedSum += score * 0.35f
+        scoreSleep(inputs.sleepLastNightHours)?.let { (s, detail) ->
+            components += ReadinessComponent("Sleep", s, detail)
+            weightedSum += s * 0.35f
             totalWeight += 0.35f
-        } ?: components.add(
-            ReadinessComponent("Sleep", null, "wear band overnight"),
-        )
+        } ?: components.add(ReadinessComponent("Sleep", null, "wear band overnight"))
 
         scoreHrv(
             today = inputs.hrvTodayRmssd,
             baseline = inputs.hrvBaseline7d,
             daysOfData = inputs.hrvDaysOfDataIn7d,
-        )?.let { (score, detail) ->
-            components += ReadinessComponent("HRV", score, detail)
-            weightedSum += score * 0.30f
+        )?.let { (s, detail) ->
+            components += ReadinessComponent("HRV", s, detail)
+            weightedSum += s * 0.30f
             totalWeight += 0.30f
         } ?: components.add(
-            // v0.7.0: when null, the 24/7 monitoring toggle is off or hasn't
-            // captured enough RR data yet. Once toggle is ON + strap worn
-            // overnight, ReadinessRepository computes real RMSSD from the
-            // BLE NDJSON and this branch stops firing.
             ReadinessComponent("HRV", null, "enable 24/7 monitoring + wear strap"),
         )
 
-        scoreRestingHr(inputs.restingHrToday, inputs.restingHrBaseline7d)?.let { (score, detail) ->
-            components += ReadinessComponent("Resting HR", score, detail)
-            weightedSum += score * 0.15f
+        scoreRestingHr(inputs.restingHrToday, inputs.restingHrBaseline7d)?.let { (s, detail) ->
+            components += ReadinessComponent("Resting HR", s, detail)
+            weightedSum += s * 0.15f
             totalWeight += 0.15f
-        } ?: components.add(
-            ReadinessComponent("Resting HR", null, "needs sleep + HR data"),
-        )
+        } ?: components.add(ReadinessComponent("Resting HR", null, "needs sleep + HR data"))
 
-        scoreTsb(inputs.trainingStressBalance)?.let { (score, detail) ->
-            components += ReadinessComponent("Training load", score, detail)
-            weightedSum += score * 0.20f
+        scoreTsb(inputs.trainingStressBalance)?.let { (s, detail) ->
+            components += ReadinessComponent("Training load", s, detail)
+            weightedSum += s * 0.20f
             totalWeight += 0.20f
-        } ?: components.add(
-            ReadinessComponent("Training load", null, "ride more to build CTL"),
-        )
+        } ?: components.add(ReadinessComponent("Training load", null, "ride more to build CTL"))
 
         if (totalWeight < 0.001f) {
-            return ReadinessResult(
+            return Scored(
                 score = 0,
                 grade = ReadinessGrade.Unknown,
                 components = components,
-                recommendation = "Wear a band overnight + ride a few times to unlock readiness scoring.",
                 dataConfidence = 0f,
             )
         }
-
-        // dataConfidence = how much of the full 4-input weight is actually available.
-        // 1.0 = full data, 0.2 = only training load (one of four), etc.
-        val dataConfidence = totalWeight  // weights sum to 1.0 when all four present
+        val dataConfidence = totalWeight
         val score = (weightedSum / totalWeight).roundToInt().coerceIn(0, 100)
-
-        // Honesty gate: if less than half the inputs are real, don't make a strong
-        // recommendation. Score is shown but flagged as low-confidence. Prevents
-        // "GO HARD" from one data point misleading the rider.
         val grade = when {
             dataConfidence < 0.5f -> ReadinessGrade.LimitedData
             score >= 80 -> ReadinessGrade.GoHard
@@ -89,38 +93,39 @@ class ReadinessCalculator {
             score >= 40 -> ReadinessGrade.Easy
             else -> ReadinessGrade.Rest
         }
-        // v0.9.3 — multi-signal recommendation engine. Replaces the single-bucket
-        // text function with tier (FullRest / ActiveRecovery / EasyAerobic /
-        // Moderate / HardGreenLight) chosen by composite score AND severe flags
-        // (TSB ≤ −25, sleep < 5h, HRV < 70% baseline, RHR ≥ +5). Returns
-        // headline + duration + rationale so UI can render verbose, gamified
-        // guidance instead of a single repeated line.
-        return if (dataConfidence < 0.5f) {
-            val recommendation = buildLimitedDataRecommendation(score, components, dataConfidence)
-            ReadinessResult(
-                score = score,
-                grade = grade,
-                components = components,
-                recommendation = recommendation,
-                dataConfidence = dataConfidence,
-                recommendationDuration = null,
-                recommendationRationale = null,
-            )
-        } else {
-            val rec = ReadinessRecommendationEngine.build(score, components, inputs)
-            ReadinessResult(
-                score = score,
-                grade = grade,
-                components = components,
-                recommendation = rec.headline,
-                dataConfidence = dataConfidence,
-                recommendationDuration = rec.duration,
-                recommendationRationale = rec.rationale,
-            )
-        }
+        return Scored(score, grade, components, dataConfidence)
     }
 
-    private fun buildLimitedDataRecommendation(
+    /**
+     * Legacy entry — pre-v0.9.4 path. Kept for backward compatibility with
+     * call sites that don't yet have a [com.uruj.domain.ReadinessContext]
+     * available. Produces a [ReadinessResult] with the simple limited-data
+     * recommendation; the v0.9.4 reasoner output (insights, missing-signals
+     * callout) will not be populated. ReadinessRepository uses the richer
+     * path; this exists for tests + future incidental callers.
+     */
+    fun compute(inputs: ReadinessInputs): ReadinessResult {
+        val s = score(inputs)
+        if (s.grade == ReadinessGrade.Unknown) {
+            return ReadinessResult(
+                score = 0,
+                grade = ReadinessGrade.Unknown,
+                components = s.components,
+                recommendation = "Wear a band overnight + ride a few times to unlock readiness scoring.",
+                dataConfidence = 0f,
+            )
+        }
+        val rec = buildLimitedDataRecommendation(s.score, s.components, s.dataConfidence)
+        return ReadinessResult(
+            score = s.score,
+            grade = s.grade,
+            components = s.components,
+            recommendation = rec,
+            dataConfidence = s.dataConfidence,
+        )
+    }
+
+    fun buildLimitedDataRecommendation(
         score: Int,
         components: List<ReadinessComponent>,
         confidence: Float,

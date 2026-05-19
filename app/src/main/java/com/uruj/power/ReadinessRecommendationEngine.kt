@@ -1,145 +1,220 @@
 package com.uruj.power
 
+import com.uruj.domain.CarTier
 import com.uruj.domain.ReadinessComponent
-import com.uruj.domain.ReadinessInputs
+import com.uruj.domain.ReadinessContext
+import com.uruj.domain.ReadinessTier
+import com.uruj.domain.Recommendation
+import com.uruj.domain.TrendDirection
 import java.time.LocalDate
 import kotlin.math.roundToInt
 
 /**
- * v0.9.3 — multi-signal recommendation builder. Replaces v0.4.x's single-bucket
- * text function in [ReadinessCalculator] with a richer engine that reads the raw
- * inputs (not just the composite score), enabling:
+ * v0.9.4 — rule-based [ReadinessReasoner]. Reads [ReadinessContext] (NOT
+ * raw inputs) and emits a [Recommendation].
  *
- *  1. **FULL REST tier** — when 2+ severe flags fire (overtrained + sleep crash +
- *     HRV crash), the engine over-rides bucket text. Previously a 41/100 EASY
- *     score generated "Easy spin / Zone 2 only..." for 60+ min, which still loads
- *     CTL when TSB is −30. New engine sends "Rest day" with explicit rationale.
- *  2. **Duration cap** — most apps say "Zone 2 only" with no time. Endurance
- *     riders interpret that as 60–120 min. Engine now caps minutes per tier so
- *     "Z2" doesn't mask further fatigue accumulation on a recovery day.
- *  3. **Rotating taglines** — 4 variants per tier, keyed off [LocalDate.dayOfYear]
- *     for deterministic daily rotation. Same input on consecutive days produces
- *     different copy. Avoids the "Body is recovering; don't dig the hole deeper"
- *     fatigue from seeing the same line for a week.
- *  4. **Rationale string** — surfaces WHICH signals are dragging the score in
- *     plain language (TSB −30 + 4.7h sleep + HRV 9 ms). The rider learns the
- *     mechanism, not just the verdict.
+ * # Why context-based
  *
- * Future work: Task #105 (v0.5 Groq AI narrative coach) layers a free-form
- * sentence on top. This rule-based engine remains the deterministic fallback
- * so the rider always gets ≤ 2 ms locally-computed guidance even if AI is
- * down / declined consent.
+ * v0.9.3 engine took 6 scalar inputs and ran bucket logic. v0.9.4 reasoner
+ * takes the unified signal pack — today's snapshot + trends + multi-day
+ * patterns + provenance. Same engine shape externally; vastly richer
+ * inputs internally. Concrete upgrades:
  *
- * @see com.uruj.power.ReadinessCalculator.compute
+ *  1. **CAR as 5th severe flag** — exaggerated (>30 bpm) OR blunted (<5 bpm)
+ *     CAR captured this morning weights the tier decision. Blunted +
+ *     chronic-stress pattern is the textbook over-reach early-warning.
+ *
+ *  2. **HRV trend direction** — falling slope across 7+ nights matters even
+ *     when today's absolute looks OK. Rising slope from a low absolute is
+ *     a different (recovering) story than falling slope from a normal
+ *     absolute (deteriorating).
+ *
+ *  3. **Multi-day rest enforcement** — `consecutiveRestDays` from
+ *     [com.uruj.data.RecommendationSnapshotRepository] escalates copy.
+ *     2 days running → "two days in red — eat more, sleep more,
+ *     investigate stress." 4+ days → "extended stand-down — check chronic
+ *     load + lifestyle factors."
+ *
+ *  4. **Confidence-tiered language** — high data coverage + ≥2 severe
+ *     flags → decisive copy ("REST. Train tomorrow."). Borderline → hedged
+ *     ("Rest is better; if you must, 20-min Z1 only."). Driven by
+ *     `provenance.overallConfidence` × `severeFlagCount`.
+ *
+ *  5. **Missing-data callout** — when expected signal absent (no HRV last
+ *     night, no recent CAR), surface it as a separate UI line so the
+ *     rider knows the engine knows.
+ *
+ *  6. **Cross-metric insights** — list of bullet observations that don't
+ *     change the tier but enrich the rationale. Examples:
+ *     "HRV trending down 2 nights running" / "TSB underwater 3 consecutive
+ *     days" / "VO2 trending up despite suppressed autonomic state."
+ *
+ * # AI HOOK
+ *
+ * A future `GroqAiReasoner` (Task #105 / v0.5) implements the same
+ * interface, takes the same [ReadinessContext], emits the same
+ * [Recommendation]. The AI version generates `rationale` + `insights` as
+ * free-form sentences instead of the structured assembly here. UI consumes
+ * either identically. CompositeReasoner can wrap both (AI primary, rules
+ * fallback) for bulletproofing.
  */
-object ReadinessRecommendationEngine {
+class RuleBasedReasoner : ReadinessReasoner {
 
-    data class Recommendation(
-        /** Headline call: "Rest day" / "Active recovery only" / etc. */
-        val headline: String,
-        /**
-         * Duration cap or qualifier: "walk + hydrate, that's it" / "Z1 spin <30 min".
-         * Nullable when the headline already implies duration (e.g. "Rest day").
-         */
-        val duration: String?,
-        /**
-         * Why-line. Surfaces the dominant drivers in plain language so the rider
-         * learns the mechanism behind the recommendation.
-         */
-        val rationale: String,
-    )
-
-    fun build(
+    override suspend fun reason(
+        context: ReadinessContext,
         score: Int,
         components: List<ReadinessComponent>,
-        inputs: ReadinessInputs,
-        today: LocalDate = LocalDate.now(),
     ): Recommendation {
-        val tsb = inputs.trainingStressBalance
-        val sleep = inputs.sleepLastNightHours
-        val hrvRatio = if (
-            inputs.hrvBaseline7d != null &&
-            inputs.hrvBaseline7d > 0f &&
-            inputs.hrvTodayRmssd != null &&
-            inputs.hrvDaysOfDataIn7d >= 7
-        ) inputs.hrvTodayRmssd / inputs.hrvBaseline7d else null
-        val hrvAbsolute = inputs.hrvTodayRmssd
-        val rhrDelta = if (
-            inputs.restingHrToday != null && inputs.restingHrBaseline7d != null
-        ) inputs.restingHrToday - inputs.restingHrBaseline7d else null
+        val today = context.today
+        val trends = context.trends
+        val patterns = context.patterns
 
+        // region Severity flag extraction
         // Severe = trip the over-reach / recovery-mandated wire.
         // Mild = caution, not block.
-        val tsbCrashed = tsb != null && tsb <= -25f
-        val tsbDeep = tsb != null && tsb <= -15f && !tsbCrashed
-        val sleepCrashed = sleep != null && sleep < 5f
-        val sleepLow = sleep != null && sleep < 6f && !sleepCrashed
-        val hrvCrashed = (hrvRatio != null && hrvRatio < 0.70f) ||
-            (hrvRatio == null && hrvAbsolute != null && hrvAbsolute < 12f)
-        val hrvLow = !hrvCrashed && (
-            (hrvRatio != null && hrvRatio < 0.85f) ||
-            (hrvRatio == null && hrvAbsolute != null && hrvAbsolute < 18f)
-        )
-        val rhrElevated = rhrDelta != null && rhrDelta >= 5
-        val rhrSlightlyUp = !rhrElevated && rhrDelta != null && rhrDelta >= 3
-
-        val severeFlags = listOf(tsbCrashed, sleepCrashed, hrvCrashed, rhrElevated).count { it }
-        val mildFlags = listOf(tsbDeep, sleepLow, hrvLow, rhrSlightlyUp).count { it }
-
-        // Multi-signal tier selection — over-rides the score bucket when needed.
-        // The score is one input; raw signals dominate when they're concerning.
-        val tier = when {
-            severeFlags >= 2 -> Tier.FullRest
-            score < 30 -> Tier.FullRest
-            severeFlags == 1 && score < 55 -> Tier.ActiveRecovery
-            score < 45 -> Tier.ActiveRecovery
-            mildFlags >= 2 && score < 65 -> Tier.EasyAerobic
-            score < 60 -> Tier.EasyAerobic
-            score < 75 -> Tier.ModerateEndurance
-            else -> Tier.HardGreenLight
+        val tsbValue = today.tsb?.value
+        val sleepHours = today.sleep?.hours
+        val hrvRatio = today.hrv?.ratioVsBaseline
+        val hrvAbs = today.hrv?.rmssdMs
+        val rhrDelta = today.rhr?.let { r ->
+            if (r.baselineBpm != null) r.todayBpm - r.baselineBpm else null
         }
+        val carTier = today.car?.tier
+        val carIsRecent = today.car != null && today.car.ageHours <= 24f
 
-        val (headline, duration) = pickHeadline(tier, today.dayOfYear)
-        val rationale = buildRationale(
-            tier, tsb, sleep, hrvRatio, hrvAbsolute, rhrDelta, components,
+        val severeFlags = mutableListOf<String>()
+        if (tsbValue != null && tsbValue <= -25f) severeFlags += "tsb-crashed"
+        if (sleepHours != null && sleepHours < 5f) severeFlags += "sleep-crashed"
+        if ((hrvRatio != null && hrvRatio < 0.70f) ||
+            (hrvRatio == null && hrvAbs != null && hrvAbs < 12f)
+        ) severeFlags += "hrv-crashed"
+        if (rhrDelta != null && rhrDelta >= 5) severeFlags += "rhr-elevated"
+        // v0.9.4 — CAR as 5th severe flag. Exaggerated OR blunted both
+        // signal HPA dysregulation (acute stress / chronic over-reach).
+        if (carIsRecent && (carTier == CarTier.EXAGGERATED || carTier == CarTier.BLUNTED)) {
+            severeFlags += "car-${carTier.name.lowercase()}"
+        }
+        // v0.9.4 — HRV trend direction. Falling slope counts as severe even
+        // when today's absolute is borderline.
+        val hrvTrendFalling = trends.hrv?.direction == TrendDirection.FALLING
+        if (hrvTrendFalling) severeFlags += "hrv-trending-down"
+
+        val mildFlags = mutableListOf<String>()
+        if (tsbValue != null && tsbValue <= -15f && "tsb-crashed" !in severeFlags) mildFlags += "tsb-deep"
+        if (sleepHours != null && sleepHours < 6f && "sleep-crashed" !in severeFlags) mildFlags += "sleep-low"
+        if (hrvRatio != null && hrvRatio < 0.85f && "hrv-crashed" !in severeFlags) mildFlags += "hrv-low"
+        if (hrvAbs != null && hrvAbs < 18f && hrvRatio == null && "hrv-crashed" !in severeFlags) mildFlags += "hrv-low"
+        if (rhrDelta != null && rhrDelta >= 3 && "rhr-elevated" !in severeFlags) mildFlags += "rhr-creeping"
+        if (carIsRecent && carTier == CarTier.SUPPRESSED) mildFlags += "car-suppressed"
+        if (patterns.tsbUnderwaterDays >= 3) mildFlags += "tsb-underwater-streak"
+        // endregion
+
+        val severeCount = severeFlags.size
+        val mildCount = mildFlags.size
+
+        // region Tier selection — multi-signal over-ride on composite score
+        val tier = when {
+            severeCount >= 2 -> ReadinessTier.FullRest
+            score < 30 -> ReadinessTier.FullRest
+            severeCount == 1 && score < 55 -> ReadinessTier.ActiveRecovery
+            score < 45 -> ReadinessTier.ActiveRecovery
+            mildCount >= 2 && score < 65 -> ReadinessTier.EasyAerobic
+            score < 60 -> ReadinessTier.EasyAerobic
+            score < 75 -> ReadinessTier.ModerateEndurance
+            else -> ReadinessTier.HardGreenLight
+        }
+        // endregion
+
+        // region Headline + duration — rotating taglines keyed off day-of-year
+        val (headline, duration) = pickHeadline(
+            tier = tier,
+            dayKey = LocalDate.now().dayOfYear,
+            consecutiveRestDays = patterns.consecutiveRestDays,
         )
-        return Recommendation(headline, duration, rationale)
+        // endregion
+
+        // region Rationale — drivers in plain language
+        val rationale = buildRationale(
+            tier = tier,
+            tsbValue = tsbValue,
+            sleepHours = sleepHours,
+            hrvRatio = hrvRatio,
+            hrvAbs = hrvAbs,
+            rhrDelta = rhrDelta,
+            carTier = if (carIsRecent) carTier else null,
+            carAmplitude = today.car?.amplitudeBpm,
+            components = components,
+        )
+        // endregion
+
+        // region Cross-metric insights — bullets below the rationale
+        val insights = buildInsights(today, trends, patterns)
+        // endregion
+
+        // region Missing-data callout
+        val missingCallout = buildMissingDataCallout(context.provenance.missingSignals)
+        // endregion
+
+        return Recommendation(
+            tier = tier,
+            headline = headline,
+            duration = duration,
+            rationale = rationale,
+            insights = insights,
+            missingSignalsCallout = missingCallout,
+            severeFlags = severeFlags,
+            mildFlags = mildFlags,
+        )
     }
 
-    private enum class Tier { FullRest, ActiveRecovery, EasyAerobic, ModerateEndurance, HardGreenLight }
-
     /**
-     * Headline pool per tier. Keyed off day-of-year so the same inputs produce
-     * different copy on consecutive days but the same copy across multiple opens
-     * on the same day (deterministic — easy to test, no random drift).
+     * Headline + duration pool per tier, rotated by day-of-year for variety.
+     * Multi-day rest streak escalates the FullRest copy so the rider knows
+     * we noticed the pattern.
      */
-    private fun pickHeadline(tier: Tier, dayKey: Int): Pair<String, String?> {
+    private fun pickHeadline(
+        tier: ReadinessTier,
+        dayKey: Int,
+        consecutiveRestDays: Int,
+    ): Pair<String, String?> {
+        // v0.9.4 — multi-day rest enforcement. Escalate copy when the
+        // rider's been resting multiple days; chronic state needs lifestyle
+        // attention, not just "rest more."
+        if (tier == ReadinessTier.FullRest && consecutiveRestDays >= 4) {
+            return "Extended stand-down" to
+                "4+ days of rest — investigate lifestyle (sleep, stress, fuel, illness)"
+        }
+        if (tier == ReadinessTier.FullRest && consecutiveRestDays >= 2) {
+            return "Day ${consecutiveRestDays + 1} in red" to
+                "two days running — eat more, sleep more, check chronic load"
+        }
+
         val pool: List<Pair<String, String?>> = when (tier) {
-            Tier.FullRest -> listOf(
+            ReadinessTier.FullRest -> listOf(
                 "Rest day" to "walk + hydrate, that's it",
                 "Full stand-down" to "no ride — body is recovering",
                 "Skip today" to "pause is the workout",
                 "Hold the line" to "let adaptation catch up; train tomorrow",
             )
-            Tier.ActiveRecovery -> listOf(
+            ReadinessTier.ActiveRecovery -> listOf(
                 "Active recovery only" to "Z1 spin ≤ 30 min, < 134 bpm",
                 "Zone 1 spin" to "20–30 min cap, conversation pace",
                 "Recovery ride or rest" to "≤ 30 min Z1, or skip entirely",
                 "Spin out the legs" to "20 min Z1, easy gears only",
             )
-            Tier.EasyAerobic -> listOf(
+            ReadinessTier.EasyAerobic -> listOf(
                 "Easy Z2 endurance" to "45–60 min cap, don't push",
                 "Aerobic only" to "Z2, 60 min, conversational",
                 "Steady Z2" to "45–75 min, keep it boring",
                 "Endurance pace" to "Z2 60 min, no tempo today",
             )
-            Tier.ModerateEndurance -> listOf(
+            ReadinessTier.ModerateEndurance -> listOf(
                 "Moderate aerobic" to "Z2–Z3, 60–90 min",
                 "Solid base session" to "60–120 min Z2, optional Z3 blocks",
                 "Productive endurance" to "Z2 base + tempo if you feel it",
                 "Good training day" to "60–90 min Z2, controlled Z3 OK",
             )
-            Tier.HardGreenLight -> listOf(
+            ReadinessTier.HardGreenLight -> listOf(
                 "Green light — go hard" to "threshold or VO2 session",
                 "All systems primed" to "Z4 intervals or VO2 max work",
                 "Hard day cleared" to "threshold, sweet-spot, or VO2 — pick one",
@@ -150,27 +225,29 @@ object ReadinessRecommendationEngine {
     }
 
     /**
-     * Why-line. Lists concerning drivers in plain language ("TSB −30 + 4.7h sleep
-     * + HRV 9 ms"). On a clean readiness day, surfaces the laggard component
-     * (which signal is closest to dragging the score down).
+     * Rationale — lists concerning drivers in plain language. CAR-aware in
+     * v0.9.4 (exaggerated +49 bpm shows up in the rationale, no more
+     * silent ignore).
      */
     private fun buildRationale(
-        tier: Tier,
-        tsb: Float?,
-        sleep: Float?,
+        tier: ReadinessTier,
+        tsbValue: Float?,
+        sleepHours: Float?,
         hrvRatio: Float?,
         hrvAbs: Float?,
         rhrDelta: Int?,
+        carTier: CarTier?,
+        carAmplitude: Float?,
         components: List<ReadinessComponent>,
     ): String {
         val drivers = mutableListOf<String>()
         when {
-            tsb != null && tsb <= -25f -> drivers += "TSB ${tsb.roundToInt()} (over-trained)"
-            tsb != null && tsb <= -15f -> drivers += "TSB ${tsb.roundToInt()} (deep fatigue)"
+            tsbValue != null && tsbValue <= -25f -> drivers += "TSB ${tsbValue.roundToInt()} (over-trained)"
+            tsbValue != null && tsbValue <= -15f -> drivers += "TSB ${tsbValue.roundToInt()} (deep fatigue)"
         }
         when {
-            sleep != null && sleep < 5f -> drivers += "${"%.1fh".format(sleep)} sleep (severe deficit)"
-            sleep != null && sleep < 6f -> drivers += "${"%.1fh".format(sleep)} sleep (low)"
+            sleepHours != null && sleepHours < 5f -> drivers += "${"%.1fh".format(sleepHours)} sleep (severe deficit)"
+            sleepHours != null && sleepHours < 6f -> drivers += "${"%.1fh".format(sleepHours)} sleep (low)"
         }
         when {
             hrvRatio != null && hrvRatio < 0.70f -> {
@@ -192,26 +269,32 @@ object ReadinessRecommendationEngine {
             rhrDelta != null && rhrDelta >= 5 -> drivers += "RHR +$rhrDelta bpm (elevated)"
             rhrDelta != null && rhrDelta >= 3 -> drivers += "RHR +$rhrDelta bpm (creeping up)"
         }
+        // v0.9.4 — CAR as driver
+        when (carTier) {
+            CarTier.EXAGGERATED -> drivers += "CAR +${carAmplitude?.roundToInt() ?: 0} bpm (acute stress signal)"
+            CarTier.BLUNTED -> drivers += "CAR flat (chronic-stress pattern)"
+            CarTier.SUPPRESSED -> drivers += "CAR suppressed (HPA-axis dampened)"
+            else -> {}
+        }
 
         if (drivers.isNotEmpty()) {
             val tail = when (tier) {
-                Tier.FullRest, Tier.ActiveRecovery -> " — don't dig the hole deeper."
-                Tier.EasyAerobic -> " — keep it light today."
+                ReadinessTier.FullRest, ReadinessTier.ActiveRecovery -> " — don't dig the hole deeper."
+                ReadinessTier.EasyAerobic -> " — keep it light today."
                 else -> ""
             }
             return drivers.joinToString(" + ") + tail
         }
 
-        // No concerning signal — surface laggard or full-green message.
         return when (tier) {
-            Tier.HardGreenLight -> "All recovery markers green. Body is primed."
-            Tier.ModerateEndurance -> {
+            ReadinessTier.HardGreenLight -> "All recovery markers green. Body is primed."
+            ReadinessTier.ModerateEndurance -> {
                 val laggard = components.filter { it.score != null }
                     .minByOrNull { it.score ?: 100 }
                 laggard?.let { "${it.label.lowercase()} slightly off (${it.detail}) but well within trainable range" }
                     ?: "balanced across all markers"
             }
-            Tier.EasyAerobic -> {
+            ReadinessTier.EasyAerobic -> {
                 val laggard = components.filter { it.score != null }
                     .minByOrNull { it.score ?: 100 }
                 laggard?.let { "${it.label.lowercase()} is the laggard (${it.detail}) — ease into it" }
@@ -220,4 +303,98 @@ object ReadinessRecommendationEngine {
             else -> "recovery markers low — protect tomorrow's session"
         }
     }
+
+    /**
+     * Cross-metric insights — bullets that enrich the rationale without
+     * changing the tier. Surface trends + multi-day patterns the rider
+     * would otherwise miss looking at single-day numbers.
+     */
+    private fun buildInsights(
+        today: ReadinessContext.TodaySnapshot,
+        trends: ReadinessContext.Trends,
+        patterns: ReadinessContext.Patterns,
+    ): List<String> {
+        val insights = mutableListOf<String>()
+
+        // HRV trend
+        trends.hrv?.let { hrv ->
+            if (hrv.direction == TrendDirection.FALLING && hrv.sampleCount >= 3) {
+                insights += "HRV trending down ${hrv.sampleCount} nights running (slope ${"%.1f".format(hrv.slopePerDay)} ms/day)"
+            } else if (hrv.direction == TrendDirection.RISING && hrv.sampleCount >= 3) {
+                insights += "HRV recovering ${hrv.sampleCount} nights running (slope +${"%.1f".format(hrv.slopePerDay)} ms/day)"
+            }
+        }
+
+        // RHR trend
+        trends.rhr?.let { rhr ->
+            if (rhr.direction == TrendDirection.RISING && rhr.sampleCount >= 5) {
+                insights += "RHR creeping up across last ${rhr.sampleCount} nights (illness / over-reach early warning)"
+            } else if (rhr.direction == TrendDirection.FALLING && rhr.sampleCount >= 5) {
+                insights += "RHR dropping over last ${rhr.sampleCount} nights — long-arc fitness building"
+            }
+        }
+
+        // VO2 trend (long-arc, encouraging signal even on bad days)
+        trends.vo2?.let { vo2 ->
+            if (vo2.direction == TrendDirection.RISING && vo2.sampleCount >= 5) {
+                insights += "VO2 trend rising — aerobic fitness improving on the long arc"
+            }
+        }
+
+        // TSB underwater streak
+        if (patterns.tsbUnderwaterDays >= 3) {
+            insights += "TSB underwater ${patterns.tsbUnderwaterDays} consecutive days — chronic over-reach"
+        }
+
+        // Multi-day low-readiness
+        if (patterns.consecutiveLowReadinessDays >= 3) {
+            insights += "Readiness < 50 for ${patterns.consecutiveLowReadinessDays} days running — check sleep + load"
+        }
+
+        // CAR / today's stress signal (when not already in rationale as driver)
+        today.car?.let { car ->
+            if (car.ageHours <= 24f && car.tier == CarTier.EXAGGERATED) {
+                insights += "CAR amplitude ${car.amplitudeBpm.roundToInt()} bpm exaggerated (acute stress)"
+            }
+        }
+
+        return insights
+    }
+
+    /**
+     * Missing-data callout — surfaces when an expected signal isn't there
+     * so the rider knows what the engine isn't seeing today.
+     */
+    private fun buildMissingDataCallout(missingSignals: List<String>): String? {
+        if (missingSignals.isEmpty()) return null
+        val human = missingSignals.mapNotNull { signal ->
+            when (signal) {
+                "hrv-last-night" -> "HRV (wore strap overnight?)"
+                "sleep-last-night" -> "Sleep (Samsung sync?)"
+                "rhr-baseline" -> "Athletic RHR"
+                "training-load" -> "Training load"
+                "car-today" -> null  // CAR is supplementary, don't nag
+                else -> null
+            }
+        }
+        if (human.isEmpty()) return null
+        return "Missing today: ${human.joinToString(" · ")}"
+    }
 }
+
+/**
+ * v0.9.4 — kept as object wrapper for backward compatibility with the v0.9.3
+ * call site in [ReadinessCalculator]. The actual logic lives in
+ * [RuleBasedReasoner]. New code should construct a RuleBasedReasoner directly.
+ *
+ * # AI HOOK
+ *
+ * v0.9.3's `ReadinessRecommendationEngine.build(score, components, inputs)`
+ * is the legacy entry. v0.9.4 replaces this with the reasoner interface.
+ * Future AI swap-in happens at the [ReadinessReasoner] seam, not here.
+ */
+@Deprecated(
+    "Use RuleBasedReasoner via ReadinessReasoner interface (v0.9.4)",
+    ReplaceWith("RuleBasedReasoner()"),
+)
+object ReadinessRecommendationEngine

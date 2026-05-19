@@ -214,6 +214,41 @@ fun ReadinessCard(
                     fontWeight = FontWeight.Medium,
                 )
             }
+            // v0.9.4 — cross-metric insights bullets. Surfaced separately
+            // from the rationale so trend + multi-day patterns get visual
+            // weight. Empty when nothing notable today.
+            if (result.recommendationInsights.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                result.recommendationInsights.forEach { insight ->
+                    Row(verticalAlignment = Alignment.Top) {
+                        Text(
+                            text = "• ",
+                            color = UrujAccent,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            text = insight,
+                            color = UrujText,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                }
+            }
+            // v0.9.4 — missing-data callout. Surfaces what the engine isn't
+            // seeing today so the rider knows the recommendation's blind spots.
+            val missingCallout = result.recommendationMissingSignals
+            if (!missingCallout.isNullOrBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = missingCallout,
+                    color = UrujZone3,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.3.sp,
+                )
+            }
         }
         if (snapshot != null) {
             Spacer(Modifier.height(8.dp))

@@ -46,6 +46,18 @@ data class ReadinessResult(
      * Nullable on limited-data path.
      */
     val recommendationRationale: String? = null,
+    /**
+     * v0.9.4 — cross-metric insights bullets surfaced below the rationale.
+     * Examples: "HRV trending down 3 nights running", "TSB underwater
+     * 4 consecutive days". Empty when nothing notable.
+     */
+    val recommendationInsights: List<String> = emptyList(),
+    /**
+     * v0.9.4 — when an expected signal is missing today (no HRV last night,
+     * no Samsung sync), surfaces a single-line callout so the rider knows
+     * what the engine doesn't see. Null when all expected signals present.
+     */
+    val recommendationMissingSignals: String? = null,
 )
 
 enum class ReadinessGrade(val label: String) {
