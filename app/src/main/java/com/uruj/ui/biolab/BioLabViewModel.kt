@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.uruj.data.BioLabRepository
 import com.uruj.data.BioLabSnapshot
 import com.uruj.data.HcReadGuard
+import com.uruj.data.ReadinessRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -15,6 +16,13 @@ import kotlinx.coroutines.launch
 class BioLabViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = BioLabRepository(application)
+    // v0.9.7 — ReadinessRepository ownership so Bio Lab can refresh today's
+    // TSB snapshot before the Training State card reads disk. Fixes the
+    // drift bug where Readiness card showed live TSB (e.g. -30) while Bio
+    // Lab Training State card showed stale disk value (-29) from earlier
+    // in the day. See [[reference_snapshot_persistence_architecture]] —
+    // today's mutable / past immutable.
+    private val readinessRepo = ReadinessRepository(application)
 
     private val _snapshot = MutableStateFlow<BioLabSnapshot?>(null)
     val snapshot: StateFlow<BioLabSnapshot?> = _snapshot.asStateFlow()
@@ -61,6 +69,17 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
                     return@launch
                 }
                 HcReadGuard.recordRead("biolab.snapshot")
+                // v0.9.7 — refresh today's TSB snapshot BEFORE building the
+                // Bio Lab snapshot. Training Load card reads disk; without
+                // this refresh the card would show the stale morning value
+                // while the live Readiness recompute (on Checklist) shows
+                // a slightly different value (Samsung HC sync drift).
+                // Wrapped in runCatching — Bio Lab open shouldn't fail if
+                // TSB refresh blips (HC throttle, missing rhr baseline, etc.)
+                runCatching {
+                    readinessRepo.refreshTsbSnapshotForToday()
+                }.onFailure { Log.w(TAG, "[v0.9.7] TSB pre-refresh failed", it) }
+
                 val fresh = repo.snapshot()
                 val shouldUpdate = force ||
                     cached == null ||

@@ -72,8 +72,20 @@ class TsbSnapshotRepository(context: Context) {
     suspend fun save(snapshot: TsbSnapshot, date: LocalDate = LocalDate.now()): Boolean =
         withContext(Dispatchers.IO) {
             val file = File(baseDir, "${date}.json")
-            if (file.exists()) {
-                Log.d(TAG, "skipping save: $date already on disk")
+            // v0.9.7 — today's snapshot is MUTABLE during the day because
+            // Samsung's batched HC sync can land new exercise sessions hours
+            // after they finished. Each new session shifts hrTSS / ATL / TSB.
+            // Pre-v0.9.7 the save skipped if file existed → Readiness card
+            // showed live recompute (e.g. −30) while Bio Lab Training Load
+            // card read the stale morning snapshot (e.g. −29). User caught
+            // 2026-05-19 mid-morning.
+            //
+            // Today: overwrite. Past dates: immutable — preserves trend chart
+            // integrity (we never want yesterday's saved value to drift
+            // because today's recompute happened to also touch that bucket).
+            val today = LocalDate.now()
+            if (date != today && file.exists()) {
+                Log.d(TAG, "skipping save: $date is historical (immutable)")
                 return@withContext false
             }
             runCatching {

@@ -64,8 +64,12 @@ class Vo2SnapshotRepository(context: Context) {
     suspend fun save(snapshot: Vo2Snapshot, date: LocalDate = LocalDate.now()): Boolean =
         withContext(Dispatchers.IO) {
             val file = File(baseDir, "${date}.json")
-            if (file.exists()) {
-                Log.d(TAG, "skipping save: $date already on disk")
+            // v0.9.7 — today's snapshot is MUTABLE during the day. VO2 refines
+            // when Athletic RHR refines (RHR uses sleep + HC HR samples which
+            // can arrive late). Past dates immutable for trend integrity.
+            val today = LocalDate.now()
+            if (date != today && file.exists()) {
+                Log.d(TAG, "skipping save: $date is historical (immutable)")
                 return@withContext false
             }
             runCatching {

@@ -109,6 +109,93 @@ class ReadinessRepository(context: Context) {
     }
 
     /**
+     * v0.9.7 — lightweight TSB-only recompute. Reads HC exercise sessions +
+     * URUJ rides, computes fresh CTL/ATL/TSB, overwrites today's
+     * [TsbSnapshot] on disk. Used by [com.uruj.ui.biolab.BioLabViewModel]
+     * to ensure the Training State card reads the same value the Readiness
+     * card just showed.
+     *
+     * Cheaper than the full [computeWithDiagnostics] path:
+     *   - Skips Sleep / HRV / HC RHR / HC HRV reads
+     *   - Skips reasoner + recommendation snapshot save
+     *   - Only HC reads needed: ExerciseSessionRecord + HeartRateRecord
+     *     (for hrTSS), plus what `historyRepo.listAll()` returns from disk.
+     *
+     * Returns the latest TSB scalar (rounded value matches what UI shows)
+     * for any caller that wants to display it inline without a disk read.
+     * Logs nothing if no rides + no HC sessions (rider has no training
+     * data yet — TSB undefined).
+     */
+    suspend fun refreshTsbSnapshotForToday(): Float? = withContext(Dispatchers.IO) {
+        val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
+        if (!sdkOk) {
+            return@withContext computeTsb(null, emptySet(), null)
+        }
+        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
+        val granted = if (client != null) {
+            runCatching { client.permissionController.getGrantedPermissions() }
+                .getOrDefault(emptySet())
+        } else emptySet()
+
+        // Need Athletic RHR for multi-sport hrTSS — try direct RestingHR record
+        // first, then sleep-derived. Lightweight versions of those reads.
+        val rhrForLoad = readBaselineRhrOnly(client, granted)
+        val detailed = computeTsbDetailed(client, granted, rhrForLoad)
+        if (detailed != null) {
+            val today = LocalDate.now(ZoneId.systemDefault())
+            tsbSnapshots.save(
+                TsbSnapshot(
+                    dateIsoLocal = today.toString(),
+                    tsb = detailed.tsb,
+                    ctl = detailed.ctl,
+                    atl = detailed.atl,
+                    totalLoad42d = detailed.totalLoad42d,
+                    methodologyVersion = TsbSnapshotRepository.METHODOLOGY_VERSION,
+                    computedAtMs = System.currentTimeMillis(),
+                ),
+                date = today,
+            )
+            Log.d(
+                "URUJ-TSB",
+                "[v0.9.7] refreshed today's TSB: ${"%.2f".format(detailed.tsb)} " +
+                    "(CTL ${"%.2f".format(detailed.ctl)} · ATL ${"%.2f".format(detailed.atl)} · " +
+                    "totalLoad42d ${"%.0f".format(detailed.totalLoad42d)}) — snapshot overwritten",
+            )
+            return@withContext detailed.tsb
+        }
+        null
+    }
+
+    /**
+     * Lightweight RHR lookup for TSB compute only. Tries direct
+     * RestingHeartRateRecord first (cheap), falls back to sleep-derived
+     * (heavier but still cheaper than full Readiness compute).
+     */
+    private suspend fun readBaselineRhrOnly(
+        client: HealthConnectClient?,
+        granted: Set<String>,
+    ): Int? {
+        if (client == null) return null
+        if (HealthPermission.getReadPermission(RestingHeartRateRecord::class) in granted) {
+            val (_, baseline) = readRhrTodayAndBaseline(client, Instant.now())
+            if (baseline != null) return baseline
+        }
+        // Fallback: sleep-derived RHR (one HC HR + sleep window read)
+        val hrPerm = HealthPermission.getReadPermission(HeartRateRecord::class) in granted
+        val sleepPerm = HealthPermission.getReadPermission(SleepSessionRecord::class) in granted
+        if (!hrPerm || !sleepPerm) return null
+        val sleepingData = readSleepingHrInputs(client, Instant.now()) ?: return null
+        val weekAgo = Instant.now().minus(Duration.ofDays(7))
+        val strapSamples = continuousBiometric.hrSamplesForWindow(weekAgo, Instant.now())
+        val sleepingResult = sleepingRhrCalc.compute(
+            hcSamples = sleepingData.first,
+            sleepWindows = sleepingData.second,
+            strapSamples = strapSamples,
+        )
+        return sleepingResult?.medianBpm
+    }
+
+    /**
      * Returns the result PLUS raw record counts. UI uses this to show users exactly
      * what Health Connect has — no more guessing whether sync worked.
      */
@@ -598,6 +685,8 @@ class ReadinessRepository(context: Context) {
 
         // 1. URUJ cycling rides (power-based TSS)
         val ftp = rides.lastOrNull()?.ftpWatts?.coerceAtLeast(1) ?: 200
+        var urujRideTssTotal = 0f
+        var urujRidesInWindow = 0
         for (ride in rides) {
             val rideInstant = Instant.ofEpochMilli(ride.startedAtMs)
             val rideDate = rideInstant.atZone(zone).toLocalDate()
@@ -610,12 +699,16 @@ class ReadinessRepository(context: Context) {
             val tss = intensityFactor * intensityFactor * hours * 100f
             dailyTss[daysAgo] += tss
             totalLoad += tss
+            urujRideTssTotal += tss
+            urujRidesInWindow++
             urujRideStarts += rideInstant
         }
 
         // 2. Samsung non-cycling sessions (HR-based hrTSS). Needs RHR + maxHR
         //    to compute HR Reserve fraction. If RHR unknown, skip — fake hrTSS
         //    without a personal baseline would mislead.
+        var samsungHrTssTotal = 0f
+        var samsungSessionsInWindow = 0
         if (client != null && athleticRhr != null && athleticRhr > 0) {
             val profile = runCatching { profileStore.current() }.getOrNull()
             val maxHr = profile?.maxHrBpm ?: 190
@@ -633,6 +726,8 @@ class ReadinessRepository(context: Context) {
                     if (s.daysAgo !in 0..42) continue
                     dailyTss[s.daysAgo] += s.tss
                     totalLoad += s.tss
+                    samsungHrTssTotal += s.tss
+                    samsungSessionsInWindow++
                 }
             }
         }
@@ -649,7 +744,23 @@ class ReadinessRepository(context: Context) {
             atl = atl * (1f - 1f / 7f) + tss * (1f / 7f)
             ctl = ctl * (1f - 1f / 42f) + tss * (1f / 42f)
         }
-        return TsbCompute(tsb = ctl - atl, ctl = ctl, atl = atl, totalLoad42d = totalLoad)
+        val tsbValue = ctl - atl
+        // v0.9.7 — verbose log on TSB compute path. When the rider asks "why
+        // did TSB shift?" between two Bio Lab opens, this log line documents
+        // exactly which inputs the engine saw at compute time. Pair with the
+        // [TsbSnapshotRepository] save log to trace drift via Samsung's
+        // batched HC sync arriving mid-day.
+        Log.d(
+            "URUJ-TSB",
+            "[v0.9.7] computed: TSB=${"%.2f".format(tsbValue)} " +
+                "(CTL=${"%.2f".format(ctl)} · ATL=${"%.2f".format(atl)}) | " +
+                "inputs: $urujRidesInWindow URUJ rides → TSS ${"%.0f".format(urujRideTssTotal)} · " +
+                "$samsungSessionsInWindow Samsung non-cycling sessions → hrTSS ${"%.0f".format(samsungHrTssTotal)} · " +
+                "totalLoad42d ${"%.0f".format(totalLoad)} · " +
+                "athleticRhr=${athleticRhr ?: "null"} · " +
+                "ftp=$ftp",
+        )
+        return TsbCompute(tsb = tsbValue, ctl = ctl, atl = atl, totalLoad42d = totalLoad)
     }
 
     /**
