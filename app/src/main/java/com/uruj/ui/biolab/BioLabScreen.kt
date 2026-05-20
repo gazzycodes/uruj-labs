@@ -58,6 +58,7 @@ import com.uruj.ui.theme.UrujSurface
 import com.uruj.ui.theme.UrujSurfaceHigh
 import com.uruj.ui.theme.UrujText
 import com.uruj.ui.theme.UrujZone1
+import com.uruj.ui.theme.UrujZoneBelowZ1
 import com.uruj.ui.theme.UrujZone2
 import com.uruj.ui.theme.UrujZone3
 import com.uruj.ui.theme.UrujZone4
@@ -873,12 +874,47 @@ private fun KarvonenZonesCard(zones: KarvonenZonesCalculator.Result) {
             color = UrujMuted, fontSize = 11.sp,
         )
         Spacer(Modifier.height(10.dp))
+        // v0.9.17 — surface the sub-Z1 band (HR below 50% HRR) so the rider
+        // knows where their actual recovery floor sits. TIZ now exposes
+        // sub-Z1 as its own bucket; this row makes the numeric threshold
+        // visible alongside the standard 5 zones.
+        SubZ1Row(floorBpm = zones.zones.first().lowerBpm, restingHrBpm = zones.hrRest)
+        Spacer(Modifier.height(4.dp))
         zones.zones.forEach { zone ->
             ZoneRow(zone)
             Spacer(Modifier.height(4.dp))
         }
     }
     if (showInfo) KarvonenInfoDialog(zones = zones, onDismiss = { showInfo = false })
+}
+
+@Composable
+private fun SubZ1Row(floorBpm: Int, restingHrBpm: Int) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier.size(8.dp).clip(CircleShape).background(UrujZoneBelowZ1),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "Sub-Z1  Recovery floor",
+            color = UrujText,
+            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            "<$floorBpm",
+            color = UrujZoneBelowZ1,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Black,
+            fontSize = 14.sp,
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            "bpm",
+            color = UrujMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+        )
+    }
 }
 
 @Composable
