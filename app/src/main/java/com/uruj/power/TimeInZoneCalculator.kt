@@ -1,6 +1,7 @@
 package com.uruj.power
 
 import java.time.Instant
+import kotlin.math.roundToInt
 
 /**
  * Computes time spent in each Karvonen zone for a recorded ride.
@@ -160,7 +161,12 @@ class TimeInZoneCalculator {
         // Z1 floor = restHR + 50% HRR (Karvonen). Surfaced for UI labelling
         // ("Sub-Z1 < N bpm") without re-running the classifier.
         val hrr = maxHrBpm - restingHrBpm
-        val subRecoveryFloor = if (hrr > 0) (restingHrBpm + 0.50f * hrr).toInt() else restingHrBpm
+        // v0.9.19 — use roundToInt() to match KarvonenZonesCalculator.compute
+        // which uses .roundToInt() for zone[0].lowerBpm. Pre-fix this used
+        // .toInt() (truncates toward zero) so 117.5 became 118 here but 119
+        // on the Bio Lab Karvonen card. Same rounding-asymmetry class as
+        // Task #164 TSB hero fix. One convention everywhere.
+        val subRecoveryFloor = if (hrr > 0) (restingHrBpm + 0.50f * hrr).roundToInt() else restingHrBpm
 
         return Result(
             timeInZoneMs = zoneMs,
