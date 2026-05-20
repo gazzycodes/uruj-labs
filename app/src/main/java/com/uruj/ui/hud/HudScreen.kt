@@ -61,6 +61,7 @@ import com.uruj.ui.theme.UrujSurface
 import com.uruj.ui.theme.UrujSurfaceHigh
 import com.uruj.ui.theme.UrujText
 import com.uruj.ui.theme.UrujZone1
+import com.uruj.ui.theme.UrujZoneBelowZ1
 import com.uruj.ui.theme.UrujZone2
 import com.uruj.ui.theme.UrujZone3
 import com.uruj.ui.theme.UrujZone4
@@ -543,8 +544,11 @@ private fun TwinHero(state: RideState) {
     val hr = state.bleLiveBpm ?: state.latestSample?.hrBpm
     val hrFromBle = state.bleLiveBpm != null
 
-    // Karvonen zone color (0..5; 0 = below Z1). Same classifier every other
-    // HR-zone surface uses. Falls back to muted when HR or profile invalid.
+    // v0.9.17 — Karvonen classifier returns 0..5 (0 = sub-Z1 below 50% HRR,
+    // 1-5 = Z1-Z5). HUD now distinguishes sub-Z1 with its own muted slate
+    // color so the rider can tell at a glance "below recovery" vs "in Z1."
+    // Same classifier as TIZ, Route map, Bio Lab, Audio coach — single
+    // source of truth (v0.9.14 + v0.9.17).
     val zoneColor = if (hr != null && profile.maxHrBpm > profile.restingHrBpm) {
         val z = KarvonenZonesCalculator.classifyKarvonenZone(
             hrBpm = hr,
@@ -552,7 +556,8 @@ private fun TwinHero(state: RideState) {
             hrRest = profile.restingHrBpm.coerceAtLeast(40),
         )
         when (z) {
-            0, 1 -> UrujZone1
+            0 -> UrujZoneBelowZ1
+            1 -> UrujZone1
             2 -> UrujZone2
             3 -> UrujZone3
             4 -> UrujZone4
@@ -561,6 +566,8 @@ private fun TwinHero(state: RideState) {
     } else UrujMuted
 
     // Pulse only at Z3+ (tempo / threshold / VO2) — calm baseline reads steady.
+    // Sub-Z1, Z1, Z2 all stay still so the rider's eye isn't drawn to
+    // sub-threshold intensity (where they should already be unhurried).
     val infinite = rememberInfiniteTransition(label = "hr_pulse")
     val pulse by infinite.animateFloat(
         initialValue = 0.65f,
@@ -571,7 +578,13 @@ private fun TwinHero(state: RideState) {
         ),
         label = "hr_pulse_alpha",
     )
-    val pulseAlpha = if (hr != null && zoneColor != UrujMuted && zoneColor != UrujZone1 && zoneColor != UrujZone2) pulse else 1f
+    val pulseAlpha = if (
+        hr != null &&
+        zoneColor != UrujMuted &&
+        zoneColor != UrujZoneBelowZ1 &&
+        zoneColor != UrujZone1 &&
+        zoneColor != UrujZone2
+    ) pulse else 1f
 
     Row(
         modifier = Modifier.fillMaxWidth(),

@@ -31,11 +31,30 @@ import java.time.Instant
 class TimeInZoneCalculator {
 
     data class Result(
-        /** ms spent in each zone, indexed by HrZone.ordinal (0=Z1, 4=Z5). */
+        /**
+         * ms spent in each zone, indexed as:
+         *   [0] = Sub-Z1 / sub-recovery (HR < 50% HRR — below Karvonen Z1 floor)
+         *   [1] = Z1 Recovery (50-60% HRR)
+         *   [2] = Z2 Endurance (60-70% HRR)
+         *   [3] = Z3 Tempo (70-80% HRR)
+         *   [4] = Z4 Threshold (80-90% HRR)
+         *   [5] = Z5 VO2/Sprint (≥90% HRR)
+         *
+         * v0.9.17 — 6-bucket array (was 5; sub-Z1 was collapsed into Z1 for
+         * display compatibility). Sub-Z1 now has its own slot so rides like
+         * deep-recovery spins that sit below the Z1 floor are visible as
+         * such. SessionCoach + RouteMapViewModel unaffected (both classify
+         * via KarvonenZonesCalculator directly, don't read this array).
+         */
         val timeInZoneMs: LongArray,
         /** Total time covered by HR samples (sum of timeInZoneMs). */
         val totalMs: Long,
-        /** Fraction of total in Z1+Z2 (easy / polarized base). */
+        /**
+         * Fraction of total in Sub-Z1 + Z1 + Z2 (low-intensity / polarized
+         * "easy" per Seiler/Stöggl). Sub-Z1 counts toward easy because it
+         * is definitionally MORE below LT1 than Z1 — easier, not harder.
+         * The gray-zone trap is Z3 mid-intensity bleed, not sub-recovery.
+         */
         val easyPct: Float,
         /** Fraction in Z3 (gray zone — Blummenfelt's discouraged middle). */
         val grayPct: Float,
@@ -43,6 +62,12 @@ class TimeInZoneCalculator {
         val hardPct: Float,
         /** Number of HR samples that contributed to the analysis. */
         val sampleCount: Int,
+        /**
+         * The bpm value that separates Sub-Z1 from Z1 (= restingHrBpm +
+         * 0.50 × HRR). Surfaced so the UI can label "Sub-Z1 < X bpm" without
+         * recomputing the Karvonen math. v0.9.17.
+         */
+        val subRecoveryFloorBpm: Int,
     ) {
         // LongArray needs explicit equals/hashCode override
         override fun equals(other: Any?): Boolean {
@@ -83,7 +108,8 @@ class TimeInZoneCalculator {
     ): Result? {
         if (samples.size < 2 || maxHrBpm <= 0) return null
 
-        val zoneMs = LongArray(5)
+        // v0.9.17 — 6 buckets: index 0 = Sub-Z1, 1-5 = Z1-Z5.
+        val zoneMs = LongArray(6)
         var totalMs = 0L
         var sampleCount = 0
 
@@ -103,21 +129,19 @@ class TimeInZoneCalculator {
             if (deltaMs > maxGapMs) continue
             if (deltaMs == 0L) continue
 
-            // v0.9.14 — Karvonen classification. Returns 0..5; we collapse the
-            // "below Z1" bucket (return 0) into Z1 (index 0 here) for the
-            // 5-zone bar chart + polarized compliance compatibility.
-            // KarvonenZonesCalculator.classifyKarvonenZone returns 1-5 for in-
-            // band readings and 0 for sub-recovery (resting / coast). We map
-            // 0 → bar-chart index 0 = Z1, and 1-5 → indices 0-4.
+            // v0.9.17 — Karvonen classifier returns 0..5; we now keep its
+            // semantics 1:1 (0 = Sub-Z1, 1-5 = Z1-Z5) so the TIZ bar chart
+            // can display sub-recovery time honestly. Pre-v0.9.17 collapsed
+            // 0 into Z1 for 5-zone bar compatibility — that hid the truth
+            // when riders cruised below their Z1 floor (e.g. recovery rides
+            // at HR < 50% HRR). SessionCoach + RouteMapViewModel are
+            // unaffected (they call the classifier directly, not this array).
             val karvonenZone = KarvonenZonesCalculator.classifyKarvonenZone(
                 hrBpm = bpm,
                 hrMax = maxHrBpm,
                 hrRest = restingHrBpm,
             )
-            val zoneIdx = when (karvonenZone) {
-                0 -> 0      // below Z1 → display as Z1 for bar chart
-                else -> (karvonenZone - 1).coerceIn(0, 4)
-            }
+            val zoneIdx = karvonenZone.coerceIn(0, 5)
             zoneMs[zoneIdx] = zoneMs[zoneIdx] + deltaMs
             totalMs += deltaMs
             sampleCount++
@@ -125,9 +149,18 @@ class TimeInZoneCalculator {
 
         if (totalMs == 0L) return null
 
-        val easyMs = zoneMs[0] + zoneMs[1]
-        val grayMs = zoneMs[2]
-        val hardMs = zoneMs[3] + zoneMs[4]
+        // Polarized 80/20 (Seiler/Stöggl): "easy" = below LT1. Sub-Z1 + Z1 + Z2
+        // are all below LT1, so all three count toward easy. Sub-Z1 is the
+        // most-easy of all (definitionally more low-intensity than Z1), not
+        // a "doesn't count" tier.
+        val easyMs = zoneMs[0] + zoneMs[1] + zoneMs[2]
+        val grayMs = zoneMs[3]
+        val hardMs = zoneMs[4] + zoneMs[5]
+
+        // Z1 floor = restHR + 50% HRR (Karvonen). Surfaced for UI labelling
+        // ("Sub-Z1 < N bpm") without re-running the classifier.
+        val hrr = maxHrBpm - restingHrBpm
+        val subRecoveryFloor = if (hrr > 0) (restingHrBpm + 0.50f * hrr).toInt() else restingHrBpm
 
         return Result(
             timeInZoneMs = zoneMs,
@@ -136,6 +169,7 @@ class TimeInZoneCalculator {
             grayPct = grayMs.toFloat() / totalMs,
             hardPct = hardMs.toFloat() / totalMs,
             sampleCount = sampleCount,
+            subRecoveryFloorBpm = subRecoveryFloor,
         )
     }
 }

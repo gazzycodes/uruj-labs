@@ -54,6 +54,7 @@ import com.uruj.ui.theme.UrujSurface
 import com.uruj.ui.theme.UrujSurfaceHigh
 import com.uruj.ui.theme.UrujText
 import com.uruj.ui.theme.UrujZone1
+import com.uruj.ui.theme.UrujZoneBelowZ1
 import com.uruj.ui.theme.UrujZone2
 import com.uruj.ui.theme.UrujZone3
 import com.uruj.ui.theme.UrujZone4
@@ -393,10 +394,11 @@ private fun TimeInZoneCard(
                 .clip(RoundedCornerShape(4.dp)),
         ) {
             val totalMs = result.totalMs.coerceAtLeast(1L)
+            // v0.9.17 — 6 buckets: index 0 = Sub-Z1, 1-5 = Z1-Z5.
             val zoneColors = listOf(
-                UrujZone1, UrujZone2, UrujZone3, UrujZone4, UrujZone5,
+                UrujZoneBelowZ1, UrujZone1, UrujZone2, UrujZone3, UrujZone4, UrujZone5,
             )
-            for (i in 0..4) {
+            for (i in 0..5) {
                 val pct = result.timeInZoneMs[i].toFloat() / totalMs
                 if (pct > 0f) {
                     Box(
@@ -410,12 +412,26 @@ private fun TimeInZoneCard(
         }
         // Per-zone row with minutes + percent
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
-            val labels = listOf("Z1 Recovery", "Z2 Endurance", "Z3 Tempo", "Z4 Threshold", "Z5 VO2/Sprint")
-            val zoneColors = listOf(UrujZone1, UrujZone2, UrujZone3, UrujZone4, UrujZone5)
-            for (i in 0..4) {
+            // v0.9.17 — label index 0 = Sub-Z1 with the rider's actual floor bpm
+            // so they can see at a glance how deep below recovery they were.
+            val labels = listOf(
+                "Sub-Z1 Recovery <${result.subRecoveryFloorBpm} bpm",
+                "Z1 Recovery",
+                "Z2 Endurance",
+                "Z3 Tempo",
+                "Z4 Threshold",
+                "Z5 VO2/Sprint",
+            )
+            val zoneColors = listOf(
+                UrujZoneBelowZ1, UrujZone1, UrujZone2, UrujZone3, UrujZone4, UrujZone5,
+            )
+            for (i in 0..5) {
                 val zoneMs = result.timeInZoneMs[i]
                 val pct = if (result.totalMs > 0) zoneMs.toFloat() / result.totalMs * 100f else 0f
-                if (zoneMs > 0L || i in 1..3) {  // always show Z2-Z4 even if 0
+                // Always show Z1-Z4 (the spine of training zones) even when 0.
+                // Sub-Z1 + Z5 only show when present so the card stays tidy on
+                // tempo / threshold rides where the rider never coasts.
+                if (zoneMs > 0L || i in 1..4) {
                     Row(
                         modifier = Modifier.padding(vertical = 1.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -444,23 +460,23 @@ private fun TimeInZoneCard(
                 }
             }
         }
-        // v0.8.5 — zone-system disclosure. TIZ uses %max-HR thresholds
-        // (Z1<60% / Z2<70% / Z3<80% / Z4<90% / Z5≥90%) — matches the route
-        // map polyline coloring for consistency. Bio Lab's HR card displays
-        // Karvonen zones (HR-Reserve-based, personalized via sleeping RHR)
-        // which use slightly different boundaries. Honest disclosure now;
-        // full unification on Karvonen across TIZ + map + audio coach is
-        // tracked as task #147 for a future PR.
+        // v0.9.17 — disclosure updated to reflect Karvonen unification
+        // (v0.9.14) + new Sub-Z1 bucket (v0.9.17). TIZ now uses the SAME
+        // Karvonen classifier as Bio Lab + Route map + HUD + Audio coach
+        // (KarvonenZonesCalculator.classifyKarvonenZone). One source of
+        // truth across every zone-rendering surface.
         Spacer(Modifier.height(4.dp))
         Text(
-            "Zones above use %max-HR thresholds (industry standard for map " +
-                "coloring). Bio Lab uses Karvonen zones (personalized via " +
-                "sleeping RHR) — boundaries differ by ~3-5 bpm.",
+            "Zones use Karvonen (HR Reserve) — personalized via your sleeping " +
+                "RHR. Sub-Z1 = HR below 50% HRR (true recovery floor, below " +
+                "Z1). Same classifier as Bio Lab, route map, HUD, audio coach.",
             color = UrujMuted,
             fontSize = 10.sp,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
         )
         // Polarized 80/20 compliance line — Blummenfelt's discipline benchmark.
+        // v0.9.17 — "easy" now includes Sub-Z1 (definitionally more low-intensity
+        // than Z1, not a separate tier from a polarized-discipline standpoint).
         Spacer(Modifier.height(6.dp))
         Column(modifier = Modifier.padding(horizontal = 12.dp)) {
             Text(
@@ -475,7 +491,7 @@ private fun TimeInZoneCard(
             val grayPct = (result.grayPct * 100).toInt()
             val hardPct = (result.hardPct * 100).toInt()
             Text(
-                "$easyPct% easy (Z1-Z2) · $grayPct% gray (Z3) · $hardPct% hard (Z4-Z5)",
+                "$easyPct% easy (sub-Z1 + Z1 + Z2) · $grayPct% gray (Z3) · $hardPct% hard (Z4-Z5)",
                 color = UrujText,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,

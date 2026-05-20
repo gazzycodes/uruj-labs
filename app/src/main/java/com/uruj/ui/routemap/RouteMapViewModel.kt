@@ -193,7 +193,13 @@ class RouteMapViewModel(application: Application) : AndroidViewModel(application
             hrRest = restingHrBpm,
         )
         // Map shared classifier (0=below Z1, 1-5=Z1-Z5) → polyline HrZone.
-        // "Below Z1" collapses to Z1 for the polyline (no separate band).
+        // v0.9.17 — Sub-Z1 deliberately stays on the route polyline as Z1
+        // color. The TIZ card now exposes sub-Z1 as its own 6th bucket so
+        // depth-of-recovery is visible numerically, but the route polyline
+        // stays at 5 colors for map readability — a 6th color on a busy
+        // OSM tile background would crowd the visual. Riders see "where
+        // sub-recovery time happened" in TIZ; they see "where they rode and
+        // roughly how hard" on the map. Different lenses, same source data.
         return when (zone) {
             0, 1 -> HrZone.Z1
             2 -> HrZone.Z2

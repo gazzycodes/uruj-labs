@@ -18,6 +18,11 @@ val UrujMuted = Color(0xFF707080)
 val UrujAccent = Color(0xFF00E676)
 val UrujNeonMagenta = Color(0xFFFF2DC8)
 
+// v0.9.17 — Sub-Z1 (below 50% HRR / below Z1 floor). Muted slate-blue
+// distinct from Z1's bright blue. Surfaces sub-recovery time in TIZ bar
+// + HUD HR readout. Calm by design — the rider's eye should not be drawn
+// here, but the truth should be visible.
+val UrujZoneBelowZ1 = Color(0xFF4A5878)
 val UrujZone1 = Color(0xFF2196F3)
 val UrujZone2 = Color(0xFF00FF85)
 val UrujZone3 = Color(0xFFFFC107)
