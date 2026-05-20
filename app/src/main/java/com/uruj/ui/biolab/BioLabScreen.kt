@@ -59,6 +59,7 @@ import com.uruj.ui.theme.UrujSurfaceHigh
 import com.uruj.ui.theme.UrujText
 import com.uruj.ui.theme.UrujZone1
 import com.uruj.ui.theme.UrujZoneBelowZ1
+import kotlin.math.roundToInt
 import com.uruj.ui.theme.UrujZone2
 import com.uruj.ui.theme.UrujZone3
 import com.uruj.ui.theme.UrujZone4
@@ -494,7 +495,14 @@ private fun TrainingLoadCard(@Suppress("UNUSED_PARAMETER") s: BioLabSnapshot, on
         infoOnClick = { showInfo = true },
     ) {
         Row(verticalAlignment = Alignment.Bottom) {
-            val tsbInt = tsb.tsb.toInt()
+            // v0.9.18 — use roundToInt() to match every other TSB display
+            // surface (Readiness card, ReadinessRecommendationEngine drivers,
+            // BioLabInfoDialogs YouSection, ReadinessCalculator tier labels).
+            // Pre-fix this hero used .toInt() (truncates toward zero) while
+            // others used .roundToInt() (rounds half away from zero) →
+            // when TSB landed at -29.5 the hero read -29 while Readiness card
+            // read -30. One number, one rounding convention everywhere.
+            val tsbInt = tsb.tsb.roundToInt()
             Text(
                 if (tsb.tsb >= 0f) "+$tsbInt" else "$tsbInt",
                 color = accent,

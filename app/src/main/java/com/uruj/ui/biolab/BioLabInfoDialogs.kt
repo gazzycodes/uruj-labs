@@ -164,6 +164,40 @@ fun TrainingStateInfoDialog(tsb: TsbSnapshot?, onDismiss: () -> Unit) {
                 "Every calendar day at midnight, both batteries leak — fatigue drains " +
                 "~14%/rest day, fitness ~2.4%/rest day. TSB naturally rises with rest.",
         )
+        InfoSection(
+            "The real signal — ATL:CTL ratio",
+            "TSB tells you BALANCE. The RATIO of ATL to CTL tells you whether " +
+                "today's fatigue is in proportion to your chronic adapted capacity.\n\n" +
+                "<1.0  → recovery / detraining (off-season, taper)\n" +
+                "1.0–1.3 → maintenance (just keeping fitness)\n" +
+                "1.3–1.5 → PRODUCTIVE BUILD (the sweet spot — fitness grows)\n" +
+                "1.5–2.0 → heavy block (watch recovery markers daily)\n" +
+                "Above 2.0 → OVERLOAD SPIKE — body breaking down faster than " +
+                "adapting (non-functional overreach)\n\n" +
+                "Every ride hits ATL six times harder than CTL (1/7 vs 1/42 " +
+                "weighting). That asymmetry is the WHOLE GAME of progressive " +
+                "overload: fatigue spikes, body adapts, fitness slowly creeps up, " +
+                "recovery weeks let ATL drain → TSB goes positive → you feel " +
+                "fresh AND strong.",
+        )
+        InfoSection(
+            "Build CTL first — the prescription",
+            "The body adapts to CHRONIC load, not acute spikes. Riding once a " +
+                "week at 100 TSS won't build CTL because the EWMA washes it " +
+                "out. 5×/week at 30 TSS DOES build CTL because the chronic " +
+                "input becomes steady-state.\n\n" +
+                "CTL benchmarks (cycling, after months of training):\n" +
+                "  10–20  → beginner / detrained\n" +
+                "  20–40  → recreational rider\n" +
+                "  40–70  → competitive / serious amateur\n" +
+                "  70–100 → pro base season\n\n" +
+                "The build pattern that works: 5–6 short rides/week, identical " +
+                "dose (20–40 TSS each), strict Z1/Z2 only, no spikes. CTL drifts " +
+                "up by ~1/42 of weekly TSS-average every day. Sustained for 4–6 " +
+                "weeks, you can reasonably double your starting CTL. Then " +
+                "introduce 1× hard interval session per week WITHOUT crashing " +
+                "because chronic capacity can absorb the spike.",
+        )
         if (tsb != null) {
             val tier = when {
                 tsb.tsb >= 5f -> "FRESH (+${tsb.tsb.roundToInt()}) — race-ready zone"
@@ -179,12 +213,39 @@ fun TrainingStateInfoDialog(tsb: TsbSnapshot?, onDismiss: () -> Unit) {
                 tsb.tsb >= -25f -> "Easier sessions only. Add a rest day this week."
                 else -> "REST DAY. Eat to maintenance, hydrate, light walk only. Do not ride."
             }
+            // ATL:CTL ratio interpretation — the real signal for over-reach
+            // detection. Same bands as the "real signal" section above so the
+            // reader can match their personal number to the published thresholds.
+            val ratio = if (tsb.ctl > 0.5f) tsb.atl / tsb.ctl else 0f
+            val ratioVerdict = when {
+                tsb.ctl < 0.5f -> "Not enough chronic data yet."
+                ratio < 1.0f -> "Recovery / detraining zone."
+                ratio < 1.3f -> "Maintenance — just keeping fitness."
+                ratio < 1.5f -> "PRODUCTIVE BUILD — the sweet spot. Fitness is growing."
+                ratio < 2.0f -> "Heavy block — watch recovery markers daily."
+                else -> "OVERLOAD SPIKE — body breaking down faster than adapting. Multi-day stand-down indicated."
+            }
+            // CTL build prescription — personalized weekly TSS target to grow
+            // CTL by ~20% over 4-6 weeks. Floor at 80 TSS/wk so a near-zero
+            // CTL doesn't produce meaningless tiny targets.
+            val ctlTarget = (tsb.ctl * 1.2f).coerceAtLeast(11f)
+            val weeklyTssTarget = (ctlTarget * 7f).coerceAtLeast(80f)
+            val ridesPerWeek = 5
+            val tssPerRide = (weeklyTssTarget / ridesPerWeek).toInt()
+            val prescription = when {
+                tsb.ctl < 0.5f -> "Not enough data for a CTL target yet."
+                ratio >= 2.0f -> "Priority: drain ATL via genuine rest, then resume building. Don't add TSS until ATL/CTL drops below 1.5."
+                else -> "Target weekly TSS: ${weeklyTssTarget.toInt()} (${ridesPerWeek} rides × ~$tssPerRide TSS each, strict Z1/Z2). Holds for 4–6 weeks → CTL ${tsb.ctl.roundToInt()} → ${ctlTarget.roundToInt()}."
+            }
             YouSection(
                 "$tier\n\n" +
                     "Fitness (CTL): ${"%.1f".format(tsb.ctl)}\n" +
                     "Fatigue (ATL): ${"%.1f".format(tsb.atl)}\n" +
+                    "ATL : CTL ratio: ${"%.2f".format(ratio)}\n" +
                     "42d total TSS: ${"%.0f".format(tsb.totalLoad42d)}\n\n" +
-                    action
+                    "Ratio read: $ratioVerdict\n\n" +
+                    "Today's action: $action\n\n" +
+                    "Build CTL: $prescription"
             )
         } else {
             YouSection(
