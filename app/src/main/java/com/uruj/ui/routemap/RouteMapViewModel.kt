@@ -14,6 +14,7 @@ import com.uruj.data.RideHistoryRepository
 import com.uruj.data.RiderProfileStore
 import com.uruj.data.StoredRideSummary
 import com.uruj.domain.RideSample
+import com.uruj.util.rethrowCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -139,7 +140,8 @@ class RouteMapViewModel(application: Application) : AndroidViewModel(application
                 .flatMap { it.samples }
                 .map { it.time.toEpochMilli() to it.beatsPerMinute.toInt() }
                 .sortedBy { it.first }
-        }.onFailure { Log.w(TAG, "HC HR read failed for ride window", it) }
+        }.rethrowCancellation()
+            .onFailure { Log.w(TAG, "HC HR read failed for ride window", it) }
             .getOrDefault(emptyList())
     }
 

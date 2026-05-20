@@ -23,6 +23,7 @@ import androidx.health.connect.client.records.Vo2MaxRecord
 import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import com.uruj.util.rethrowCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -148,11 +149,12 @@ class HealthConnectInventoryRepository(context: Context) {
         if (!sdkOk) return@withContext HcDataTypes.all.map {
             HcDataTypeStatus(it, false, 0, null, "Health Connect not available")
         }
-        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
+        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.rethrowCancellation().getOrNull()
             ?: return@withContext HcDataTypes.all.map {
                 HcDataTypeStatus(it, false, 0, null, "Cannot create HC client")
             }
         val granted = runCatching { client.permissionController.getGrantedPermissions() }
+            .rethrowCancellation()
             .getOrDefault(emptySet())
 
         val weekAgo = Instant.now().minus(Duration.ofDays(7))
@@ -207,11 +209,12 @@ class HealthConnectInventoryRepository(context: Context) {
             val latest = response.records.firstOrNull()
             val latestMs = latest?.metadata?.lastModifiedTime?.toEpochMilli()
             HcDataTypeStatus(type, true, response.records.size, latestMs)
-        }.onFailure {
-            Log.w("URUJ-Inventory", "Query failed for ${type.key}", it)
-        }.getOrElse {
-            HcDataTypeStatus(type, true, 0, null, it.message ?: "query failed")
-        }
+        }.rethrowCancellation()
+            .onFailure {
+                Log.w("URUJ-Inventory", "Query failed for ${type.key}", it)
+            }.getOrElse {
+                HcDataTypeStatus(type, true, 0, null, it.message ?: "query failed")
+            }
     }
 
     companion object {

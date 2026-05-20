@@ -3,6 +3,7 @@ package com.uruj.data
 import android.content.Context
 import android.util.Log
 import androidx.health.connect.client.HealthConnectClient
+import com.uruj.util.rethrowCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -151,7 +152,8 @@ class SleepSnapshotRepository(context: Context) {
         HcReadGuard.recordRead("backfill.sleep")
         val sessions = runCatching {
             lastSleepReader.listLastNDays(client, granted, days)
-        }.onFailure { Log.w(TAG, "[v0.9.9] backfill HC read failed", it) }
+        }.rethrowCancellation()
+            .onFailure { Log.w(TAG, "[v0.9.9] backfill HC read failed", it) }
             .getOrDefault(emptyList())
         if (sessions.isEmpty()) {
             Log.d(TAG, "[v0.9.9] backfill: 0 sessions in HC's last ${days}d")

@@ -7,6 +7,7 @@ import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.SleepSessionRecord
 import com.uruj.domain.CarResult
 import com.uruj.power.CarDetector
+import com.uruj.util.rethrowCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -57,8 +58,10 @@ class CarRepository(context: Context) {
             HealthConnectClient.SDK_AVAILABLE
         if (!sdkOk) return@withContext null
         val client = runCatching { HealthConnectClient.getOrCreate(appContext) }
+            .rethrowCancellation()
             .getOrNull() ?: return@withContext null
         val granted = runCatching { client.permissionController.getGrantedPermissions() }
+            .rethrowCancellation()
             .getOrDefault(emptySet())
         if (HealthPermission.getReadPermission(SleepSessionRecord::class) !in granted) {
             return@withContext null

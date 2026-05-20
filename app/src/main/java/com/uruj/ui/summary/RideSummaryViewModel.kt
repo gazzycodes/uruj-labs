@@ -16,6 +16,7 @@ import com.uruj.data.RiderProfileStore
 import com.uruj.data.StoredRideSummary
 import com.uruj.domain.SensorSource
 import com.uruj.power.TimeInZoneCalculator
+import com.uruj.util.rethrowCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -323,7 +324,7 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
                 }
                 return@launch
             }
-            val client = runCatching { HealthConnectClient.getOrCreate(app) }.getOrNull()
+            val client = runCatching { HealthConnectClient.getOrCreate(app) }.rethrowCancellation().getOrNull()
             if (client == null) {
                 if (currentEnrichmentSessionId == pollingForSessionId) {
                     _hrEnrichment.value = HrEnrichmentState.NotAvailable
@@ -332,6 +333,7 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
             }
             // Health Connect permission must be granted — silent skip if not.
             val granted = runCatching { client.permissionController.getGrantedPermissions() }
+                .rethrowCancellation()
                 .getOrDefault(emptySet())
             if (HealthPermission.getReadPermission(HeartRateRecord::class) !in granted) {
                 if (currentEnrichmentSessionId == pollingForSessionId) {
@@ -397,7 +399,7 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
         val app = getApplication<Application>()
         val sdkOk = HealthConnectClient.getSdkStatus(app) == HealthConnectClient.SDK_AVAILABLE
         if (!sdkOk) return
-        val client = runCatching { HealthConnectClient.getOrCreate(app) }.getOrNull() ?: return
+        val client = runCatching { HealthConnectClient.getOrCreate(app) }.rethrowCancellation().getOrNull() ?: return
         val granted = runCatching { client.permissionController.getGrantedPermissions() }
             .getOrDefault(emptySet())
         if (HealthPermission.getReadPermission(HeartRateRecord::class) !in granted) return
@@ -482,7 +484,8 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
                 .flatMap { it.samples }
                 .map { it.time.toEpochMilli() to it.beatsPerMinute.toInt() }
                 .sortedBy { it.first }
-        }.onFailure { Log.w("URUJ-Summary", "HR timed-samples fetch failed", it) }
+        }.rethrowCancellation()
+            .onFailure { Log.w("URUJ-Summary", "HR timed-samples fetch failed", it) }
             .getOrDefault(emptyList())
     }
 }

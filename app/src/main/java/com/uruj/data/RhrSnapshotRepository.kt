@@ -3,6 +3,7 @@ package com.uruj.data
 import android.content.Context
 import android.util.Log
 import com.uruj.domain.SensorSource
+import com.uruj.util.rethrowCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -192,7 +193,8 @@ class RhrSnapshotRepository(context: Context) {
                     pageSize = 5_000,
                 ),
             ).records.flatMap { it.samples }.map { it.time to it.beatsPerMinute.toInt() }
-        }.onFailure { Log.w(TAG, "[v0.9.11] HR samples read failed", it) }
+        }.rethrowCancellation()
+            .onFailure { Log.w(TAG, "[v0.9.11] HR samples read failed", it) }
             .getOrDefault(emptyList())
         if (hrSamples.isEmpty()) {
             Log.d(TAG, "[v0.9.11] backfill: no HC HR samples in window")
