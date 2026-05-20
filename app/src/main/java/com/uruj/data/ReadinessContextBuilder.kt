@@ -15,6 +15,7 @@ import com.uruj.domain.TrendSeries
 import com.uruj.domain.TsbToday
 import com.uruj.domain.Vo2Today
 import com.uruj.power.CarDetector
+import com.uruj.util.rethrowCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
@@ -85,12 +86,12 @@ class ReadinessContextBuilder(context: Context) {
     ): ReadinessContext = withContext(Dispatchers.IO) {
         val today = LocalDate.now(ZoneId.systemDefault())
 
-        val rhrHistory = runCatching { rhrSnapshots.listAll() }.getOrDefault(emptyList())
-        val vo2History = runCatching { vo2Snapshots.listAll() }.getOrDefault(emptyList())
-        val tsbHistory = runCatching { tsbSnapshots.listAll() }.getOrDefault(emptyList())
-        val hrrHistory = runCatching { hrrSnapshots.listAll() }.getOrDefault(emptyList())
-        val carResult = runCatching { carRepo.cachedLatest() }.getOrNull()
-        val orthostaticResult = runCatching { orthostaticRepo.latest() }.getOrNull()
+        val rhrHistory = runCatching { rhrSnapshots.listAll() }.rethrowCancellation().getOrDefault(emptyList())
+        val vo2History = runCatching { vo2Snapshots.listAll() }.rethrowCancellation().getOrDefault(emptyList())
+        val tsbHistory = runCatching { tsbSnapshots.listAll() }.rethrowCancellation().getOrDefault(emptyList())
+        val hrrHistory = runCatching { hrrSnapshots.listAll() }.rethrowCancellation().getOrDefault(emptyList())
+        val carResult = runCatching { carRepo.cachedLatest() }.rethrowCancellation().getOrNull()
+        val orthostaticResult = runCatching { orthostaticRepo.latest() }.rethrowCancellation().getOrNull()
 
         val todaySnap = ReadinessContext.TodaySnapshot(
             sleep = inputs.sleepLastNightHours?.let {

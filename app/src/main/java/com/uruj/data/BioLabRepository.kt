@@ -19,6 +19,7 @@ import com.uruj.power.HrRecoveryCalculator
 import com.uruj.power.KarvonenZonesCalculator
 import com.uruj.power.SleepingRhrCalculator
 import com.uruj.power.VO2MaxCalculator
+import com.uruj.util.rethrowCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Duration
@@ -79,7 +80,9 @@ class BioLabRepository(context: Context) {
                 bodyWeightKg = profile.riderWeightKg,
             )
         }
-        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
+        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }
+            .rethrowCancellation()
+            .getOrNull()
             ?: return@withContext BioLabSnapshot(
                 computedAtMs = System.currentTimeMillis(),
                 healthConnectAvailable = false,
@@ -87,6 +90,7 @@ class BioLabRepository(context: Context) {
                 bodyWeightKg = profile.riderWeightKg,
             )
         val granted = runCatching { client.permissionController.getGrantedPermissions() }
+            .rethrowCancellation()
             .getOrDefault(emptySet())
 
         val now = Instant.now()
@@ -560,7 +564,7 @@ class BioLabRepository(context: Context) {
             ).records
                 .flatMap { it.samples }
                 .map { it.time to it.beatsPerMinute.toInt() }
-        }.getOrDefault(emptyList())
+        }.rethrowCancellation().getOrDefault(emptyList())
     }
 
     private suspend fun readSleepWindows(
@@ -578,7 +582,8 @@ class BioLabRepository(context: Context) {
                     ascendingOrder = false,
                 ),
             ).records.map { it.startTime to it.endTime }
-        }.onFailure { Log.w(TAG, "sleep windows read failed", it) }
+        }.rethrowCancellation()
+            .onFailure { Log.w(TAG, "sleep windows read failed", it) }
             .getOrDefault(emptyList())
     }
 
@@ -597,7 +602,8 @@ class BioLabRepository(context: Context) {
                     ascendingOrder = false,
                 ),
             ).records.map { it.endTime }
-        }.onFailure { Log.w(TAG, "exercise ends read failed", it) }
+        }.rethrowCancellation()
+            .onFailure { Log.w(TAG, "exercise ends read failed", it) }
             .getOrDefault(emptyList())
     }
 
@@ -617,7 +623,9 @@ class BioLabRepository(context: Context) {
                     pageSize = 1,
                 ),
             ).records.firstOrNull()?.vo2MillilitersPerMinuteKilogram?.toFloat()
-        }.onFailure { Log.w(TAG, "VO2 max read failed", it) }.getOrNull()
+        }.rethrowCancellation()
+            .onFailure { Log.w(TAG, "VO2 max read failed", it) }
+            .getOrNull()
     }
 
     private suspend fun readLatestWeight(
@@ -636,7 +644,9 @@ class BioLabRepository(context: Context) {
                     pageSize = 1,
                 ),
             ).records.firstOrNull()?.weight?.inKilograms?.toFloat()
-        }.onFailure { Log.w(TAG, "weight read failed", it) }.getOrNull()
+        }.rethrowCancellation()
+            .onFailure { Log.w(TAG, "weight read failed", it) }
+            .getOrNull()
     }
 
     companion object {

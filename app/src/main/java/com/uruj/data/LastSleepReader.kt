@@ -6,6 +6,7 @@ import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import com.uruj.util.rethrowCancellation
 import java.time.Duration
 import java.time.Instant
 
@@ -71,7 +72,8 @@ class LastSleepReader {
                     startedAt = it.startTime,
                 )
             }
-        }.onFailure { Log.w(TAG, "last-sleep read failed", it) }
+        }.rethrowCancellation()
+            .onFailure { Log.w(TAG, "last-sleep read failed", it) }
             .getOrNull()
     }
 
@@ -122,7 +124,8 @@ class LastSleepReader {
                     )
                 }
                 .sortedByDescending { it.endedAt }
-        }.onFailure { Log.w(TAG, "list-last-N-days read failed", it) }
+        }.rethrowCancellation()
+            .onFailure { Log.w(TAG, "list-last-N-days read failed", it) }
             .getOrDefault(emptyList())
     }
 

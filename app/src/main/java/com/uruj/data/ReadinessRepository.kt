@@ -18,6 +18,7 @@ import com.uruj.power.ReadinessCalculator
 import com.uruj.power.ReadinessReasoner
 import com.uruj.power.RuleBasedReasoner
 import com.uruj.power.SleepingRhrCalculator
+import com.uruj.util.rethrowCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Instant
@@ -181,7 +182,7 @@ class ReadinessRepository(context: Context) {
         if (!sdkOk) {
             return@withContext computeTsb(null, emptySet(), null)
         }
-        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
+        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.rethrowCancellation().getOrNull()
         val granted = if (client != null) {
             runCatching { client.permissionController.getGrantedPermissions() }
                 .getOrDefault(emptySet())
@@ -241,10 +242,12 @@ class ReadinessRepository(context: Context) {
         HcReadGuard.recordRead("backfill.tsb")
         val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
         val client = if (sdkOk) {
-            runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
+            runCatching { HealthConnectClient.getOrCreate(appContext) }.rethrowCancellation().getOrNull()
         } else null
         val granted = if (client != null) {
-            runCatching { client.permissionController.getGrantedPermissions() }.getOrDefault(emptySet())
+            runCatching { client.permissionController.getGrantedPermissions() }
+                .rethrowCancellation()
+                .getOrDefault(emptySet())
         } else emptySet()
         val rhrForLoad = readBaselineRhrOnly(client, granted)
         val zone = ZoneId.systemDefault()
@@ -285,9 +288,10 @@ class ReadinessRepository(context: Context) {
     ): Int = withContext(Dispatchers.IO) {
         val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
         if (!sdkOk) return@withContext 0
-        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
+        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.rethrowCancellation().getOrNull()
             ?: return@withContext 0
         val granted = runCatching { client.permissionController.getGrantedPermissions() }
+            .rethrowCancellation()
             .getOrDefault(emptySet())
         rhrRepo.backfillFromHc(client, granted, sleepRepo, sleepingRhrCalc, days)
     }
@@ -301,7 +305,7 @@ class ReadinessRepository(context: Context) {
         vo2Repo: Vo2SnapshotRepository,
         rhrRepo: RhrSnapshotRepository,
     ): Int = withContext(Dispatchers.IO) {
-        val profile = runCatching { profileStore.current() }.getOrNull() ?: return@withContext 0
+        val profile = runCatching { profileStore.current() }.rethrowCancellation().getOrNull() ?: return@withContext 0
         vo2Repo.backfillFromRhr(rhrRepo, maxHr = profile.maxHrBpm)
     }
 
@@ -429,9 +433,10 @@ class ReadinessRepository(context: Context) {
                 rideSummariesAll = rideCount,
             )
         }
-        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
+        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.rethrowCancellation().getOrNull()
             ?: return ReadinessDiagnostics(installed, 0, 4, 0, 0, 0, 0, rideCount)
         val granted = runCatching { client.permissionController.getGrantedPermissions() }
+            .rethrowCancellation()
             .getOrDefault(emptySet())
         val weekAgo = Instant.now().minus(Duration.ofDays(7))
         val now = Instant.now()
@@ -473,7 +478,8 @@ class ReadinessRepository(context: Context) {
             client.readRecords(
                 ReadRecordsRequest(recordType, range, ascendingOrder = false, pageSize = 100),
             ).records.size
-        }.onFailure { Log.w("URUJ-Readiness", "count failed for ${recordType.simpleName}", it) }
+        }.rethrowCancellation()
+            .onFailure { Log.w("URUJ-Readiness", "count failed for ${recordType.simpleName}", it) }
             .getOrDefault(0)
     }
 
@@ -521,7 +527,7 @@ class ReadinessRepository(context: Context) {
                 urujHrvNightlyRmssdMs = emptyList(),
             )
         }
-        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.getOrNull()
+        val client = runCatching { HealthConnectClient.getOrCreate(appContext) }.rethrowCancellation().getOrNull()
             ?: return GatheredInputs(
                 inputs = ReadinessInputs(trainingStressBalance = computeTsb(null, emptySet(), null)),
                 rhrSource = null,
@@ -531,6 +537,7 @@ class ReadinessRepository(context: Context) {
             )
 
         val granted = runCatching { client.permissionController.getGrantedPermissions() }
+            .rethrowCancellation()
             .getOrDefault(emptySet())
 
         val now = Instant.now()
@@ -756,7 +763,8 @@ class ReadinessRepository(context: Context) {
             ).records.map { it.startTime to it.endTime }
 
             hrSamples to sleepWindows
-        }.onFailure { Log.w("URUJ-Readiness", "sleeping HR inputs read failed", it) }
+        }.rethrowCancellation()
+            .onFailure { Log.w("URUJ-Readiness", "sleeping HR inputs read failed", it) }
             .getOrNull()
     }
 
@@ -783,7 +791,9 @@ class ReadinessRepository(context: Context) {
             val all = response.records.map { it.heartRateVariabilityMillis }.sorted()
             val baseline = all[all.size / 2].toFloat()
             today to baseline
-        }.onFailure { Log.w("URUJ-Readiness", "HRV read failed", it) }.getOrDefault(null to null)
+        }.rethrowCancellation()
+            .onFailure { Log.w("URUJ-Readiness", "HRV read failed", it) }
+            .getOrDefault(null to null)
     }
 
     private suspend fun readRhrTodayAndBaseline(
@@ -805,7 +815,9 @@ class ReadinessRepository(context: Context) {
             val all = response.records.map { it.beatsPerMinute }.sorted()
             val baseline = all[all.size / 2].toInt()
             today to baseline
-        }.onFailure { Log.w("URUJ-Readiness", "RHR read failed", it) }.getOrDefault(null to null)
+        }.rethrowCancellation()
+            .onFailure { Log.w("URUJ-Readiness", "RHR read failed", it) }
+            .getOrDefault(null to null)
     }
 
     /**
@@ -888,7 +900,7 @@ class ReadinessRepository(context: Context) {
         var samsungHrTssTotal = 0f
         var samsungSessionsInWindow = 0
         if (client != null && athleticRhr != null && athleticRhr > 0) {
-            val profile = runCatching { profileStore.current() }.getOrNull()
+            val profile = runCatching { profileStore.current() }.rethrowCancellation().getOrNull()
             val maxHr = profile?.maxHrBpm ?: 190
             if (maxHr > athleticRhr) {
                 val sessions = readNonCyclingSessionLoads(
@@ -988,7 +1000,8 @@ class ReadinessRepository(context: Context) {
                     pageSize = 200,
                 ),
             ).records
-        }.onFailure { Log.w("URUJ-Readiness", "exercise sessions read failed", it) }
+        }.rethrowCancellation()
+            .onFailure { Log.w("URUJ-Readiness", "exercise sessions read failed", it) }
             .getOrDefault(emptyList())
         if (sessions.isEmpty()) return emptyList()
 
@@ -1019,7 +1032,7 @@ class ReadinessRepository(context: Context) {
                         pageSize = 500,
                     ),
                 ).records.flatMap { it.samples }.map { it.beatsPerMinute.toInt() }
-            }.getOrDefault(emptyList())
+            }.rethrowCancellation().getOrDefault(emptyList())
             if (hrSamples.isEmpty()) continue
 
             val avgHr = hrSamples.average().toInt()
