@@ -135,6 +135,6 @@ class HrvSnapshotRepository(context: Context) {
 
     companion object {
         private const val TAG = "URUJ-HrvSnap"
-        const val METHODOLOGY_VERSION = "v0.9.27-aligned-filter-detrended-trapz"
+        const val METHODOLOGY_VERSION = "v0.9.28-lomb-scargle"
     }
 }

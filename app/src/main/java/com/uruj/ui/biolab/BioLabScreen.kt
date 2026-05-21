@@ -79,6 +79,9 @@ fun BioLabScreen(
     onOpenTsbTrend: () -> Unit = {},
     // v0.9.8 — sleep-hours trend (new SleepSnapshotRepository)
     onOpenSleepTrend: () -> Unit = {},
+    // v0.9.28 — freq-domain HRV trends (LF/HF + DFA α1) from HrvSnapshotRepository
+    onOpenLfHfTrend: () -> Unit = {},
+    onOpenDfaAlpha1Trend: () -> Unit = {},
     viewModel: BioLabViewModel = viewModel(),
 ) {
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -235,7 +238,13 @@ fun BioLabScreen(
                 // Only renders when sufficient beats (>= 240) computed in last
                 // HRV window; auto-hides while baseline-building.
                 if (s.autonomicFrequencyDomain != null) {
-                    item("autonomic_freq_card") { FrequencyDomainCard(s) }
+                    item("autonomic_freq_card") {
+                        FrequencyDomainCard(
+                            s = s,
+                            onSeeLfHfTrend = onOpenLfHfTrend,
+                            onSeeDfaTrend = onOpenDfaAlpha1Trend,
+                        )
+                    }
                 }
             }
 
@@ -1278,7 +1287,11 @@ private fun AutonomicHealthCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) 
  * numbers).
  */
 @Composable
-private fun FrequencyDomainCard(s: BioLabSnapshot) {
+private fun FrequencyDomainCard(
+    s: BioLabSnapshot,
+    onSeeLfHfTrend: () -> Unit = {},
+    onSeeDfaTrend: () -> Unit = {},
+) {
     val fd = s.autonomicFrequencyDomain ?: return
     var showInfo by remember { mutableStateOf(false) }
     // LF/HF ratio tier (Heathers 2014 / Hayano 2019 caveat applies):
@@ -1415,6 +1428,36 @@ private fun FrequencyDomainCard(s: BioLabSnapshot) {
                 "(Rogero 2021) — foundation for future LT1-from-ramp-test feature.",
             color = UrujMuted, fontSize = 10.sp,
         )
+        // v0.9.28 — trend chart links. Each metric persists to disk daily
+        // via HrvSnapshotRepository (v0.9.27 architecture), so the trend
+        // becomes valuable from day 2 onwards.
+        Spacer(Modifier.height(10.dp))
+        Row(modifier = Modifier.fillMaxWidth()) {
+            TextButton(
+                onClick = onSeeLfHfTrend,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(
+                    "LF/HF TREND →",
+                    color = UrujAccent,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.5.sp,
+                )
+            }
+            TextButton(
+                onClick = onSeeDfaTrend,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(
+                    "DFA α1 TREND →",
+                    color = UrujAccent,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.5.sp,
+                )
+            }
+        }
     }
     if (showInfo) FrequencyDomainInfoDialog(fd = fd, onDismiss = { showInfo = false })
 }
