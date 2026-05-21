@@ -393,6 +393,12 @@ class ReadinessRepository(context: Context) {
                 Log.w("URUJ-Readiness", "recommendation snapshot save failed", it)
             }
 
+            // v0.9.21 — surface TSB breakdown so Readiness card's TRAINING
+            // LOAD ⓘ can render the same personalized ATL:CTL ratio + Build-
+            // CTL prescription as the Bio Lab Training State ⓘ. Same numbers
+            // already persisted via TsbSnapshotRepository — this just makes
+            // them available to the Readiness-side dialog without a second
+            // disk read.
             ReadinessResult(
                 score = scored.score,
                 grade = scored.grade,
@@ -403,6 +409,9 @@ class ReadinessRepository(context: Context) {
                 recommendationRationale = rec.rationale,
                 recommendationInsights = rec.insights,
                 recommendationMissingSignals = rec.missingSignalsCallout,
+                tsbCtl = ctx.today.tsb?.ctl,
+                tsbAtl = ctx.today.tsb?.atl,
+                tsbTotalLoad42d = ctx.today.tsb?.totalLoad42d,
             )
         }
 

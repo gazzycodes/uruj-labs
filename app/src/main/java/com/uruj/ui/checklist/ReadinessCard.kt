@@ -602,7 +602,7 @@ private fun InfoDialog(
                     .verticalScroll(rememberScrollState()),
             ) {
                 Column {
-                    InfoContent(label = label, component = component)
+                    InfoContent(label = label, component = component, result = result)
                 }
             }
         },
@@ -621,12 +621,12 @@ private fun InfoDialog(
 }
 
 @Composable
-private fun InfoContent(label: String, component: ReadinessComponent?) {
+private fun InfoContent(label: String, component: ReadinessComponent?, result: ReadinessResult) {
     when (label) {
         "Sleep" -> SleepInfo(component)
         "HRV" -> HrvInfo(component)
         "Resting HR" -> RestingHrInfo(component)
-        "Training load" -> TrainingLoadInfo(component)
+        "Training load" -> TrainingLoadInfo(component, result)
         else -> Text(label, color = UrujText)
     }
 }
@@ -795,7 +795,7 @@ private fun RestingHrInfo(component: ReadinessComponent?) {
 }
 
 @Composable
-private fun TrainingLoadInfo(component: ReadinessComponent?) {
+private fun TrainingLoadInfo(component: ReadinessComponent?, result: ReadinessResult) {
     InfoSection(
         "What TSB is — explained simply",
         "Imagine TWO batteries in your body:\n\n" +
@@ -851,7 +851,37 @@ private fun TrainingLoadInfo(component: ReadinessComponent?) {
             "TSB naturally drifts back toward 0 if you rest.\n\n" +
             "• No manual refresh needed — math runs on calendar dates.",
     )
-    if (component?.detail != null && component.score != null) {
+    // v0.9.21 — mirror Bio Lab Training State ⓘ depth here. Content shared
+    // via com.uruj.ui.biolab.TsbInfoContent so both surfaces stay in sync.
+    InfoSection(
+        "The real signal — ATL:CTL ratio",
+        com.uruj.ui.biolab.tsbAtlCtlRatioBody(),
+    )
+    InfoSection(
+        "Build CTL first — the prescription",
+        com.uruj.ui.biolab.tsbBuildCtlPrescriptionBody(),
+    )
+    val ctl = result.tsbCtl
+    val atl = result.tsbAtl
+    val total = result.tsbTotalLoad42d
+    if (ctl != null && atl != null && total != null && component?.detail != null) {
+        // Personalized YouSection with full ATL:CTL breakdown — matches the
+        // Bio Lab Training State ⓘ shape. tierLabel uses the existing
+        // component.detail (e.g. "fatigued (TSB -24)") + score so the line
+        // matches what the rider sees on the card itself.
+        val tierLabel = "Today: ${component.detail}" +
+            if (component.score != null) " → ${component.score}/100" else ""
+        YouSection(
+            com.uruj.ui.biolab.tsbYouSectionBody(
+                tierLabel = tierLabel,
+                ctl = ctl,
+                atl = atl,
+                totalLoad42d = total,
+                action = null,  // action lives on Readiness recommendation rationale, not duplicated here
+            )
+        )
+    } else if (component?.detail != null && component.score != null) {
+        // Limited-data path — old shape preserved.
         YouSection("Today: ${component.detail} → ${component.score}/100")
     }
 }
