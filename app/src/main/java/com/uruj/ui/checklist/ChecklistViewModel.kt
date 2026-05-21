@@ -11,6 +11,9 @@ import androidx.core.content.ContextCompat
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
+import androidx.health.connect.client.records.RestingHeartRateRecord
+import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.lifecycle.AndroidViewModel
@@ -18,6 +21,7 @@ import androidx.lifecycle.viewModelScope
 import com.uruj.data.ReadinessRepository
 import com.uruj.data.ReadinessSnapshot
 import com.uruj.domain.ReadinessResult
+import com.uruj.util.rethrowCancellation
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +34,25 @@ import java.time.Instant
 
 private const val OPENTRACKS_PACKAGE = "de.dennisguse.opentracks"
 private val HR_READ_PERMISSION = HealthPermission.getReadPermission(HeartRateRecord::class)
+
+/**
+ * v0.9.24 — the 4 HC read permissions URUJ's Readiness scoring needs.
+ * Matches [com.uruj.data.ReadinessRepository.collectDiagnostics] perm
+ * count (sleep + HRV + RHR + HR). Pre-fix the checklist tile only
+ * checked HR alone → checklist said "Granted ✓" while Readiness card
+ * showed "1/4 perms" if only HR was granted.
+ *
+ * The FIX button still launches the full 16-perm
+ * [HealthConnectPermissions.allReadPermissions] flow (biohacker pipeline
+ * catalog) — the checklist tile gates on the 4 that drive Readiness so
+ * the rider sees what's actually blocking the score.
+ */
+private val READINESS_CRITICAL_HC_PERMS: List<Pair<String, String>> = listOf(
+    HealthPermission.getReadPermission(SleepSessionRecord::class) to "Sleep",
+    HealthPermission.getReadPermission(HeartRateVariabilityRmssdRecord::class) to "HRV",
+    HealthPermission.getReadPermission(RestingHeartRateRecord::class) to "RHR",
+    HR_READ_PERMISSION to "HR",
+)
 
 class ChecklistViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -47,6 +70,17 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _readinessSyncing = MutableStateFlow(false)
     val readinessSyncing: StateFlow<Boolean> = _readinessSyncing.asStateFlow()
+
+    /**
+     * v0.9.24 — error-state surface for the Readiness compute. Set when a
+     * non-cancellation exception fires inside `computeWithDiagnostics()`
+     * so the UI can transition the loading skeleton (v0.9.23) to an
+     * actionable error card with a retry button instead of pulsing
+     * forever. Cleared on next successful compute. Cancellation is
+     * preserved per v0.9.20 — only real failures surface here.
+     */
+    private val _readinessError = MutableStateFlow<String?>(null)
+    val readinessError: StateFlow<String?> = _readinessError.asStateFlow()
 
     private var pollingJob: Job? = null
     private var readinessJob: Job? = null
@@ -109,18 +143,35 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
                     com.uruj.data.HcReadGuard.isPostRideQuietWindow()
                 if (!recent && !postRideQuiet) {
                     com.uruj.data.HcReadGuard.recordRead("readiness.tab-open")
-                    val snap = readinessRepo.computeWithDiagnostics()
-                    // Sticky-cache fallback retained — protects against an
-                    // HC blip during the single compute. If new result has
-                    // less data, keep the prior (since cached value is
-                    // already visible to user via "synced X ago").
-                    val cached = _readinessSnapshot.value
-                    val shouldUpdate = cached == null ||
-                        snap.result.dataConfidence >= cached.result.dataConfidence ||
-                        (System.currentTimeMillis() - cached.computedAtMs) > 10L * 60 * 1000
-                    if (shouldUpdate) {
-                        _readiness.value = snap.result
-                        _readinessSnapshot.value = snap
+                    // v0.9.24 — try/catch around the compute so non-cancellation
+                    // exceptions surface via _readinessError instead of leaving
+                    // the skeleton (v0.9.23) pulsing forever. CancellationException
+                    // is re-thrown to preserve structured concurrency per v0.9.20.
+                    try {
+                        val snap = readinessRepo.computeWithDiagnostics()
+                        // Sticky-cache fallback retained — protects against an
+                        // HC blip during the single compute. If new result has
+                        // less data, keep the prior (since cached value is
+                        // already visible to user via "synced X ago").
+                        val cached = _readinessSnapshot.value
+                        val shouldUpdate = cached == null ||
+                            snap.result.dataConfidence >= cached.result.dataConfidence ||
+                            (System.currentTimeMillis() - cached.computedAtMs) > 10L * 60 * 1000
+                        if (shouldUpdate) {
+                            _readiness.value = snap.result
+                            _readinessSnapshot.value = snap
+                        }
+                        _readinessError.value = null  // clear any prior error
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e  // structured concurrency — never swallow
+                    } catch (e: Throwable) {
+                        android.util.Log.w("URUJ-Checklist", "readiness compute failed", e)
+                        // Only surface an error if there's no cached result —
+                        // otherwise the rider has stale-but-real data and the
+                        // sticky cache message is more accurate than an error.
+                        if (_readinessSnapshot.value == null) {
+                            _readinessError.value = e.message ?: e::class.simpleName ?: "unknown failure"
+                        }
                     }
                 }
             }
@@ -147,6 +198,14 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
                 val snap = readinessRepo.computeWithDiagnostics()
                 _readiness.value = snap.result
                 _readinessSnapshot.value = snap
+                _readinessError.value = null  // v0.9.24 — clear error on successful retry
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e  // structured concurrency — never swallow (v0.9.20 rule)
+            } catch (e: Throwable) {
+                android.util.Log.w("URUJ-Checklist", "manual readiness refresh failed", e)
+                // v0.9.24 — manual taps always surface failures (rider explicitly
+                // asked for fresh data; silent failure here would be confusing).
+                _readinessError.value = e.message ?: e::class.simpleName ?: "unknown failure"
             } finally {
                 _readinessSyncing.value = false
             }
@@ -269,22 +328,47 @@ class ChecklistViewModel(application: Application) : AndroidViewModel(applicatio
         if (HealthConnectClient.getSdkStatus(ctx) != HealthConnectClient.SDK_AVAILABLE) {
             return CheckItem(
                 id = CheckId.HealthConnectPermission,
-                title = "Heart-rate permission",
+                title = "Health Connect permissions",
                 description = "Waiting on Health Connect",
                 status = CheckStatus.Pending,
                 canFix = false,
             )
         }
-        val granted = runCatching {
+        // v0.9.24 — check all 4 Readiness-critical perms (sleep + HRV + RHR + HR)
+        // so the checklist tile matches Readiness card diagnostics. Pre-fix
+        // the tile only checked HR alone → "Granted ✓" while Readiness card
+        // showed "1/4 perms" when only HR was granted. Same canonical perm
+        // list as ReadinessRepository.collectDiagnostics.
+        val grantedSet = runCatching {
             val client = HealthConnectClient.getOrCreate(ctx)
-            HR_READ_PERMISSION in client.permissionController.getGrantedPermissions()
-        }.getOrDefault(false)
+            client.permissionController.getGrantedPermissions()
+        }.rethrowCancellation().getOrDefault(emptySet())
+
+        val grantedFlags = READINESS_CRITICAL_HC_PERMS.map { (perm, label) -> label to (perm in grantedSet) }
+        val grantedCount = grantedFlags.count { it.second }
+        val expected = READINESS_CRITICAL_HC_PERMS.size
+
+        val status = when {
+            grantedCount == expected -> CheckStatus.Pass
+            grantedCount == 0 -> CheckStatus.Fail
+            else -> CheckStatus.Warning
+        }
+        val description = when (status) {
+            CheckStatus.Pass -> "Granted ($expected/$expected) — Sleep · HRV · RHR · HR"
+            CheckStatus.Fail -> "Allow URUJ to read your HR + sleep + HRV + RHR from Samsung Health"
+            CheckStatus.Warning -> {
+                // Show which perms are still missing — actionable feedback.
+                val missing = grantedFlags.filter { !it.second }.joinToString(" · ") { it.first }
+                "$grantedCount/$expected granted — missing: $missing"
+            }
+            else -> "Health Connect permissions"
+        }
         return CheckItem(
             id = CheckId.HealthConnectPermission,
-            title = "Heart-rate permission",
-            description = if (granted) "Granted" else "Allow URUJ to read your HR from Samsung Health",
-            status = if (granted) CheckStatus.Pass else CheckStatus.Fail,
-            canFix = !granted,
+            title = "Health Connect permissions",
+            description = description,
+            status = status,
+            canFix = grantedCount < expected,
         )
     }
 

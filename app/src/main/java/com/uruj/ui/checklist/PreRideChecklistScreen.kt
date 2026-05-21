@@ -70,6 +70,8 @@ fun PreRideChecklistScreen(
     val readiness by viewModel.readiness.collectAsStateWithLifecycle()
     val readinessSnapshot by viewModel.readinessSnapshot.collectAsStateWithLifecycle()
     val readinessSyncing by viewModel.readinessSyncing.collectAsStateWithLifecycle()
+    // v0.9.24 — surface compute errors so skeleton → error card transition works
+    val readinessError by viewModel.readinessError.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     DisposableEffect(Unit) {
@@ -185,6 +187,7 @@ fun PreRideChecklistScreen(
                     result = readiness,
                     snapshot = readinessSnapshot,
                     syncing = readinessSyncing,
+                    error = readinessError,
                     onRefresh = { viewModel.refreshReadiness() },
                 )
             }

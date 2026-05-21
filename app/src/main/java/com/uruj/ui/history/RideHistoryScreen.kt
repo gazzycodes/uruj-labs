@@ -53,6 +53,9 @@ fun RideHistoryScreen(
     // Null while loading, present once the per-ride HR samples have been
     // read + aggregated.
     val weeklyPolarized by viewModel.weeklyPolarized.collectAsStateWithLifecycle()
+    // v0.9.24 — error state for the weekly compute (surfaces non-cancellation
+    // exceptions). When non-null and no result, render LoadErrorCard with retry.
+    val weeklyPolarizedError by viewModel.weeklyPolarizedError.collectAsStateWithLifecycle()
 
     Box(
         modifier = Modifier
@@ -98,15 +101,20 @@ fun RideHistoryScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 // v0.9.22 — weekly polarized compliance card at the top.
-                // v0.9.23 — skeleton while loading (pre-fix the card was
-                // hidden until results landed → rider had no idea if data
-                // was coming).
+                // v0.9.23 — skeleton while loading.
+                // v0.9.24 — error card with retry when compute throws (no
+                // cached result + non-cancellation exception caught).
                 item(key = "weekly-polarized") {
                     val week = weeklyPolarized
-                    if (week != null) {
-                        WeeklyPolarizedCard(week = week)
-                    } else {
-                        com.uruj.ui.components.WeeklyPolarizedSkeleton()
+                    val err = weeklyPolarizedError
+                    when {
+                        week != null -> WeeklyPolarizedCard(week = week)
+                        err != null -> com.uruj.ui.components.LoadErrorCard(
+                            label = "POLARIZED — THIS WEEK",
+                            message = "Couldn't compute this week — $err",
+                            onRetry = { viewModel.refresh() },
+                        )
+                        else -> com.uruj.ui.components.WeeklyPolarizedSkeleton()
                     }
                 }
                 items(rides, key = { it.sessionId }) { ride ->
