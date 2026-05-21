@@ -49,6 +49,10 @@ fun RideHistoryScreen(
 ) {
     LaunchedEffect(Unit) { viewModel.refresh() }
     val rides by viewModel.rides.collectAsStateWithLifecycle()
+    // v0.9.22 — weekly polarized compliance summary for the current ISO week.
+    // Null while loading, present once the per-ride HR samples have been
+    // read + aggregated.
+    val weeklyPolarized by viewModel.weeklyPolarized.collectAsStateWithLifecycle()
 
     Box(
         modifier = Modifier
@@ -93,6 +97,14 @@ fun RideHistoryScreen(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                // v0.9.22 — weekly polarized compliance card at the top.
+                // Only rendered once the analyzer has results (null while
+                // loading on first screen open).
+                weeklyPolarized?.let { week ->
+                    item(key = "weekly-polarized") {
+                        WeeklyPolarizedCard(week = week)
+                    }
+                }
                 items(rides, key = { it.sessionId }) { ride ->
                     RideCard(ride = ride, onClick = { onOpenRide(ride) })
                 }
