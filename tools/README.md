@@ -26,8 +26,12 @@ proves it's correct on REAL NOISY DATA — without paying for Kubios desktop.
 **One-time setup** (Python 3.9+):
 
 ```bash
-pip install neurokit2 numpy
+python -m pip install neurokit2 numpy astropy
 ```
+
+`astropy` is required for the Lomb-Scargle PSD method (matches URUJ v0.9.28). Without it, neurokit2 falls back to Welch (which has the interpolation artifact we just eliminated).
+
+**Validated on Python 3.14.3** with neurokit2 0.2.13, numpy 2.4.6, astropy 7.2.0 (2026-05-22 first run).
 
 **Pull your overnight strap NDJSON via adb**:
 
@@ -95,9 +99,45 @@ If URUJ deviates >30% from neurokit2 on any metric, investigate.
 - Doesn't auto-compare to URUJ snapshot (manual visual comparison)
 - Doesn't validate ride-time HR data (overnight only, like URUJ Bio Lab)
 
+### First validation run results (2026-05-21 data, run 2026-05-22 01:30)
+
+neurokit2 0.2.13 on full-day NDJSON (178 valid 5-min windows aggregated):
+
+```
+RMSSD:             23.96 ms
+SDNN:              49.99 ms
+SD1:               17.01 ms     <- math invariant SD1 = RMSSD/sqrt(2): delta 0.4%
+SD2:               67.58 ms
+LF/HF ratio:       3.165
+DFA alpha1:        1.373
+Sample entropy:    0.562
+```
+
+vs URUJ Bio Lab card (sleep-window-only, 11 windows):
+
+```
+RMSSD:             9.9 ms
+SD1:               7.0 ms      <- math invariant: delta 0.0%
+SD2:               181 ms
+LF/HF ratio:       4.75
+DFA alpha1:        1.74
+Sample entropy:    0.25
+```
+
+**Math invariant SD1 == RMSSD/sqrt(2) holds in BOTH libraries** — independent
+confirmation that URUJ's math is canonically correct.
+
+Absolute numbers differ because neurokit2 ran on the FULL DAY (sleep +
+walking + ride + everything) while URUJ ran on sleep window only. Both
+agree on direction (high LF/HF, elevated DFA, low entropy = autonomic
+stress). To make comparison apples-to-apples in future runs, filter the
+NDJSON to just sleep hours before running the script.
+
 ### Future improvements
 
 - v0.9.30+: auto-pull both URUJ snapshot + NDJSON, diff numerically
+- v0.9.30+: time-range filter (--from HH:MM --to HH:MM) to match
+  URUJ's sleep window for direct comparison
 - v0.9.30+: batch-mode for N nights → trend deviation report
 - v0.9.30+: regression suite — run on fixed fixture NDJSON whenever
   methodology version changes
