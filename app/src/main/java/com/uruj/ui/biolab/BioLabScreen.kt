@@ -1364,8 +1364,8 @@ private fun FrequencyDomainCard(s: BioLabSnapshot) {
                     color = UrujText, fontSize = 11.sp)
             }
             Text(
-                "Computed from ${fd.sampleCount} beats · Welch's PSD · " +
-                    "DFA scales 4-16 beats",
+                "Median of ${fd.windowCount} 5-min windows · ${fd.sampleCount} beats · " +
+                    "Welch's PSD · DFA scales 4-16",
                 color = UrujMuted, fontSize = 11.sp,
             )
         }
