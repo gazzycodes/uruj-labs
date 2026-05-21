@@ -147,10 +147,15 @@ class ContinuousBiometricRepository(context: Context) {
     }
 
     /**
-     * v0.9.25 — compute frequency-domain + non-linear HRV (LF/HF/VLF +
-     * Poincaré + DFA α1 + sample entropy) over the same RR window.
-     * Returns null on insufficient beats (< 240). Same NDJSON read as
-     * [computeHrvForWindow] — no extra disk I/O when called alongside.
+     * v0.9.25 → v0.9.26 — frequency-domain + non-linear HRV via 5-min
+     * windowing + median aggregation (Task Force 1996 standard, matches
+     * existing [computeHrvForWindow] pattern). Same NDJSON read.
+     *
+     * v0.9.25 had a methodology bug: computed on full overnight as one
+     * block → physiologically implausible numbers (LF/HF=22 in field
+     * test) + O(N²) sample entropy on 59k beats = 5 min compute. v0.9.26
+     * windowing fixes both math correctness AND performance simultaneously
+     * (per-window N ≈ 300 beats → ~200ms total).
      */
     fun computeFrequencyDomainForWindow(
         start: Instant,
@@ -158,11 +163,11 @@ class ContinuousBiometricRepository(context: Context) {
     ): com.uruj.power.FrequencyDomainCalculator.FrequencyDomainHrv? {
         val samples = samplesForWindow(start, end)
         val beats = samplesToBeats(samples)
-        val result = freqCalc.compute(beats)
+        val result = freqCalc.computeWindowed(beats)
         Log.d(
             TAG,
             "[freq-domain] window $start..$end → ${samples.size} samples, ${beats.size} beats — " +
-                "result=${if (result == null) "null (insufficient)" else "lf/hf=${"%.2f".format(result.lfHfRatio ?: -1f)} dfa=${"%.2f".format(result.dfaAlpha1 ?: -1f)}"}",
+                "result=${if (result == null) "null (insufficient)" else "windows=${result.windowCount} lf/hf=${"%.2f".format(result.lfHfRatio ?: -1f)} dfa=${"%.2f".format(result.dfaAlpha1 ?: -1f)} sd1=${"%.1f".format(result.sd1Ms ?: -1f)}"}",
         )
         return result
     }
