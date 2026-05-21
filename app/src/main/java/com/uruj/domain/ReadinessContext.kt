@@ -136,6 +136,33 @@ data class HrvToday(
     /** [SensorSource] short label: "strap" / "band" / "mixed" / "legacy" / "hc-direct". */
     val source: String,
     val capturedAtMs: Long,
+    /**
+     * v0.9.25 — optional frequency-domain + non-linear HRV measures computed
+     * over the same overnight window as RMSSD. Null when insufficient beats
+     * (<240) — UI falls back to time-domain-only display. Plugs into the
+     * signal pack per [[reference_readiness_context_architecture]] so future
+     * tier-B tests (postprandial / caffeine / alcohol) + AI coach + LT1
+     * detection (DFA α1 ramp) read the same struct.
+     */
+    val frequencyDomain: HrvFrequencyDomainSignals? = null,
+)
+
+/**
+ * v0.9.25 — domain-level shape for the frequency-domain + non-linear HRV
+ * metrics. Computed by [com.uruj.power.FrequencyDomainCalculator]; mirrored
+ * here in the signal pack so the engine + AI coach + UI all read one struct.
+ */
+data class HrvFrequencyDomainSignals(
+    val vlfMs2: Float?,
+    val lfMs2: Float?,
+    val hfMs2: Float?,
+    val totalPowerMs2: Float?,
+    val lfHfRatio: Float?,
+    val sd1Ms: Float?,
+    val sd2Ms: Float?,
+    val dfaAlpha1: Float?,
+    val sampleEntropy: Float?,
+    val sampleCount: Int,
 )
 
 data class RhrToday(

@@ -23,6 +23,7 @@ import com.uruj.data.BioLabSnapshot
 import com.uruj.data.TsbSnapshot
 import com.uruj.domain.CarInterpretation
 import com.uruj.domain.CarResult
+import com.uruj.power.FrequencyDomainCalculator
 import com.uruj.power.KarvonenZonesCalculator
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujMuted
@@ -540,6 +541,143 @@ fun AutonomicInfoDialog(s: BioLabSnapshot, onDismiss: () -> Unit) {
                     "≥3 valid 5-min RMSSD windows. Wear strap to bed."
             )
         }
+    }
+}
+
+// endregion
+
+// region Autonomic Frequency-Domain (v0.9.25)
+
+/**
+ * v0.9.25 — ⓘ dialog for the new Autonomic Frequency card. Explains each
+ * metric ELI10 + honest caveats (LF/HF debunked-mapping, DFA α1 LT1 future
+ * feature, sample entropy interpretation). Per lab-level rules 3 + 4 (no
+ * fake numbers, methodology disclosed). Cited refs: Task Force 1996,
+ * Heathers 2014, Hayano 2019, Peng 1994, Rogero 2021, Richman & Moorman 2000.
+ */
+@Composable
+fun FrequencyDomainInfoDialog(
+    fd: FrequencyDomainCalculator.FrequencyDomainHrv,
+    onDismiss: () -> Unit,
+) {
+    InfoDialogShell("Autonomic Frequency (LF/HF + DFA α1)", onDismiss) {
+        InfoSection(
+            "What this is — explained simply",
+            "While RMSSD (overnight HRV) tells you HOW MUCH your heart varies " +
+                "beat-to-beat, frequency-domain analysis tells you the PATTERN " +
+                "of those variations.\n\n" +
+                "Think of it like music: RMSSD = overall volume, frequency-domain " +
+                "= which notes (frequencies) are loudest.\n\n" +
+                "Your autonomic nervous system creates HRV at different speeds:\n" +
+                "• Fast oscillations (HF) — driven by breathing rhythm (parasympathetic)\n" +
+                "• Slower oscillations (LF) — driven by baroreflex (mixed sympathetic + parasympathetic)\n" +
+                "• Very slow (VLF) — thermoregulation, hormones\n\n" +
+                "We split your nightly HRV into these bands via FFT (Fast Fourier " +
+                "Transform — same math astronomers use to find planetary cycles in starlight).",
+        )
+        InfoSection(
+            "LF/HF ratio — the headline number",
+            "The single most-discussed HRV metric beyond RMSSD. Used by Kubios, " +
+                "Polar, Garmin, Whoop as a \"stress index.\"\n\n" +
+                "Classical interpretation:\n" +
+                "  < 1.0 → parasympathetic dominant (recovery zone)\n" +
+                "  1.0 – 2.0 → balanced (normal training state)\n" +
+                "  > 2.0 → sympathetic dominant (stress / fatigue / overload)\n\n" +
+                "⚠️  HONEST CAVEAT: The clean \"LF = sympathetic, HF = parasympathetic\" " +
+                "mapping is PARTIALLY DEBUNKED in modern research. LF actually " +
+                "contains BOTH sympathetic AND parasympathetic activity weighted via " +
+                "baroreflex (Heathers 2014, Hayano 2019).\n\n" +
+                "Why URUJ still shows it: the number STILL correlates with stress " +
+                "states empirically. It's just not for the mechanistic reason " +
+                "originally claimed. We expose it WITH the caveat — lab-level rule 4 " +
+                "(no fake numbers, no hidden assumptions).",
+        )
+        InfoSection(
+            "DFA α1 — the athletic-tier killer feature",
+            "Detrended Fluctuation Analysis (Peng et al. 1994). Quantifies the " +
+                "fractal scaling of your heart rhythm at short scales (4-16 beats).\n\n" +
+                "Healthy fractal scaling: α1 ≈ 1.0 (\"pink noise\" — a sweet spot " +
+                "between pure randomness and rigid regularity).\n\n" +
+                "Where to live:\n" +
+                "  0.85 – 1.15 → healthy fractal organization\n" +
+                "  0.75 – 0.85 → mild fatigue / Z3 territory\n" +
+                "  0.50 – 0.75 → above Aerobic Threshold (LT1) — sympathetic active\n" +
+                "  < 0.50 → high-intensity zone\n" +
+                "  > 1.15 → over-correlated (overtraining warning, autonomic stiffness)\n\n" +
+                "🌟 KILLER FEATURE: Rogero et al. 2021 showed DFA α1 crosses 0.75 " +
+                "at the rider's actual Aerobic Threshold (LT1 / Z1↔Z2 boundary). " +
+                "This is the foundation for a future URUJ feature: a 15-min ramp " +
+                "test that detects YOUR personal LT1 without a lactate meter " +
+                "(replaces our current Karvonen-estimated boundaries with a measured " +
+                "one). Lactate meters cost ₹15k + ₹100/strip. DFA α1 is free.",
+        )
+        InfoSection(
+            "Poincaré SD1 / SD2 — the visual",
+            "Plot RR(n) vs RR(n+1) and you get a cloud of dots (the Poincaré plot).\n\n" +
+                "• SD1 = standard deviation perpendicular to the identity line (short-" +
+                "term variability, ≈ RMSSD/√2 — same info, different lens)\n" +
+                "• SD2 = standard deviation along the identity line (long-term " +
+                "variability, correlates with SDNN)\n\n" +
+                "Stress patterns SHOW UP visually here. Ectopic beats jump out as " +
+                "outliers. Polar / Kubios / Elite HRV all use this. Future URUJ " +
+                "trend-screen polish: render the actual Poincaré scatter plot.",
+        )
+        InfoSection(
+            "Sample entropy — complexity",
+            "Quantifies how predictable / regular your RR sequence is " +
+                "(Richman & Moorman 2000).\n\n" +
+                "• Higher (~1.0+) → healthy complex variability — good autonomic flexibility\n" +
+                "• Lower (~0.0-0.5) → more regular — could mean DEEP REST (parasympathetic " +
+                "saturation, e.g. deep meditation) OR pathological rigidity (overtraining, " +
+                "autonomic suppression)\n\n" +
+                "Context matters — low entropy at rest is fine, low entropy when " +
+                "you should be active is a warning.",
+        )
+        InfoSection(
+            "How URUJ computes this",
+            "Every overnight HRV window (same one used for RMSSD):\n\n" +
+                "1. Reconstruct beat-by-beat timestamps from your Magene strap's " +
+                "RR intervals.\n" +
+                "2. Linear-interpolate to a uniform 4 Hz time series (FFT requires " +
+                "uniform sampling).\n" +
+                "3. Detrend + apply Hann window (reduces spectral leakage).\n" +
+                "4. Welch's PSD method: 256-sample segments (64 sec each) with 50% " +
+                "overlap, average squared magnitudes.\n" +
+                "5. Integrate over VLF (0.0033-0.04 Hz), LF (0.04-0.15 Hz), HF " +
+                "(0.15-0.4 Hz) bands per Task Force 1996 standard.\n" +
+                "6. Poincaré + DFA + sample entropy computed directly from filtered " +
+                "RR series.\n\n" +
+                "Minimum 240 beats required (~4 min at 60 bpm). Falls back to " +
+                "\"baseline building\" below that. Same physiological filters " +
+                "(300-2000 ms range, 20% ectopic delta cap) as RMSSD.\n\n" +
+                "References: Task Force 1996, Heathers 2014, Hayano 2019, Peng 1994, " +
+                "Rogero 2021, Richman & Moorman 2000.",
+        )
+        // Personalized "For you right now" section.
+        val ratioVerdict = when {
+            fd.lfHfRatio == null -> "Baseline building — not enough beats yet."
+            fd.lfHfRatio < 1.0f ->
+                "LF/HF = ${"%.2f".format(fd.lfHfRatio)} — PARASYMPATHETIC DOMINANT. " +
+                    "Deep recovery zone. Body is in restorative state."
+            fd.lfHfRatio < 2.0f ->
+                "LF/HF = ${"%.2f".format(fd.lfHfRatio)} — BALANCED autonomic state. " +
+                    "Normal training territory."
+            fd.lfHfRatio < 4.0f ->
+                "LF/HF = ${"%.2f".format(fd.lfHfRatio)} — SYMPATHETIC DOMINANT. " +
+                    "Stress / fatigue / acute training load is elevated."
+            else ->
+                "LF/HF = ${"%.2f".format(fd.lfHfRatio)} — HIGH SYMPATHETIC. " +
+                    "Severe stress or overload — investigate sleep, food, life stress."
+        }
+        val dfaVerdict = when (val dfa = fd.dfaAlpha1) {
+            null -> "DFA α1 baseline building."
+            in 0.85f..1.15f -> "DFA α1 = ${"%.2f".format(dfa)} — healthy fractal scaling."
+            in 0.75f..0.85f -> "DFA α1 = ${"%.2f".format(dfa)} — mild fatigue territory."
+            in 0.50f..0.75f -> "DFA α1 = ${"%.2f".format(dfa)} — above Aerobic Threshold (sympathetic active)."
+            in 1.15f..2.0f -> "DFA α1 = ${"%.2f".format(dfa)} — over-correlated. Potential overtraining marker if sustained."
+            else -> "DFA α1 = ${"%.2f".format(dfa)} — outside expected range; verify capture quality."
+        }
+        YouSection("$ratioVerdict\n\n$dfaVerdict\n\nBeats analyzed: ${fd.sampleCount}")
     }
 }
 
