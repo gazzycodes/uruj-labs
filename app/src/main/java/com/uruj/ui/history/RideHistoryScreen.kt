@@ -98,11 +98,15 @@ fun RideHistoryScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 // v0.9.22 — weekly polarized compliance card at the top.
-                // Only rendered once the analyzer has results (null while
-                // loading on first screen open).
-                weeklyPolarized?.let { week ->
-                    item(key = "weekly-polarized") {
+                // v0.9.23 — skeleton while loading (pre-fix the card was
+                // hidden until results landed → rider had no idea if data
+                // was coming).
+                item(key = "weekly-polarized") {
+                    val week = weeklyPolarized
+                    if (week != null) {
                         WeeklyPolarizedCard(week = week)
+                    } else {
+                        com.uruj.ui.components.WeeklyPolarizedSkeleton()
                     }
                 }
                 items(rides, key = { it.sessionId }) { ride ->

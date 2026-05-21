@@ -59,7 +59,14 @@ fun ReadinessCard(
     onRefresh: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    if (result == null) return
+    // v0.9.23 — show a pulsing skeleton while the readiness compute is in
+    // flight. Pre-fix this returned nothing → rider had no idea if data
+    // was coming or broken. Skeleton signals "computing" without grabbing
+    // attention with a spinner.
+    if (result == null) {
+        com.uruj.ui.components.ReadinessSkeleton(modifier = modifier)
+        return
+    }
     val color = result.grade.color()
     // v0.4.2: per-component info dialog. Tapping the ⓘ icon next to a label
     // opens an ELI10 explanation of what the metric means, where the rider
