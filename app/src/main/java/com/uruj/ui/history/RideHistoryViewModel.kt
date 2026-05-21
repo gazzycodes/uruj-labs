@@ -41,6 +41,16 @@ class RideHistoryViewModel(application: Application) : AndroidViewModel(applicat
     private val _weeklyPolarized = MutableStateFlow<WeeklyPolarizedAnalyzer.WeekResult?>(null)
     val weeklyPolarized: StateFlow<WeeklyPolarizedAnalyzer.WeekResult?> = _weeklyPolarized.asStateFlow()
 
+    /**
+     * v0.9.24 — error-state surface for the weekly polarized compute. Set
+     * when a non-cancellation exception fires so the v0.9.23 skeleton can
+     * transition to an actionable error card with a retry button instead
+     * of pulsing forever. Cleared on next successful compute. Cancellation
+     * preserved per v0.9.20.
+     */
+    private val _weeklyPolarizedError = MutableStateFlow<String?>(null)
+    val weeklyPolarizedError: StateFlow<String?> = _weeklyPolarizedError.asStateFlow()
+
     fun refresh() {
         viewModelScope.launch {
             val list = withContext(Dispatchers.IO) {
@@ -124,6 +134,7 @@ class RideHistoryViewModel(application: Application) : AndroidViewModel(applicat
         }.rethrowCancellation()
             .onSuccess { result ->
                 _weeklyPolarized.value = result
+                _weeklyPolarizedError.value = null  // v0.9.24 — clear error on success
                 Log.d(
                     TAG,
                     "weekly polarized: ${result.rideCount} rides, ${result.ridesWithHrCount} with HR · " +
@@ -131,7 +142,16 @@ class RideHistoryViewModel(application: Application) : AndroidViewModel(applicat
                         "hard=${(result.weeklyHardPct * 100).toInt()}%",
                 )
             }
-            .onFailure { Log.w(TAG, "weekly polarized compute failed", it) }
+            .onFailure {
+                Log.w(TAG, "weekly polarized compute failed", it)
+                // v0.9.24 — surface error so the UI can transition the skeleton
+                // (v0.9.23) to an actionable error card with retry button.
+                // Only set if there's no cached prior result (sticky cache wins
+                // over visible error when we have stale-but-real data).
+                if (_weeklyPolarized.value == null) {
+                    _weeklyPolarizedError.value = it.message ?: it::class.simpleName ?: "unknown failure"
+                }
+            }
     }
 
     companion object {

@@ -56,9 +56,22 @@ fun ReadinessCard(
     result: ReadinessResult?,
     snapshot: ReadinessSnapshot? = null,
     syncing: Boolean = false,
+    error: String? = null,
     onRefresh: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    // v0.9.24 — error state takes precedence over skeleton: if compute threw
+    // a non-cancellation exception and there's no cached result, show an
+    // actionable error card with a retry button instead of pulsing forever.
+    if (result == null && error != null) {
+        com.uruj.ui.components.LoadErrorCard(
+            label = "READINESS",
+            message = "Couldn't compute readiness — $error",
+            onRetry = onRefresh,
+            modifier = modifier,
+        )
+        return
+    }
     // v0.9.23 — show a pulsing skeleton while the readiness compute is in
     // flight. Pre-fix this returned nothing → rider had no idea if data
     // was coming or broken. Skeleton signals "computing" without grabbing
