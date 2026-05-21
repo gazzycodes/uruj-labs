@@ -4,10 +4,10 @@ v0.9.29 — Independent lab-grade cross-validation of URUJ's HRV math via the
 neurokit2 research library.
 
 PURPOSE
-═══════
+=======
 URUJ's freq-domain math (v0.9.28 Lomb-Scargle + v0.9.27 filter alignment)
 has been verified via:
-  - Mathematical invariants (SD1 ≡ RMSSD/√2)
+  - Mathematical invariants (SD1 == RMSSD/sqrt2)
   - Synthetic test signals (FFT peak detection)
   - Internal cross-method comparison (Lomb-Scargle vs Welch)
 
@@ -15,11 +15,11 @@ This script adds the THIRD lab-grade gate: independent cross-validation
 against neurokit2 (https://neurokit2.readthedocs.io) — a peer-reviewed
 open-source HRV library used in published clinical research.
 
-If neurokit2's numbers ≈ URUJ's numbers (within ±20%), URUJ is genuinely
+If neurokit2's numbers ~= URUJ's numbers (within +/-20%), URUJ is genuinely
 Kubios-equivalent on REAL noisy data — not just on synthetic test signals.
 
 USAGE
-═════
+=====
 1. Install dependencies (one-time):
      pip install neurokit2 numpy
 
@@ -37,20 +37,20 @@ USAGE
    numbers visually.)
 
 EXPECTED AGREEMENT
-══════════════════
+==================
 With Lomb-Scargle PSD (matching URUJ v0.9.28 method):
-  RMSSD            — should match within ±5%
-  SDNN             — should match within ±5%
-  SD1 = RMSSD/√2   — invariant, must match
-  SD2              — should match within ±10%
-  LF/HF ratio      — should match within ±20% (noisier metric)
-  DFA α1           — should match within ±15%
-  Sample entropy   — should match within ±25% (most noisy)
+  RMSSD            — should match within +/-5%
+  SDNN             — should match within +/-5%
+  SD1 = RMSSD/sqrt2   — invariant, must match
+  SD2              — should match within +/-10%
+  LF/HF ratio      — should match within +/-20% (noisier metric)
+  DFA alpha1           — should match within +/-15%
+  Sample entropy   — should match within +/-25% (most noisy)
 
 If URUJ deviates >30% from neurokit2 on any metric, investigate.
 
 CITATIONS
-═════════
+=========
   - Makowski et al. 2021. NeuroKit2: A Python toolbox for neurophysiological
     signal processing. Behavior Research Methods 53, 1689-1696.
   - Task Force 1996. HRV: standards of measurement, physiological
@@ -74,9 +74,9 @@ except ImportError:
     sys.exit(1)
 
 
-# ════════════════════════════════════════════════════════════════════════
+# ========================================================================
 # Constants — MUST MATCH URUJ's FrequencyDomainCalculator / HrvCalculator
-# ════════════════════════════════════════════════════════════════════════
+# ========================================================================
 
 PHYSIOLOGICAL_MIN = 300     # ms (30 bpm)
 PHYSIOLOGICAL_MAX = 2000    # ms (200 bpm)
@@ -89,9 +89,9 @@ MIN_DIFFS_PER_WINDOW = 30
 MIN_VALID_WINDOWS = 3
 
 
-# ════════════════════════════════════════════════════════════════════════
+# ========================================================================
 # NDJSON loading + beat reconstruction
-# ════════════════════════════════════════════════════════════════════════
+# ========================================================================
 
 def load_ndjson_samples(path: Path) -> list[dict[str, Any]]:
     """Load URUJ's continuous biometric NDJSON. Each line is one sample
@@ -130,10 +130,10 @@ def reconstruct_beats(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return beats
 
 
-# ════════════════════════════════════════════════════════════════════════
+# ========================================================================
 # Per-pair validation (EXACT mirror of HrvCalculator.consecutiveDiffsMs +
 # FrequencyDomainCalculator.consecutiveDiffsMs)
-# ════════════════════════════════════════════════════════════════════════
+# ========================================================================
 
 def physiological_filter(beats: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop RR intervals outside physiological range (300-2000 ms)."""
@@ -169,9 +169,9 @@ def validated_rr_series(beats: list[dict[str, Any]]) -> list[int]:
     return rr_series
 
 
-# ════════════════════════════════════════════════════════════════════════
+# ========================================================================
 # 5-min windowing + per-window neurokit2 metrics
-# ════════════════════════════════════════════════════════════════════════
+# ========================================================================
 
 def split_into_windows(beats: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     """Group beats into 5-min buckets by timestamp."""
@@ -199,45 +199,53 @@ def compute_window_metrics(
     rr_series = validated_rr_series(win_beats)
     if len(rr_series) < MIN_DIFFS_PER_WINDOW:
         return None
-    rri = np.array(rr_series)
+
+    # neurokit2 expects PEAK indices (cumulative beat positions in samples),
+    # not raw RR intervals. Convert: peaks[i] = sum(rr[0..i]) in ms,
+    # then converted to "samples" at 1000Hz (1 sample per ms).
+    rri_ms = np.array(rr_series, dtype=float)
+    peaks = np.cumsum(rri_ms).astype(int)  # cumulative ms → "samples" at 1000Hz
+    SAMPLING_RATE = 1000  # 1 sample per ms
 
     out: dict[str, float] = {'beat_count': len(rr_series)}
 
-    # ── Time-domain ──
+    # -- Time-domain --
     try:
-        hrv_time = nk.hrv_time(rri, sampling_rate=4, show=False)
+        hrv_time = nk.hrv_time(peaks, sampling_rate=SAMPLING_RATE, show=False)
         out['rmssd'] = float(hrv_time['HRV_RMSSD'].iloc[0])
         out['sdnn'] = float(hrv_time['HRV_SDNN'].iloc[0])
-        out['pnn50'] = float(hrv_time['HRV_pNN50'].iloc[0])
+        if 'HRV_pNN50' in hrv_time.columns:
+            out['pnn50'] = float(hrv_time['HRV_pNN50'].iloc[0])
     except Exception as e:
         print(f"  time-domain failed: {e}", file=sys.stderr)
         return None
 
-    # ── Frequency-domain (Lomb-Scargle, matches URUJ v0.9.28) ──
+    # -- Frequency-domain (Lomb-Scargle, matches URUJ v0.9.28) --
     try:
         hrv_freq = nk.hrv_frequency(
-            rri,
-            sampling_rate=4,
+            peaks,
+            sampling_rate=SAMPLING_RATE,
             psd_method='lomb',
             show=False,
         )
-        out['lf'] = float(hrv_freq['HRV_LF'].iloc[0])
-        out['hf'] = float(hrv_freq['HRV_HF'].iloc[0])
-        # neurokit2 may not always expose VLF — check
+        if 'HRV_LF' in hrv_freq.columns:
+            out['lf'] = float(hrv_freq['HRV_LF'].iloc[0])
+        if 'HRV_HF' in hrv_freq.columns:
+            out['hf'] = float(hrv_freq['HRV_HF'].iloc[0])
         if 'HRV_VLF' in hrv_freq.columns:
             out['vlf'] = float(hrv_freq['HRV_VLF'].iloc[0])
-        else:
-            out['vlf'] = float('nan')
-        out['lf_hf'] = float(hrv_freq['HRV_LFHF'].iloc[0])
+        if 'HRV_LFHF' in hrv_freq.columns:
+            out['lf_hf'] = float(hrv_freq['HRV_LFHF'].iloc[0])
     except Exception as e:
         print(f"  freq-domain failed: {e}", file=sys.stderr)
-        # Don't fail the whole window — some metrics still useful
 
-    # ── Non-linear ──
+    # -- Non-linear --
     try:
-        hrv_nl = nk.hrv_nonlinear(rri, sampling_rate=4, show=False)
-        out['sd1'] = float(hrv_nl['HRV_SD1'].iloc[0])
-        out['sd2'] = float(hrv_nl['HRV_SD2'].iloc[0])
+        hrv_nl = nk.hrv_nonlinear(peaks, sampling_rate=SAMPLING_RATE, show=False)
+        if 'HRV_SD1' in hrv_nl.columns:
+            out['sd1'] = float(hrv_nl['HRV_SD1'].iloc[0])
+        if 'HRV_SD2' in hrv_nl.columns:
+            out['sd2'] = float(hrv_nl['HRV_SD2'].iloc[0])
         # neurokit2 field name varies by version
         for k in ('HRV_DFA_alpha1', 'HRV_DFA_alpha_1', 'HRV_DFA1'):
             if k in hrv_nl.columns:
@@ -265,9 +273,9 @@ def median_aggregate(window_results: list[dict[str, float]]) -> dict[str, float 
     return aggregated
 
 
-# ════════════════════════════════════════════════════════════════════════
+# ========================================================================
 # Main
-# ════════════════════════════════════════════════════════════════════════
+# ========================================================================
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -290,7 +298,7 @@ def main() -> int:
         print(f"ERROR: file not found: {args.ndjson_path}", file=sys.stderr)
         return 1
 
-    # ── Load + reconstruct ──
+    # -- Load + reconstruct --
     print(f"Loading {args.ndjson_path}...")
     samples = load_ndjson_samples(args.ndjson_path)
     print(f"  {len(samples)} continuous samples")
@@ -301,7 +309,7 @@ def main() -> int:
     physiological = physiological_filter(beats)
     print(f"  {len(physiological)} after physiological filter (300-2000 ms)")
 
-    # ── Window + compute per-window ──
+    # -- Window + compute per-window --
     windows = split_into_windows(physiological)
     print(f"  {len(windows)} candidate 5-min windows")
 
@@ -315,9 +323,9 @@ def main() -> int:
         print(f"\nNot enough valid windows ({len(valid_results)}/{MIN_VALID_WINDOWS} required)")
         return 1
 
-    print(f"\n✓ {len(valid_results)} valid windows aggregated\n")
+    print(f"\nOK {len(valid_results)} valid windows aggregated\n")
 
-    # ── Aggregate + report ──
+    # -- Aggregate + report --
     final = median_aggregate(valid_results)
 
     print("=" * 60)
@@ -328,27 +336,27 @@ def main() -> int:
     print(f"  RMSSD:             {final['rmssd']:.2f} ms")
     print(f"  SDNN:              {final['sdnn']:.2f} ms")
     print(f"  pNN50:             {final['pnn50']:.2f} %")
-    print(f"  SD1:               {final['sd1']:.2f} ms     (must ≈ RMSSD/√2)")
+    print(f"  SD1:               {final['sd1']:.2f} ms     (must ~= RMSSD/sqrt2)")
     print(f"  SD2:               {final['sd2']:.2f} ms")
-    print(f"  LF power:          {final['lf']:.2f} ms²")
-    print(f"  HF power:          {final['hf']:.2f} ms²")
-    print(f"  VLF power:         {final['vlf']:.2f} ms²")
+    print(f"  LF power:          {final['lf']:.2f} ms^2")
+    print(f"  HF power:          {final['hf']:.2f} ms^2")
+    print(f"  VLF power:         {final['vlf']:.2f} ms^2")
     print(f"  LF/HF ratio:       {final['lf_hf']:.3f}")
-    print(f"  DFA α1:            {final['dfa_alpha1']:.3f}")
+    print(f"  DFA alpha1:            {final['dfa_alpha1']:.3f}")
     print(f"  Sample entropy:    {final['sample_entropy']:.3f}")
     print()
 
     # Self-check the invariant
     expected_sd1 = final['rmssd'] / np.sqrt(2)
     sd1_delta_pct = abs(final['sd1'] - expected_sd1) / expected_sd1 * 100
-    print(f"  Invariant SD1 ≡ RMSSD/√2:")
-    print(f"    RMSSD/√2 = {expected_sd1:.2f} ms")
+    print(f"  Invariant SD1 == RMSSD/sqrt2:")
+    print(f"    RMSSD/sqrt2 = {expected_sd1:.2f} ms")
     print(f"    SD1      = {final['sd1']:.2f} ms")
-    print(f"    Δ        = {sd1_delta_pct:.1f}%  (must be <5%)")
+    print(f"    delta        = {sd1_delta_pct:.1f}%  (must be <5%)")
     print()
 
     print("Compare against URUJ Bio Lab Autonomic Frequency card for the")
-    print("same date. Expected agreement: ±20% on LF/HF, ±15% on DFA α1.")
+    print("same date. Expected agreement: +/-20% on LF/HF, +/-15% on DFA alpha1.")
 
     if args.output:
         args.output.write_text(json.dumps(final, indent=2))
