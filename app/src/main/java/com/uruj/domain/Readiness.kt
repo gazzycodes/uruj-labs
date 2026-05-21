@@ -58,6 +58,18 @@ data class ReadinessResult(
      * what the engine doesn't see. Null when all expected signals present.
      */
     val recommendationMissingSignals: String? = null,
+    /**
+     * v0.9.21 — raw TSB breakdown (CTL, ATL, 42d total TSS) so the
+     * Readiness card's TRAINING LOAD ⓘ can render the same personalized
+     * ATL:CTL ratio + Build-CTL prescription that the Bio Lab Training
+     * State ⓘ shows. Nullable for backward-compat with older serialized
+     * snapshots; the dialog falls back to non-personalized educational
+     * content when null. Populated by ReadinessRepository when TSB compute
+     * succeeds (same numbers persisted to TsbSnapshotRepository).
+     */
+    val tsbCtl: Float? = null,
+    val tsbAtl: Float? = null,
+    val tsbTotalLoad42d: Float? = null,
 )
 
 enum class ReadinessGrade(val label: String) {
