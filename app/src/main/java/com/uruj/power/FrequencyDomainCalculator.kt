@@ -6,72 +6,76 @@ import kotlin.math.ln
 import kotlin.math.sqrt
 
 /**
- * v0.9.25 → v0.9.26 — HRV frequency-domain + non-linear analysis
+ * v0.9.25 → v0.9.27 — HRV frequency-domain + non-linear analysis
  * (tier 2 + 3 from [[reference_biohacker_lab_vision]]).
  *
- * ## v0.9.26 FIX — short-term windowing per Task Force 1996
+ * ## v0.9.27 — LAB-GRADE math fixes
  *
- * **v0.9.25 had a methodology bug**: computed FFT/Poincaré/entropy/DFA on
- * the ENTIRE overnight RR series as one block. Task Force 1996 explicitly
- * defines frequency-domain HRV as a SHORT-TERM (2-5 min window) measure,
- * not long-term. Computing across 8 hours mixed deep sleep + REM cycles
- * + brief awakenings into one FFT produces physiologically meaningless
- * numbers (LF/HF=22 was the smoking gun in field test — real range
- * 0.5-3.0).
+ * Field test 2026-05-21 revealed SD1 = 9.7 ms vs mathematically-expected
+ * 7.07 ms (37% inflation). Investigation traced this to a filter mismatch
+ * with [HrvCalculator] — my filter dropped individual beats based on
+ * RR-jump from previous KEPT beat, missing the timestamp-consecutiveness
+ * check that HrvCalculator applies per-pair. Cross-ectopic pairs that
+ * HrvCalculator rejects were being accepted into my diff list, inflating
+ * variance.
  *
- * **v0.9.26 fix**: window beats into 5-min segments + compute all metrics
- * per-window + median-aggregate. Matches existing
- * [HrvCalculator.computeWindowed] pattern. Validated by mathematical
- * invariant: per-window Poincaré SD1 must equal RMSSD/√2 (sanity check).
+ * v0.9.27 brings all four lab-grade corrections:
+ *
+ *   1. **Filter aligned with HrvCalculator** — port the per-pair
+ *      validation from `consecutiveDiffsMs` (timestamp gap within 30%
+ *      or 150ms floor + 20% ectopic delta cap). SD1 will now exactly
+ *      reconcile with RMSSD/√2 per-window per the mathematical invariant.
+ *   2. **Linear detrending before FFT** — slow HR drift across a 5-min
+ *      window (e.g. deep sleep onset) leaks into VLF/LF spectrum. Subtract
+ *      best-fit linear trend before Hann windowing.
+ *   3. **SDNN/SD2 use all physiological RR** (not just validated pairs)
+ *      to match [HrvCalculator.buildHrv] convention. Mixing diff-validated
+ *      vs all-RR variance was a category error.
+ *   4. **Trapezoidal integration** of PSD over frequency bands (minor
+ *      accuracy bump over rectangular).
+ *
+ * Methodology version: `v0.9.27-aligned-filter-detrended-trapz`.
+ *
+ * ## Known limitations (lab-level honest disclosure)
+ *
+ *   - **VLF resolution at 5-min windows is inherently limited.** Bin width
+ *     0.0156 Hz × 5-min FFT only gives 2-3 bins inside the VLF band
+ *     (0.0033-0.04 Hz). True VLF requires longer windows (10+ min).
+ *     We compute it for completeness but the value is noisier than LF/HF.
+ *   - **LF/HF "sympathovagal balance" mechanistic claim is partially
+ *     debunked** (Heathers 2014, Hayano 2019). Number is still useful as
+ *     empirical stress index; UI caveat in ⓘ dialog.
+ *   - **DFA α1 LT1 = 0.75 crossing is research-grade** (Rogero 2021) —
+ *     not clinical-validated. Promising for the future ramp-test feature
+ *     but should not replace lactate-anchored zones without further
+ *     personal validation.
  *
  * ## What this exposes
  *
- * **Frequency-domain** (Welch's periodogram per 5-min window):
- *   - VLF power (0.0033 – 0.04 Hz) — thermoregulation + hormonal
- *   - LF power (0.04 – 0.15 Hz) — mixed sympathetic + parasympathetic
- *   - HF power (0.15 – 0.4 Hz) — parasympathetic (RSA)
- *   - LF/HF ratio — Kubios / Polar / Garmin "stress index"
- *     (PARTIALLY DEBUNKED — Heathers 2014, Hayano 2019. UI surfaces caveat.)
+ * **Frequency-domain** (Welch's periodogram, per 5-min window):
+ *   - VLF power 0.0033–0.04 Hz (caveat: limited resolution)
+ *   - LF power 0.04–0.15 Hz
+ *   - HF power 0.15–0.4 Hz (parasympathetic, RSA)
+ *   - LF/HF ratio (Kubios "stress index" — with caveat)
  *
  * **Non-linear** (per 5-min window):
- *   - Poincaré SD1 (short-term, ≡ RMSSD/√2)
- *   - Poincaré SD2 (long-term, correlates with SDNN)
- *   - DFA α1 (scales 4-16 beats) — fractal scaling.
- *     Rogero 2021: crosses 0.75 at Aerobic Threshold (LT1).
- *   - Sample entropy (m=2, r=0.2·SD)
+ *   - Poincaré SD1 (≡ RMSSD/√2 per-window — math invariant)
+ *   - Poincaré SD2 (≡ √(2·SDNN² − SD1²))
+ *   - DFA α1 (scales 4-16 beats, Rogero 2021)
+ *   - Sample entropy (m=2, r=0.2·SD, Richman & Moorman 2000)
  *
- * ## Performance bound (v0.9.26)
+ * ## Performance bound
  *
- * Per-window cap: ~600 beats max (5 min at 120 bpm peak). Sample entropy
- * O(N²) per window = ~360k ops; ~12 windows per night = ~4M ops total.
- * Total compute: <200ms (vs 5min for v0.9.25 unbounded).
- *
- * ## Method (per Task Force 1996 standard)
- *
- *   For each 5-min window:
- *     1. Filter RR (300-2000 ms physiological range + 20% ectopic delta cap)
- *     2. Linear-interpolate to uniform 4 Hz time series
- *     3. Detrend + Hann window + Welch's PSD with 256-sample segments
- *     4. Integrate PSD over VLF / LF / HF bands
- *     5. Poincaré SD1/SD2 from RR series
- *     6. DFA α1 (scales 4-16 beats)
- *     7. Sample entropy (m=2, r=0.2·SD)
- *   Median-aggregate all metrics across valid windows.
- *
- * Architectural notes:
- *   - Pure math; no I/O, no coroutines
- *   - Mirrors HrvCalculator.computeWindowed shape exactly
- *   - Per lab-level rule 4 (no fake numbers): returns null if <3 valid windows
- *   - Per lab-level rule 3 (methodology): caveats cited in UI ⓘ dialog
+ * Per-window: ≤600 beats max. Sample entropy O(N²) per window
+ * ≈ 360k ops × ~12 windows ≈ 4M ops total. Plus FFTs ~256-pt × 12
+ * × 7 segments-each = small. Total ~200ms-1s on Android.
  *
  * References:
- *   - Task Force 1996. HRV: standards of measurement.
- *   - Heathers JAJ 2014. Everything Hertz: methodological issues in
- *     short-term frequency-domain HRV.
- *   - Hayano J, Yuda E 2019. Pitfalls of assessment of autonomic function
- *     by heart rate variability.
- *   - Peng CK et al. 1994. DFA origin.
- *   - Rogero MM et al. 2021. DFA α1 as aerobic threshold marker.
+ *   - Task Force 1996. HRV standards.
+ *   - Heathers JAJ 2014. LF/HF caveats.
+ *   - Hayano J, Yuda E 2019. HRV pitfalls.
+ *   - Peng CK et al. 1994. DFA.
+ *   - Rogero MM et al. 2021. DFA α1 LT1 marker.
  *   - Richman JS, Moorman JR 2000. Sample entropy.
  */
 class FrequencyDomainCalculator {
@@ -83,9 +87,9 @@ class FrequencyDomainCalculator {
         val lfMs2: Float?,
         /** Median power 0.15–0.4 Hz across 5-min windows (ms²). */
         val hfMs2: Float?,
-        /** Median total power across windows (ms²). */
+        /** Median total power (VLF+LF+HF) across windows (ms²). */
         val totalPowerMs2: Float?,
-        /** Median LF/HF ratio across windows. See PARTIALLY-DEBUNKED caveat in UI. */
+        /** Median LF/HF ratio across windows. See PARTIALLY-DEBUNKED caveat. */
         val lfHfRatio: Float?,
         /** Median Poincaré SD1 across windows (ms) — short-term variability ≡ RMSSD/√2. */
         val sd1Ms: Float?,
@@ -93,27 +97,20 @@ class FrequencyDomainCalculator {
         val sd2Ms: Float?,
         /** Median DFA α1 across windows. Rogero 2021: crosses 0.75 at AeT (LT1). */
         val dfaAlpha1: Float?,
-        /** Median sample entropy (m=2, r=0.2·SD) across windows. */
+        /** Median sample entropy across windows. */
         val sampleEntropy: Float?,
-        /** Total beats analyzed (across all valid windows). */
+        /** Total beats analyzed across all valid windows. */
         val sampleCount: Int,
-        /** Number of valid 5-min windows aggregated. v0.9.26+. */
+        /** Number of valid 5-min windows aggregated. */
         val windowCount: Int,
         /** Methodology version for forward-traceability. */
         val methodologyVersion: String = METHODOLOGY_VERSION,
     )
 
     /**
-     * v0.9.26 — windowed frequency-domain + non-linear HRV.
-     *
-     * Splits [beats] into [windowMs]-sized segments (default 5 min), computes
-     * all metrics per-window, median-aggregates across windows. Returns null
-     * if fewer than [minValidWindows] (default 3) valid windows survive.
-     *
-     * @param beats sorted RR sequence (will be re-sorted by timestamp defensively)
-     * @param windowMs window size in ms (default 300_000 = 5 min, Task Force 1996)
-     * @param minBeatsPerWindow minimum beats per window to consider it valid (default 30)
-     * @param minValidWindows minimum number of valid windows to return a result (default 3)
+     * v0.9.27 — windowed frequency-domain + non-linear HRV with
+     * HrvCalculator-aligned filter + linear detrending + correct
+     * SDNN scope.
      */
     fun computeWindowed(
         beats: List<HrvCalculator.Beat>,
@@ -122,19 +119,25 @@ class FrequencyDomainCalculator {
         minValidWindows: Int = MIN_VALID_WINDOWS,
     ): FrequencyDomainHrv? {
         if (beats.isEmpty()) return null
-        val filtered = filterRr(beats).sortedBy { it.timestampMs }
-        if (filtered.isEmpty()) return null
 
-        // Group into windows by timestamp (matches HrvCalculator pattern)
-        val firstTs = filtered.first().timestampMs
+        // Step 1: Physiological filter (300-2000 ms) and sort by timestamp.
+        // This is the BASE filter — drops impossible RR values but does NOT
+        // drop ectopic-suspect pairs (that happens per-pair below, matching
+        // HrvCalculator.consecutiveDiffsMs semantics).
+        val physiological = beats
+            .filter { it.rrMs in HrvCalculator.PHYSIOLOGICAL_MIN..HrvCalculator.PHYSIOLOGICAL_MAX }
+            .sortedBy { it.timestampMs }
+        if (physiological.size < minBeatsPerWindow) return null
+
+        // Step 2: Group into 5-min windows by timestamp.
+        val firstTs = physiological.first().timestampMs
         val perWindow = mutableMapOf<Long, MutableList<HrvCalculator.Beat>>()
-        for (b in filtered) {
+        for (b in physiological) {
             val idx = (b.timestampMs - firstTs) / windowMs
             perWindow.getOrPut(idx) { mutableListOf() }.add(b)
         }
 
-        // Per-window compute. Each window is independent; failure of one
-        // doesn't invalidate the night.
+        // Step 3: Per-window compute.
         data class WindowResult(
             val lf: Float?, val hf: Float?, val vlf: Float?,
             val sd1: Float, val sd2: Float,
@@ -143,15 +146,28 @@ class FrequencyDomainCalculator {
         )
         val windowResults = perWindow.values.mapNotNull { winBeats ->
             if (winBeats.size < minBeatsPerWindow) return@mapNotNull null
-            val rr = winBeats.map { it.rrMs.toFloat() }
 
-            // Cheap measures first
-            val sd1 = poincareSd1(rr) ?: return@mapNotNull null
-            val sd2 = poincareSd2(rr) ?: return@mapNotNull null
-            val dfa = dfaAlpha1(rr)  // nullable — small windows may not have enough scales
-            val sampEn = sampleEntropy(rr)
+            // Validated diffs — matches HrvCalculator.consecutiveDiffsMs.
+            // This is THE critical alignment fix vs v0.9.26.
+            val validatedDiffs = consecutiveDiffsMs(winBeats)
+            if (validatedDiffs.size < HrvCalculator.MIN_DIFFS) return@mapNotNull null
 
-            // Frequency-domain via Welch's PSD on this 5-min window
+            // SD1 ≡ RMSSD/√2 — uses validated diffs (mathematical invariant)
+            val sd1 = sdSqrtVariance(validatedDiffs.map { it.toFloat() }) / sqrt(2f)
+
+            // SD2 — derived from SDNN (all physiological RR in window) + SD1
+            val rrValues = winBeats.map { it.rrMs.toFloat() }
+            val sdnn = sdSqrtVariance(rrValues)
+            val sd2Sq = 2f * sdnn * sdnn - sd1 * sd1
+            val sd2 = if (sd2Sq > 0f) sqrt(sd2Sq) else 0f
+
+            // DFA — uses all physiological RR (DFA is scale-based, not pair-based)
+            val dfa = dfaAlpha1(rrValues)
+
+            // Sample entropy — uses all physiological RR
+            val sampEn = sampleEntropy(rrValues)
+
+            // FFT — uses all physiological beats (resampled), with linear detrending
             val (vlf, lf, hf) = computeFrequencyBandsForWindow(winBeats)
 
             WindowResult(lf, hf, vlf, sd1, sd2, dfa, sampEn, winBeats.size)
@@ -159,8 +175,7 @@ class FrequencyDomainCalculator {
 
         if (windowResults.size < minValidWindows) return null
 
-        // Median-aggregate (robust to outlier windows — same approach as
-        // HrvCalculator.computeWindowed)
+        // Step 4: Median-aggregate.
         val lfMed = medianOrNull(windowResults.mapNotNull { it.lf })
         val hfMed = medianOrNull(windowResults.mapNotNull { it.hf })
         val vlfMed = medianOrNull(windowResults.mapNotNull { it.vlf })
@@ -190,36 +205,73 @@ class FrequencyDomainCalculator {
     }
 
     // ────────────────────────────────────────────────────────────────────
+    // v0.9.27 — Aligned filter (mirrors HrvCalculator.consecutiveDiffsMs)
+    // ────────────────────────────────────────────────────────────────────
+
+    /**
+     * Validated consecutive-pair diffs. For each pair (prev, curr):
+     *   - actualGap = curr.timestampMs - prev.timestampMs
+     *   - expectedGap = curr.rrMs
+     *   - tolerance = max(150ms, 30% of expectedGap)
+     *   - Accept only if |actualGap - expectedGap| ≤ tolerance
+     *     AND ectopic-delta |curr.rrMs - prev.rrMs| / prev.rrMs ≤ 20%
+     *
+     * EXACT mirror of [HrvCalculator.consecutiveDiffsMs]. Same constants.
+     * If they ever diverge, the SD1 ≡ RMSSD/√2 invariant test fails.
+     */
+    internal fun consecutiveDiffsMs(sortedBeats: List<HrvCalculator.Beat>): List<Int> {
+        if (sortedBeats.size < 2) return emptyList()
+        val diffs = mutableListOf<Int>()
+        for (i in 1 until sortedBeats.size) {
+            val prev = sortedBeats[i - 1]
+            val curr = sortedBeats[i]
+            val expectedGap = curr.rrMs.toLong()
+            val actualGap = curr.timestampMs - prev.timestampMs
+            val tolerance = maxOf(
+                HrvCalculator.MIN_TOLERANCE_MS,
+                (expectedGap * 0.30).toLong(),
+            )
+            if (kotlin.math.abs(actualGap - expectedGap) > tolerance) continue
+            val deltaPct = kotlin.math.abs(curr.rrMs - prev.rrMs).toFloat() / prev.rrMs
+            if (deltaPct > HrvCalculator.ECTOPIC_THRESHOLD) continue
+            diffs.add(curr.rrMs - prev.rrMs)
+        }
+        return diffs
+    }
+
+    /** Standard deviation = sqrt(variance with mean subtracted). */
+    internal fun sdSqrtVariance(values: List<Float>): Float {
+        if (values.size < 2) return 0f
+        val mean = values.average().toFloat()
+        val variance = values.map { (it - mean).let { d -> d * d } }.average().toFloat()
+        return sqrt(variance)
+    }
+
+    // ────────────────────────────────────────────────────────────────────
     // Per-window non-linear measures
     // ────────────────────────────────────────────────────────────────────
 
     /**
-     * Poincaré SD1 = SD(consecutive diffs)/√2. Mathematical invariant:
-     * SD1 ≡ RMSSD/√2 always — used as a sanity assertion in unit tests.
+     * Poincaré SD1 helper for testing (legacy API). Uses simple diff
+     * series — internal computeWindowed uses [consecutiveDiffsMs] for
+     * the production-correct math invariant.
      */
     internal fun poincareSd1(rr: List<Float>): Float? {
         if (rr.size < 2) return null
         val diffs = (1 until rr.size).map { rr[it] - rr[it - 1] }
-        val mean = diffs.average().toFloat()
-        val variance = diffs.map { (it - mean).let { d -> d * d } }.average().toFloat()
-        return sqrt(variance) / sqrt(2f)
+        return sdSqrtVariance(diffs) / sqrt(2f)
     }
 
-    /** Poincaré SD2 = √(2·SDNN² − SD1²). */
+    /** Poincaré SD2 helper for testing. */
     internal fun poincareSd2(rr: List<Float>): Float? {
         if (rr.size < 2) return null
-        val mean = rr.average().toFloat()
-        val sdnnSq = rr.map { (it - mean).let { d -> d * d } }.average().toFloat()
         val sd1 = poincareSd1(rr) ?: return null
-        val sd2Sq = 2f * sdnnSq - sd1 * sd1
+        val sdnn = sdSqrtVariance(rr)
+        val sd2Sq = 2f * sdnn * sdnn - sd1 * sd1
         return if (sd2Sq > 0f) sqrt(sd2Sq) else 0f
     }
 
-    /**
-     * DFA α1 — Detrended Fluctuation Analysis, scales 4-16 beats.
-     * Returns null if window too small (<64 beats — insufficient for
-     * largest scale).
-     */
+    /** DFA α1 — Detrended Fluctuation Analysis, scales 4-16 beats. */
     internal fun dfaAlpha1(rr: List<Float>): Float? {
         if (rr.size < MIN_BEATS_FOR_DFA) return null
         val mean = rr.average()
@@ -268,14 +320,12 @@ class FrequencyDomainCalculator {
         return sqrt(sumSqResiduals / totalSamples)
     }
 
-    /** Sample entropy (m=2, r=0.2·SD). O(N²) but N is per-window-bounded (~300). */
+    /** Sample entropy (m=2, r=0.2·SD). O(N²) but bounded per-window. */
     internal fun sampleEntropy(rr: List<Float>): Float? {
         if (rr.size < 50) return null
         val m = 2
-        val sd = run {
-            val mean = rr.average().toFloat()
-            sqrt(rr.map { (it - mean).let { d -> d * d } }.average()).toFloat()
-        }
+        val sd = sdSqrtVariance(rr)
+        if (sd <= 0f) return null
         val r = 0.2f * sd
         val n = rr.size
         if (n < m + 1) return null
@@ -303,10 +353,9 @@ class FrequencyDomainCalculator {
     }
 
     // ────────────────────────────────────────────────────────────────────
-    // Per-window frequency-domain (Welch's PSD)
+    // Per-window frequency-domain (Welch's PSD with linear detrending)
     // ────────────────────────────────────────────────────────────────────
 
-    /** Compute (VLF, LF, HF) for a single 5-min window. */
     private fun computeFrequencyBandsForWindow(
         beats: List<HrvCalculator.Beat>,
     ): Triple<Float?, Float?, Float?> {
@@ -326,9 +375,14 @@ class FrequencyDomainCalculator {
         for (s in 0 until segments) {
             val start = s * overlap
             val segment = FloatArray(segmentLen)
-            val mean = (start until start + segmentLen).map { uniform[it] }.average().toFloat()
+
+            // v0.9.27 — Linear detrending before windowing.
+            // Subtract best-fit linear trend (not just mean) to suppress
+            // slow drift leakage into VLF/LF bands.
+            val (slope, intercept) = linearTrend(uniform, start, segmentLen)
             for (i in 0 until segmentLen) {
-                segment[i] = (uniform[start + i] - mean) * hann[i]
+                val detrended = uniform[start + i] - (slope * i + intercept)
+                segment[i] = detrended * hann[i]
             }
             val re = segment.copyOf()
             val im = FloatArray(segmentLen)
@@ -347,6 +401,21 @@ class FrequencyDomainCalculator {
         val lf = integrateBand(psd, df, 0.04f, 0.15f)
         val hf = integrateBand(psd, df, 0.15f, 0.4f)
         return Triple(vlf, lf, hf)
+    }
+
+    /** Best-fit linear trend over a slice of a uniformly-sampled series. */
+    private fun linearTrend(arr: FloatArray, start: Int, len: Int): Pair<Float, Float> {
+        var sx = 0.0; var sy = 0.0; var sxx = 0.0; var sxy = 0.0
+        for (i in 0 until len) {
+            val x = i.toDouble(); val yi = arr[start + i].toDouble()
+            sx += x; sy += yi; sxx += x * x; sxy += x * yi
+        }
+        val nd = len.toDouble()
+        val denom = nd * sxx - sx * sx
+        if (denom == 0.0) return 0f to (sy / nd).toFloat()
+        val slope = (nd * sxy - sx * sy) / denom
+        val intercept = (sy - slope * sx) / nd
+        return slope.toFloat() to intercept.toFloat()
     }
 
     private fun resampleRrTo4Hz(beats: List<HrvCalculator.Beat>): FloatArray? {
@@ -380,12 +449,18 @@ class FrequencyDomainCalculator {
         return out
     }
 
+    /**
+     * v0.9.27 — Trapezoidal integration of PSD over [fLow, fHigh].
+     * Minor accuracy bump over rectangular integration.
+     */
     private fun integrateBand(psd: FloatArray, df: Float, fLow: Float, fHigh: Float): Float? {
         val kLow = (fLow / df).toInt().coerceIn(0, psd.size - 1)
         val kHigh = (fHigh / df).toInt().coerceIn(0, psd.size - 1)
         if (kHigh <= kLow) return null
         var sum = 0f
-        for (k in kLow..kHigh) sum += psd[k]
+        for (k in kLow until kHigh) {
+            sum += (psd[k] + psd[k + 1]) * 0.5f
+        }
         return sum * df
     }
 
@@ -438,24 +513,6 @@ class FrequencyDomainCalculator {
         }
     }
 
-    // ────────────────────────────────────────────────────────────────────
-    // Helpers
-    // ────────────────────────────────────────────────────────────────────
-
-    private fun filterRr(beats: List<HrvCalculator.Beat>): List<HrvCalculator.Beat> {
-        val out = mutableListOf<HrvCalculator.Beat>()
-        for (b in beats) {
-            if (b.rrMs < 300 || b.rrMs > 2000) continue
-            val prev = out.lastOrNull()
-            if (prev != null) {
-                val jump = kotlin.math.abs(b.rrMs - prev.rrMs).toDouble() / prev.rrMs
-                if (jump > 0.20) continue
-            }
-            out.add(b)
-        }
-        return out
-    }
-
     private fun linearRegressionSlope(x: DoubleArray, y: DoubleArray): Double {
         val n = x.size
         require(n == y.size && n >= 2)
@@ -479,18 +536,10 @@ class FrequencyDomainCalculator {
         if (values.isEmpty()) null else median(values)
 
     companion object {
-        const val METHODOLOGY_VERSION = "v0.9.26-windowed-welch-dfa-sampen"
-
-        /** Task Force 1996 short-term HRV window (5 min). */
+        const val METHODOLOGY_VERSION = "v0.9.27-aligned-filter-detrended-trapz"
         const val DEFAULT_WINDOW_MS = 5L * 60_000L
-
-        /** Minimum beats per window for valid stats. */
         const val MIN_BEATS_PER_WINDOW = 30
-
-        /** Minimum valid windows required (same as HrvCalculator.MIN_WINDOWS). */
         const val MIN_VALID_WINDOWS = 3
-
-        /** Minimum beats for DFA α1 — needs enough at the largest scale (16). */
         const val MIN_BEATS_FOR_DFA = 64
     }
 }

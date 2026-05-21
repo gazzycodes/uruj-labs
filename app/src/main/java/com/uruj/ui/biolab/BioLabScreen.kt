@@ -156,13 +156,49 @@ fun BioLabScreen(
 
             val s = snapshot
             if (s == null) {
-                item("loading") {
-                    Box(
-                        modifier = Modifier.fillMaxWidth().height(200.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        CircularProgressIndicator(color = UrujAccent)
-                    }
+                // v0.9.27 — per-card skeleton placeholders (Task #178) matching
+                // the v0.9.23 pattern used by Readiness + Weekly Polarized cards.
+                // Replaces the previous centered single CircularProgressIndicator
+                // for UX consistency. Each skeleton mirrors the height + outline
+                // of the real card so the LazyColumn doesn't reflow when data
+                // lands. Order matches the actual card sequence below.
+                item("skel_tsb") {
+                    com.uruj.ui.components.LoadingCardSkeleton(
+                        label = "TRAINING STATE — TSB",
+                        cardHeight = 140.dp,
+                    )
+                }
+                item("skel_sleep") {
+                    com.uruj.ui.components.LoadingCardSkeleton(
+                        label = "SLEEP PATTERN",
+                        cardHeight = 110.dp,
+                    )
+                }
+                item("skel_vo2") {
+                    com.uruj.ui.components.LoadingCardSkeleton(
+                        label = "VO2 MAX",
+                        cardHeight = 130.dp,
+                    )
+                }
+                item("skel_cardio_header") { SectionHeader("Cardiovascular") }
+                item("skel_hr") {
+                    com.uruj.ui.components.LoadingCardSkeleton(
+                        label = "HEART RATE — ATHLETIC PROFILE",
+                        cardHeight = 150.dp,
+                    )
+                }
+                item("skel_autonomic_header") { SectionHeader("Autonomic Health") }
+                item("skel_autonomic_hrv") {
+                    com.uruj.ui.components.LoadingCardSkeleton(
+                        label = "AUTONOMIC HRV — beat-to-beat parasympathetic",
+                        cardHeight = 180.dp,
+                    )
+                }
+                item("skel_autonomic_freq") {
+                    com.uruj.ui.components.LoadingCardSkeleton(
+                        label = "AUTONOMIC FREQUENCY — LF/HF + DFA α1",
+                        cardHeight = 200.dp,
+                    )
                 }
                 return@LazyColumn
             }
