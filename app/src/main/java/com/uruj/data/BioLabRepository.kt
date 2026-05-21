@@ -395,6 +395,12 @@ class BioLabRepository(context: Context) {
         }
         val (hrvWindowStart, hrvWindowEnd) = effectiveHrvWindow(sleepWindow, now)
         val autonomicHrv = continuousBiometric.computeHrvForWindow(hrvWindowStart, hrvWindowEnd)
+        // v0.9.25 — frequency-domain + non-linear HRV on the SAME RR window.
+        // Reuses cached samples from the same NDJSON walk (no extra disk I/O).
+        // Null when < 240 beats — frequency-domain math needs more data than
+        // time-domain (~4 min at 60 bpm minimum). UI hides bands while
+        // baseline builds.
+        val autonomicFreqDomain = continuousBiometric.computeFrequencyDomainForWindow(hrvWindowStart, hrvWindowEnd)
         val autonomicSampleCount = autonomicHrv?.sampleCount ?: 0
         val autonomicWindowCount = autonomicHrv?.windowCount ?: 0
         val autonomicWindowLabel = if (sleepWindow != null) "last sleep" else "last 8h"
@@ -452,6 +458,9 @@ class BioLabRepository(context: Context) {
             autonomicPnn50Pct = autonomicHrv?.pnn50Percent,
             autonomicMeanHrBpm = autonomicHrv?.meanHrBpm,
             autonomicSampleCount = autonomicSampleCount,
+            // v0.9.25 — frequency-domain + non-linear HRV (LF/HF/VLF + Poincaré
+            // SD1/SD2 + DFA α1 + sample entropy). Null until ≥240 beats.
+            autonomicFrequencyDomain = autonomicFreqDomain,
             autonomicWindowLabel = autonomicWindowLabel,
             autonomicWindowCount = autonomicWindowCount,
             autonomicDaysOfData = autonomicDaysOfData,
@@ -722,6 +731,16 @@ data class BioLabSnapshot(
     /** Days of overnight HRV captured in last 7 days. Drives baseline-building
      *  UX: <7 days → show "baseline building" notice on the Autonomic card. */
     val autonomicDaysOfData: Int = 0,
+
+    /**
+     * v0.9.25 — frequency-domain + non-linear HRV measures (VLF/LF/HF, LF/HF
+     * ratio, Poincaré SD1/SD2, DFA α1, sample entropy). Computed over the
+     * same overnight RR window as `autonomicRmssdMs`. Null when fewer than
+     * 240 beats in the window (~4 min at 60 bpm) — frequency-domain math
+     * needs more data than time-domain. UI shows "baseline building" until
+     * this fills in. See [com.uruj.power.FrequencyDomainCalculator].
+     */
+    val autonomicFrequencyDomain: com.uruj.power.FrequencyDomainCalculator.FrequencyDomainHrv? = null,
 
     /** v0.7.2 — Cortisol Awakening Response for the most recent wake event.
      *  Null when last sleep ended <45 min ago, or 24/7 NDJSON didn't have

@@ -195,6 +195,12 @@ fun BioLabScreen(
             if (s.autonomicRmssdMs != null) {
                 item("autonomic_header") { SectionHeader("Autonomic Health") }
                 item("autonomic_card") { AutonomicHealthCard(s, onSeeTrend = onOpenHrvTrend) }
+                // v0.9.25 — Frequency-domain + non-linear card (LF/HF / DFA α1).
+                // Only renders when sufficient beats (>= 240) computed in last
+                // HRV window; auto-hides while baseline-building.
+                if (s.autonomicFrequencyDomain != null) {
+                    item("autonomic_freq_card") { FrequencyDomainCard(s) }
+                }
             }
 
             // v0.7.2 — CAR (Cortisol Awakening Response). Auto-resolved from
@@ -1218,6 +1224,172 @@ private fun AutonomicHealthCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) 
             )
         }
     }
+}
+
+/**
+ * v0.9.25 — Frequency-domain + non-linear HRV card. Renders on Bio Lab
+ * directly below AutonomicHealthCard. Computed over the same overnight
+ * RR window as RMSSD via [com.uruj.power.FrequencyDomainCalculator].
+ *
+ * Headlines: LF/HF ratio (autonomic balance, classical Kubios index) +
+ * DFA α1 (fractal scaling; foundation for future LT1 detection from
+ * ramp test per Rogero 2021). Breakdown box exposes LF/HF/VLF power +
+ * Poincaré SD1/SD2 + sample entropy.
+ *
+ * ⓘ dialog explains each metric ELI10 + caveats. Critical: LF/HF
+ * mechanistic interpretation is partially debunked (Heathers 2014,
+ * Hayano 2019); UI shows the caveat per lab-level rule 4 (no fake
+ * numbers).
+ */
+@Composable
+private fun FrequencyDomainCard(s: BioLabSnapshot) {
+    val fd = s.autonomicFrequencyDomain ?: return
+    var showInfo by remember { mutableStateOf(false) }
+    // LF/HF ratio tier (Heathers 2014 / Hayano 2019 caveat applies):
+    //   <1.0 → parasympathetic dominant (deep recovery / high vagal tone)
+    //   1.0-2.0 → balanced (normal autonomic state)
+    //   >2.0 → sympathetic dominant (stress / fatigue / overload)
+    val lfHf = fd.lfHfRatio
+    val accent = when {
+        lfHf == null -> UrujMuted
+        lfHf < 1.0f -> UrujZone2
+        lfHf < 2.0f -> UrujZone3
+        else -> UrujZone5
+    }
+    val tierLabel = when {
+        lfHf == null -> "Baseline building — analyzing"
+        lfHf < 1.0f -> "Parasympathetic dominant — deep recovery zone"
+        lfHf < 2.0f -> "Balanced autonomic state"
+        lfHf < 4.0f -> "Sympathetic dominant — stress / fatigue"
+        else -> "High sympathetic — overload / acute stress"
+    }
+    BioCard(
+        "Autonomic Frequency — LF/HF + DFA α1",
+        accentColor = accent,
+        infoOnClick = { showInfo = true },
+    ) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                text = lfHf?.let { "%.2f".format(it) } ?: "—",
+                color = accent,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Black,
+                fontSize = 48.sp,
+                letterSpacing = (-1.5).sp,
+            )
+            Spacer(Modifier.width(6.dp))
+            Column(modifier = Modifier.padding(bottom = 10.dp)) {
+                Text(
+                    "LF / HF",
+                    color = UrujMuted,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                )
+                Text(
+                    "autonomic balance",
+                    color = UrujMuted,
+                    fontSize = 9.sp,
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            // DFA α1 secondary hero — the athletic-tier killer feature.
+            // Healthy ~1.0; <0.75 crosses above LT1 (Rogero 2021).
+            fd.dfaAlpha1?.let { dfa ->
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    modifier = Modifier.padding(bottom = 10.dp),
+                ) {
+                    Text(
+                        text = "%.2f".format(dfa),
+                        color = dfaAlpha1Color(dfa),
+                        fontFamily = FontFamily.SansSerif,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 28.sp,
+                    )
+                    Text(
+                        "DFA α1",
+                        color = UrujMuted,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp,
+                        letterSpacing = 1.sp,
+                    )
+                }
+            }
+        }
+        Text(
+            tierLabel,
+            color = UrujText,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 13.sp,
+        )
+        Spacer(Modifier.height(10.dp))
+        // Breakdown — power bands + Poincaré + sample entropy
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(UrujSurfaceHigh.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                .padding(10.dp),
+        ) {
+            Text(
+                "BREAKDOWN",
+                color = UrujMuted,
+                fontWeight = FontWeight.Black,
+                fontSize = 9.sp,
+                letterSpacing = 1.5.sp,
+            )
+            Spacer(Modifier.height(4.dp))
+            fd.lfMs2?.let {
+                Text("LF power (0.04-0.15 Hz): ${"%.0f".format(it)} ms²",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            fd.hfMs2?.let {
+                Text("HF power (0.15-0.4 Hz): ${"%.0f".format(it)} ms²",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            fd.vlfMs2?.let {
+                Text("VLF power (0.0033-0.04 Hz): ${"%.0f".format(it)} ms²",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            fd.sd1Ms?.let {
+                Text("Poincaré SD1 (short-term): ${"%.1f".format(it)} ms",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            fd.sd2Ms?.let {
+                Text("Poincaré SD2 (long-term): ${"%.1f".format(it)} ms",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            fd.sampleEntropy?.let {
+                Text("Sample entropy (complexity): ${"%.2f".format(it)}",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            Text(
+                "Computed from ${fd.sampleCount} beats · Welch's PSD · " +
+                    "DFA scales 4-16 beats",
+                color = UrujMuted, fontSize = 11.sp,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Tap ⓘ for what each metric means + honest caveats. " +
+                "LF/HF \"sympathetic balance\" mapping is partially debunked " +
+                "(Heathers 2014) — useful as empirical stress index but not " +
+                "the clean mechanism originally claimed. DFA α1 is the athletic-" +
+                "tier marker: crosses 0.75 at the rider's Aerobic Threshold " +
+                "(Rogero 2021) — foundation for future LT1-from-ramp-test feature.",
+            color = UrujMuted, fontSize = 10.sp,
+        )
+    }
+    if (showInfo) FrequencyDomainInfoDialog(fd = fd, onDismiss = { showInfo = false })
+}
+
+/** DFA α1 tier color — healthy ~1.0; drops below 0.75 above Aerobic Threshold. */
+private fun dfaAlpha1Color(dfa: Float): androidx.compose.ui.graphics.Color = when {
+    dfa >= 0.85f && dfa < 1.15f -> UrujZone2  // healthy fractal scaling
+    dfa >= 0.75f -> UrujZone3                  // slight stress / fatigue
+    dfa >= 0.5f -> UrujZone4                   // above AeT (high intensity)
+    dfa >= 1.15f -> UrujZone3                  // overcorrelated (overtraining?)
+    else -> UrujZone5                          // anomalous
 }
 
 /**

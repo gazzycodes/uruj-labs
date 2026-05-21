@@ -34,6 +34,7 @@ class ContinuousBiometricRepository(context: Context) {
     )
     private val json = Json { ignoreUnknownKeys = true }
     private val hrvCalc = HrvCalculator()
+    private val freqCalc = com.uruj.power.FrequencyDomainCalculator()
 
     /**
      * Returns all continuous samples that fall within the time window.
@@ -141,6 +142,27 @@ class ContinuousBiometricRepository(context: Context) {
             TAG,
             "[hrv] window $start..$end → ${samples.size} samples, ${beats.size} beats, " +
                 "windows=${result.windowCount}, rmssd=${"%.1f".format(result.rmssdMs)} ms",
+        )
+        return result
+    }
+
+    /**
+     * v0.9.25 — compute frequency-domain + non-linear HRV (LF/HF/VLF +
+     * Poincaré + DFA α1 + sample entropy) over the same RR window.
+     * Returns null on insufficient beats (< 240). Same NDJSON read as
+     * [computeHrvForWindow] — no extra disk I/O when called alongside.
+     */
+    fun computeFrequencyDomainForWindow(
+        start: Instant,
+        end: Instant,
+    ): com.uruj.power.FrequencyDomainCalculator.FrequencyDomainHrv? {
+        val samples = samplesForWindow(start, end)
+        val beats = samplesToBeats(samples)
+        val result = freqCalc.compute(beats)
+        Log.d(
+            TAG,
+            "[freq-domain] window $start..$end → ${samples.size} samples, ${beats.size} beats — " +
+                "result=${if (result == null) "null (insufficient)" else "lf/hf=${"%.2f".format(result.lfHfRatio ?: -1f)} dfa=${"%.2f".format(result.dfaAlpha1 ?: -1f)}"}",
         )
         return result
     }
