@@ -68,6 +68,7 @@ class BioLabRepository(context: Context) {
     // LAB-tab-direct entry refreshes today's sleep data without waiting
     // for Readiness compute. Past dates stay immutable per v0.9.8 rule.
     private val sleepSnapshots = SleepSnapshotRepository(appContext)
+    private val hrvSnapshots = HrvSnapshotRepository(appContext)
 
     suspend fun snapshot(): BioLabSnapshot = withContext(Dispatchers.IO) {
         val profile = profileStore.current()
@@ -411,6 +412,47 @@ class BioLabRepository(context: Context) {
         val recentSleeps7d = lastSleepReader.listLastNDays(client, granted, 7)
         val autonomicDaysOfData = continuousBiometric
             .dailyOvernightHrvHistoryFromSessions(recentSleeps7d).size
+
+        // v0.9.27 — persist today's HRV snapshot to disk for trend chart
+        // history. Today-mutable, past-immutable. Per [[reference_snapshot_
+        // persistence_architecture]] every trend metric persists at compute
+        // time; trend charts read disk only. Bundles time-domain (v0.7.0
+        // RMSSD/SDNN/pNN50) + frequency-domain (v0.9.25 LF/HF/VLF) + non-
+        // linear (v0.9.25 Poincaré/DFA/sample entropy) in one record.
+        if (autonomicHrv != null || autonomicFreqDomain != null) {
+            runCatching {
+                val today = java.time.LocalDate.now(java.time.ZoneId.systemDefault())
+                val hrvSourceLabel = when {
+                    autonomicHrv != null -> "strap"  // v0.7.0 strap NDJSON path
+                    else -> "unknown"
+                }
+                hrvSnapshots.save(
+                    HrvSnapshot(
+                        dateIsoLocal = today.toString(),
+                        rmssdMs = autonomicHrv?.rmssdMs,
+                        sdnnMs = autonomicHrv?.sdnnMs,
+                        pnn50Percent = autonomicHrv?.pnn50Percent,
+                        pnn20Percent = autonomicHrv?.pnn20Percent,
+                        meanHrBpm = autonomicHrv?.meanHrBpm,
+                        sampleCount = autonomicHrv?.sampleCount ?: 0,
+                        windowCount = autonomicHrv?.windowCount ?: 0,
+                        source = hrvSourceLabel,
+                        vlfMs2 = autonomicFreqDomain?.vlfMs2,
+                        lfMs2 = autonomicFreqDomain?.lfMs2,
+                        hfMs2 = autonomicFreqDomain?.hfMs2,
+                        totalPowerMs2 = autonomicFreqDomain?.totalPowerMs2,
+                        lfHfRatio = autonomicFreqDomain?.lfHfRatio,
+                        sd1Ms = autonomicFreqDomain?.sd1Ms,
+                        sd2Ms = autonomicFreqDomain?.sd2Ms,
+                        dfaAlpha1 = autonomicFreqDomain?.dfaAlpha1,
+                        sampleEntropy = autonomicFreqDomain?.sampleEntropy,
+                        computedAtMs = System.currentTimeMillis(),
+                        methodologyVersion = HrvSnapshotRepository.METHODOLOGY_VERSION,
+                    ),
+                    date = today,
+                )
+            }.onFailure { Log.w(TAG, "[v0.9.27] HRV snapshot save failed", it) }
+        }
 
         // v0.7.2 — Cortisol Awakening Response. Only resolved when the
         // most-recent sleep ended ≥45 min ago and 24/7 NDJSON has enough

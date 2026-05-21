@@ -60,6 +60,7 @@ class ReadinessContextBuilder(context: Context) {
     private val vo2Snapshots = Vo2SnapshotRepository(appContext)
     private val tsbSnapshots = TsbSnapshotRepository(appContext)
     private val recSnapshots = RecommendationSnapshotRepository(appContext)
+    private val hrvSnapshots = HrvSnapshotRepository(appContext)  // v0.9.27
     private val carRepo = CarRepository(appContext)
     private val orthostaticRepo = OrthostaticTestRepository(appContext)
     private val carDetector = CarDetector()
@@ -90,6 +91,13 @@ class ReadinessContextBuilder(context: Context) {
         val vo2History = runCatching { vo2Snapshots.listAll() }.rethrowCancellation().getOrDefault(emptyList())
         val tsbHistory = runCatching { tsbSnapshots.listAll() }.rethrowCancellation().getOrDefault(emptyList())
         val hrrHistory = runCatching { hrrSnapshots.listAll() }.rethrowCancellation().getOrDefault(emptyList())
+        // v0.9.27 — load today's HRV snapshot (if persisted by BioLabRepository)
+        // to populate the HrvToday.frequencyDomain signal in ReadinessContext.
+        // Per [[reference_readiness_context_architecture]] every biomarker plugs
+        // into the signal pack so the engine, AI coach, and future biomarkers
+        // all read from the same struct.
+        val todayHrvSnap = runCatching { hrvSnapshots.load(today.toString()) }
+            .rethrowCancellation().getOrNull()
         val carResult = runCatching { carRepo.cachedLatest() }.rethrowCancellation().getOrNull()
         val orthostaticResult = runCatching { orthostaticRepo.latest() }.rethrowCancellation().getOrNull()
 
@@ -110,6 +118,25 @@ class ReadinessContextBuilder(context: Context) {
                     daysOfDataIn7d = inputs.hrvDaysOfDataIn7d,
                     source = hrvSource ?: "unknown",
                     capturedAtMs = nowMs,
+                    // v0.9.27 — plug freq-domain + non-linear into the signal
+                    // pack when today's snapshot exists. Engine doesn't consume
+                    // these yet but the field is populated so future AI coach +
+                    // tier-B test pipelines + reasoner upgrades can read one
+                    // canonical struct (architecture rule).
+                    frequencyDomain = todayHrvSnap?.let { snap ->
+                        com.uruj.domain.HrvFrequencyDomainSignals(
+                            vlfMs2 = snap.vlfMs2,
+                            lfMs2 = snap.lfMs2,
+                            hfMs2 = snap.hfMs2,
+                            totalPowerMs2 = snap.totalPowerMs2,
+                            lfHfRatio = snap.lfHfRatio,
+                            sd1Ms = snap.sd1Ms,
+                            sd2Ms = snap.sd2Ms,
+                            dfaAlpha1 = snap.dfaAlpha1,
+                            sampleEntropy = snap.sampleEntropy,
+                            sampleCount = snap.sampleCount,
+                        )
+                    },
                 )
             },
             rhr = inputs.restingHrToday?.let {
