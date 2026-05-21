@@ -167,8 +167,35 @@ class FrequencyDomainCalculator {
             // Sample entropy — uses all physiological RR
             val sampEn = sampleEntropy(rrValues)
 
-            // FFT — uses all physiological beats (resampled), with linear detrending
-            val (vlf, lf, hf) = computeFrequencyBandsForWindow(winBeats)
+            // v0.9.28 — Lomb-Scargle as PRIMARY frequency-domain method.
+            // No interpolation through ectopic gaps → no spectral artifacts
+            // from synthetic data. Same algorithm Kubios HRV uses for
+            // noisy real-world RR series.
+            val (vlf, lf, hf) = lombScargleBands(winBeats)
+
+            // v0.9.28 — Welch's PSD computed alongside for DIAGNOSTIC
+            // logging. Lets us cross-check: if Welch ≈ Lomb-Scargle, the
+            // 4Hz-interpolation path was fine (v0.9.27 numbers were real
+            // biology). If Welch >> Lomb-Scargle, interpolation through
+            // ectopic gaps was the artifact source.
+            if (LOG_PER_WINDOW_DIAGNOSTICS) {
+                // Guarded — android.util.Log throws in unit tests without
+                // mocking. runCatching keeps tests green while preserving
+                // on-device diagnostic value.
+                runCatching {
+                    val (welchVlf, welchLf, welchHf) = welchBands(winBeats)
+                    val welchRatio = if (welchLf != null && welchHf != null && welchHf > 0.0001f) welchLf / welchHf else null
+                    val lsRatio = if (lf != null && hf != null && hf > 0.0001f) lf / hf else null
+                    android.util.Log.d(
+                        "URUJ-FreqDomain",
+                        "win ${winBeats.size}b · " +
+                            "LS lf/hf=${lsRatio?.let { "%.2f".format(it) } ?: "—"} " +
+                            "(lf=${lf?.let { "%.0f".format(it) } ?: "—"} hf=${hf?.let { "%.0f".format(it) } ?: "—"} vlf=${vlf?.let { "%.0f".format(it) } ?: "—"}) · " +
+                            "Welch lf/hf=${welchRatio?.let { "%.2f".format(it) } ?: "—"} " +
+                            "(lf=${welchLf?.let { "%.0f".format(it) } ?: "—"} hf=${welchHf?.let { "%.0f".format(it) } ?: "—"} vlf=${welchVlf?.let { "%.0f".format(it) } ?: "—"})",
+                    )
+                }
+            }
 
             WindowResult(lf, hf, vlf, sd1, sd2, dfa, sampEn, winBeats.size)
         }
@@ -353,10 +380,135 @@ class FrequencyDomainCalculator {
     }
 
     // ────────────────────────────────────────────────────────────────────
-    // Per-window frequency-domain (Welch's PSD with linear detrending)
+    // v0.9.28 — Lomb-Scargle periodogram (Kubios-grade, no interpolation)
     // ────────────────────────────────────────────────────────────────────
 
-    private fun computeFrequencyBandsForWindow(
+    /**
+     * Lomb-Scargle periodogram for non-uniformly-sampled RR series.
+     *
+     * Why this exists alongside Welch's PSD:
+     *   Welch requires uniform-time-spaced samples (FFT precondition). RR
+     *   intervals are intrinsically irregular — each beat fires when the
+     *   heart beats, not at fixed clock intervals. v0.9.25-27 used linear
+     *   interpolation to uniform 4 Hz before FFT. That interpolation step
+     *   introduces SPECTRAL ARTIFACTS when data has gaps (ectopic
+     *   rejection, sleep-stage transitions, BLE dropouts) — synthetic
+     *   straight-line segments show up as fake low-frequency content,
+     *   inflating VLF/LF.
+     *
+     *   Lomb-Scargle computes the same band powers DIRECTLY from the
+     *   non-uniform (t_i, RR_i) pairs. No interpolation. No artifacts.
+     *   This is what Kubios HRV uses by default for noisy real data.
+     *
+     * Method (Lomb 1976, Scargle 1982):
+     *   For each test angular frequency ω:
+     *     τ = (1/2ω) · atan2(Σ sin(2ωt_i), Σ cos(2ωt_i))
+     *     P_LS(ω) = (1/2) · [
+     *       (Σ y_i·cos(ω(t_i − τ)))² / Σ cos²(ω(t_i − τ))
+     *       + (Σ y_i·sin(ω(t_i − τ)))² / Σ sin²(ω(t_i − τ))
+     *     ]
+     *   Integrate P_LS over band frequency ranges, scale by total variance
+     *   for absolute power in ms².
+     *
+     * Complexity: O(N_freqs · N_beats). For 200 freq bins × ~300 beats
+     * per 5-min window × ~12 windows = ~7M ops total per night. Same
+     * order as Welch, no perf regression.
+     *
+     * @return (VLF, LF, HF) power in ms², or all-null if insufficient
+     *         data (need ≥30 beats spanning ≥60 sec).
+     */
+    internal fun lombScargleBands(beats: List<HrvCalculator.Beat>): Triple<Float?, Float?, Float?> {
+        if (beats.size < 30) return Triple(null, null, null)
+
+        // Build (t_i, y_i) pairs from beats. t_i = cumulative beat time in
+        // seconds; y_i = mean-centered RR in ms.
+        val tSec = DoubleArray(beats.size)
+        val rrMs = DoubleArray(beats.size)
+        var t = 0.0
+        for (i in beats.indices) {
+            tSec[i] = t
+            rrMs[i] = beats[i].rrMs.toDouble()
+            t += beats[i].rrMs.toDouble() / 1000.0
+        }
+        val totalSec = tSec.last()
+        if (totalSec < 60.0) return Triple(null, null, null)
+
+        val meanRr = rrMs.average()
+        val y = DoubleArray(beats.size) { rrMs[it] - meanRr }
+        val variance = y.map { it * it }.average()
+        if (variance <= 0.0) return Triple(null, null, null)
+
+        // Frequency grid: linear spacing from 0.003 to 0.4 Hz. 200 bins
+        // → Δf = ~0.002 Hz. Enough VLF resolution for 5-min windows.
+        val fLo = 0.003
+        val fHi = 0.4
+        val nFreqs = 200
+        val df = (fHi - fLo) / (nFreqs - 1)
+        val freqs = DoubleArray(nFreqs) { fLo + it * df }
+
+        // Lomb-Scargle P_LS at each frequency
+        val psd = DoubleArray(nFreqs)
+        for (k in 0 until nFreqs) {
+            val omega = 2.0 * PI * freqs[k]
+            // Compute τ
+            var sumSin2 = 0.0
+            var sumCos2 = 0.0
+            for (i in beats.indices) {
+                sumSin2 += kotlin.math.sin(2.0 * omega * tSec[i])
+                sumCos2 += kotlin.math.cos(2.0 * omega * tSec[i])
+            }
+            val tau = if (sumCos2 != 0.0 || sumSin2 != 0.0) {
+                kotlin.math.atan2(sumSin2, sumCos2) / (2.0 * omega)
+            } else 0.0
+
+            // Compute P_LS(ω) using τ
+            var sCos = 0.0; var sSin = 0.0
+            var cc = 0.0; var ss = 0.0
+            for (i in beats.indices) {
+                val phase = omega * (tSec[i] - tau)
+                val c = kotlin.math.cos(phase)
+                val s = kotlin.math.sin(phase)
+                sCos += y[i] * c
+                sSin += y[i] * s
+                cc += c * c
+                ss += s * s
+            }
+            val term1 = if (cc > 0.0) (sCos * sCos) / cc else 0.0
+            val term2 = if (ss > 0.0) (sSin * sSin) / ss else 0.0
+            psd[k] = 0.5 * (term1 + term2)
+        }
+
+        // Normalize PSD to ms²/Hz so integration over a band gives ms²
+        // (Parseval-like): total integrated P_LS × scaleFactor ≈ variance.
+        val totalIntegral = psd.sum() * df
+        if (totalIntegral <= 0.0) return Triple(null, null, null)
+        val scaleFactor = variance / totalIntegral  // ms² / (P_LS · Hz)
+
+        // Trapezoidal integration over band ranges
+        fun bandPower(fLowB: Double, fHighB: Double): Float? {
+            val kLow = ((fLowB - fLo) / df).toInt().coerceIn(0, nFreqs - 1)
+            val kHigh = ((fHighB - fLo) / df).toInt().coerceIn(0, nFreqs - 1)
+            if (kHigh <= kLow) return null
+            var sum = 0.0
+            for (k in kLow until kHigh) {
+                sum += (psd[k] + psd[k + 1]) * 0.5
+            }
+            return (sum * df * scaleFactor).toFloat()
+        }
+
+        val vlf = bandPower(0.0033, 0.04)
+        val lf = bandPower(0.04, 0.15)
+        val hf = bandPower(0.15, 0.4)
+        return Triple(vlf, lf, hf)
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Per-window frequency-domain (Welch's PSD with linear detrending)
+    // — LEGACY METHOD, kept for diagnostic side-by-side comparison.
+    // Lomb-Scargle is the production primary (v0.9.28+).
+    // ────────────────────────────────────────────────────────────────────
+
+    internal fun welchBands(
         beats: List<HrvCalculator.Beat>,
     ): Triple<Float?, Float?, Float?> {
         val uniform = resampleRrTo4Hz(beats) ?: return Triple(null, null, null)
@@ -536,10 +688,19 @@ class FrequencyDomainCalculator {
         if (values.isEmpty()) null else median(values)
 
     companion object {
-        const val METHODOLOGY_VERSION = "v0.9.27-aligned-filter-detrended-trapz"
+        const val METHODOLOGY_VERSION = "v0.9.28-lomb-scargle"
         const val DEFAULT_WINDOW_MS = 5L * 60_000L
         const val MIN_BEATS_PER_WINDOW = 30
         const val MIN_VALID_WINDOWS = 3
         const val MIN_BEATS_FOR_DFA = 64
+
+        /**
+         * v0.9.28 — per-window diagnostic logging: Lomb-Scargle vs Welch
+         * side-by-side. Lets us see in logcat whether the two methods
+         * agree on each 5-min window. Cheap (one extra log line per
+         * window, no I/O outside log). Keep enabled until we have ≥7
+         * days of trend data showing stable behavior, then flip false.
+         */
+        const val LOG_PER_WINDOW_DIAGNOSTICS = true
     }
 }

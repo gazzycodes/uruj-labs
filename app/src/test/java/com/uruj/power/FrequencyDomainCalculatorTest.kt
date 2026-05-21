@@ -112,6 +112,53 @@ class FrequencyDomainCalculatorTest {
     // ────────────────────────────────────────────────────────────────────
 
     @Test
+    fun `v0_9_28 Lomb-Scargle of synthetic HF oscillation peaks in HF band`() {
+        // Synthetic 0.25 Hz oscillation (breathing rhythm, inside HF
+        // band 0.15-0.4 Hz). Lomb-Scargle should isolate the peak to HF.
+        // This is the lab-grade truth check: if our Lomb-Scargle math is
+        // correct, a pure HF signal produces almost all power in HF band,
+        // not in LF or VLF.
+        val beats = mutableListOf<HrvCalculator.Beat>()
+        var t = 0L
+        val freqHz = 0.25
+        val amplitudeMs = 30.0
+        val meanRrMs = 800
+        repeat(1500) {
+            val phase = 2 * PI * freqHz * (t / 1000.0)
+            val rr = (meanRrMs + amplitudeMs * sin(phase)).toInt().coerceIn(500, 1100)
+            t += rr
+            beats.add(HrvCalculator.Beat(timestampMs = t, rrMs = rr))
+        }
+        val (vlf, lf, hf) = freq.lombScargleBands(beats)
+        assertNotNull(vlf); assertNotNull(lf); assertNotNull(hf)
+        // HF should dominate — pure 0.25 Hz signal
+        assertTrue("HF=$hf must dominate LF=$lf on pure 0.25 Hz", hf!! > lf!! * 2f)
+        assertTrue("HF=$hf must dominate VLF=$vlf on pure 0.25 Hz", hf > vlf!! * 2f)
+    }
+
+    @Test
+    fun `v0_9_28 Lomb-Scargle and Welch agree on clean uniform data`() {
+        // Critical cross-check: on CLEAN data (no ectopic gaps), Lomb-Scargle
+        // and Welch should produce similar LF/HF ratios — within 50%.
+        // If they diverge sharply, one method is wrong. Lomb-Scargle is
+        // the truth-revealer on noisy data; on clean data both must agree.
+        val beats = synthBeats(durationMs = 30 * 60_000L, meanRrMs = 800, sdMs = 50, seed = 99L)
+        val (lsVlf, lsLf, lsHf) = freq.lombScargleBands(beats)
+        val (wVlf, wLf, wHf) = freq.welchBands(beats)
+        assertNotNull(lsLf); assertNotNull(lsHf); assertNotNull(wLf); assertNotNull(wHf)
+        val lsRatio = lsLf!! / lsHf!!
+        val wRatio = wLf!! / wHf!!
+        // Allow generous tolerance — the two methods have different
+        // normalization conventions, but the ratio should be within 2x.
+        val ratio = lsRatio / wRatio
+        assertTrue(
+            "Lomb-Scargle LF/HF=$lsRatio and Welch LF/HF=$wRatio should agree within 2x " +
+                "on clean data (ratio of ratios = $ratio)",
+            ratio in 0.5f..2.0f,
+        )
+    }
+
+    @Test
     fun `FFT of synthetic HF oscillation produces HF peak`() {
         // Build a 30-min sequence with synthetic 0.25 Hz oscillation
         // (breathing rhythm). HF band (0.15-0.4 Hz) should contain

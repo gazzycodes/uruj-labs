@@ -153,6 +153,9 @@ private sealed interface AppScreen {
     data object TsbTrend : AppScreen
     // v0.9.8 — sleep-hours trend (driven by new SleepSnapshotRepository)
     data object SleepTrend : AppScreen
+    // v0.9.28 — frequency-domain HRV trends from HrvSnapshotRepository
+    data object LfHfTrend : AppScreen
+    data object DfaAlpha1Trend : AppScreen
     data object LiveData : AppScreen
     data class ViewingPastRide(val summary: StoredRideSummary) : AppScreen
 }
@@ -342,6 +345,8 @@ class MainActivity : ComponentActivity() {
                             onOpenVo2Trend = { screen = AppScreen.Vo2Trend },
                             onOpenTsbTrend = { screen = AppScreen.TsbTrend },
                             onOpenSleepTrend = { screen = AppScreen.SleepTrend },
+                            onOpenLfHfTrend = { screen = AppScreen.LfHfTrend },
+                            onOpenDfaAlpha1Trend = { screen = AppScreen.DfaAlpha1Trend },
                         )
                         AppScreen.OrthostaticTest -> com.uruj.ui.orthostatic.OrthostaticTestScreen(
                             onBack = { screen = AppScreen.BioLab },
@@ -368,6 +373,13 @@ class MainActivity : ComponentActivity() {
                             onBack = { screen = AppScreen.BioLab },
                         )
                         AppScreen.SleepTrend -> com.uruj.ui.trend.SleepTrendScreen(
+                            onBack = { screen = AppScreen.BioLab },
+                        )
+                        // v0.9.28 — frequency-domain HRV trend screens
+                        AppScreen.LfHfTrend -> com.uruj.ui.trend.LfHfTrendScreen(
+                            onBack = { screen = AppScreen.BioLab },
+                        )
+                        AppScreen.DfaAlpha1Trend -> com.uruj.ui.trend.DfaAlpha1TrendScreen(
                             onBack = { screen = AppScreen.BioLab },
                         )
                         is AppScreen.ViewingPastRide -> RideSummaryScreen(
