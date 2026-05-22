@@ -1684,6 +1684,56 @@ private fun PostprandialResponseCard(
             Text("Source: ${snap.source} · ${snap.preSampleCount}+${snap.postSampleCount} beats",
                 color = UrujMuted, fontSize = 11.sp)
         }
+        // v0.9.33 — edge-case warning chips. Render only when relevant.
+        if (snap.overlapsPriorMeal || snap.isDuringSleep ||
+            (snap.preCoveragePct != null && snap.preCoveragePct < 0.6f) ||
+            (snap.postCoveragePct != null && snap.postCoveragePct < 0.6f)
+        ) {
+            Spacer(Modifier.height(8.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(UrujZone5.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+                    .padding(10.dp),
+            ) {
+                Text(
+                    "DATA QUALITY NOTES",
+                    color = UrujZone5,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 9.sp,
+                    letterSpacing = 1.5.sp,
+                )
+                Spacer(Modifier.height(4.dp))
+                if (snap.overlapsPriorMeal) {
+                    Text(
+                        "⚠ Pre-window overlaps with a prior meal's post-window. " +
+                            "Baseline is another meal's recovery, not a true rest state. " +
+                            "Interpret with caution.",
+                        color = UrujText, fontSize = 11.sp,
+                    )
+                }
+                if (snap.isDuringSleep) {
+                    Text(
+                        "⚠ Meal mark falls inside last sleep window. Pre-window " +
+                            "is sleep state (not awake baseline). Useful midnight-snack " +
+                            "data but interpret deltas differently than daytime meals.",
+                        color = UrujText, fontSize = 11.sp,
+                    )
+                }
+                snap.preCoveragePct?.takeIf { it < 0.6f }?.let { pct ->
+                    Text(
+                        "⚠ Pre-window strap coverage: ${(pct * 100).toInt()}% (strap was off for part of window).",
+                        color = UrujText, fontSize = 11.sp,
+                    )
+                }
+                snap.postCoveragePct?.takeIf { it < 0.6f }?.let { pct ->
+                    Text(
+                        "⚠ Post-window strap coverage: ${(pct * 100).toInt()}% (strap was off for part of window).",
+                        color = UrujText, fontSize = 11.sp,
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         Text(
             "Tap ⓘ for what this means + honest caveats. " +

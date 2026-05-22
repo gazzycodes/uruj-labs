@@ -823,7 +823,15 @@ fun PostprandialInfoDialog(
                 "biomarkers (LF/HF, DFA α1, CAR) are elevated, postprandial drop " +
                 "will be inflated. Interpret in context.\n\n" +
                 "• Brief naps, cold exposure, intense conversation, or movement " +
-                "during the post-meal window can confound the reading.",
+                "during the post-meal window can confound the reading.\n\n" +
+                "• v0.9.33: If meals are <90 min apart, the second meal's PRE " +
+                "window overlaps with the first meal's POST recovery. URUJ flags " +
+                "this with a 'Pre-window overlaps' chip — interpret cautiously.\n\n" +
+                "• v0.9.33: If a meal is marked DURING SLEEP (midnight snack), " +
+                "URUJ flags this. The pre-window is sleep state, not awake " +
+                "baseline, so deltas need different interpretation.\n\n" +
+                "• v0.9.33: If strap was off for part of either window, URUJ " +
+                "shows the coverage % so you know how much data fed the analysis.",
         )
         InfoSection(
             "How URUJ computes this",
