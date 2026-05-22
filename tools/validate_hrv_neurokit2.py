@@ -140,6 +140,45 @@ def physiological_filter(beats: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [b for b in beats if PHYSIOLOGICAL_MIN <= b['rrMs'] <= PHYSIOLOGICAL_MAX]
 
 
+def filter_by_local_time(
+    beats: list[dict[str, Any]],
+    from_time: str | None,
+    to_time: str | None,
+) -> list[dict[str, Any]]:
+    """v0.9.30 — Filter beats to a local-time HH:MM window.
+
+    Supports overnight windows (from > to crosses midnight). All
+    timestamps are interpreted in the host's local timezone (matches
+    URUJ's LocalDate.now() / LocalDateTime semantics).
+    """
+    from datetime import datetime
+
+    def parse_hhmm(s: str) -> tuple[int, int]:
+        h, m = s.split(':')
+        return int(h), int(m)
+
+    if not from_time and not to_time:
+        return beats
+
+    fh, fm = parse_hhmm(from_time) if from_time else (0, 0)
+    th, tm = parse_hhmm(to_time) if to_time else (23, 59)
+
+    overnight = (fh, fm) > (th, tm)
+
+    out = []
+    for b in beats:
+        dt = datetime.fromtimestamp(b['timestampMs'] / 1000.0)
+        beat_hm = (dt.hour, dt.minute)
+        in_range = (
+            ((fh, fm) <= beat_hm <= (th, tm))
+            if not overnight
+            else (beat_hm >= (fh, fm) or beat_hm <= (th, tm))
+        )
+        if in_range:
+            out.append(b)
+    return out
+
+
 def validated_rr_series(beats: list[dict[str, Any]]) -> list[int]:
     """Return RR series for windows that pass per-pair validation.
 
@@ -292,6 +331,22 @@ def main() -> int:
         default=None,
         help='Optional path to write JSON result for diff against URUJ snapshot',
     )
+    parser.add_argument(
+        '--from-time',
+        type=str,
+        default=None,
+        help='v0.9.30 — Filter beats to time range (HH:MM, local). Combined with '
+             '--to-time, restricts analysis to a specific window (e.g. sleep '
+             'only: --from-time 02:28 --to-time 11:12). Match URUJ Bio Lab '
+             '"last sleep" window for apples-to-apples comparison.',
+    )
+    parser.add_argument(
+        '--to-time',
+        type=str,
+        default=None,
+        help='See --from-time. HH:MM local. If --to-time < --from-time, '
+             'the window crosses midnight (e.g. --from-time 22:00 --to-time 07:00).',
+    )
     args = parser.parse_args()
 
     if not args.ndjson_path.exists():
@@ -308,6 +363,15 @@ def main() -> int:
 
     physiological = physiological_filter(beats)
     print(f"  {len(physiological)} after physiological filter (300-2000 ms)")
+
+    # v0.9.30 — Optional time-range filter for apples-to-apples comparison
+    # with URUJ's "last sleep" window (or any specific period of interest).
+    if args.from_time or args.to_time:
+        physiological = filter_by_local_time(
+            physiological, args.from_time, args.to_time,
+        )
+        rng = f"{args.from_time or '00:00'}-{args.to_time or '23:59'}"
+        print(f"  {len(physiological)} after time filter [{rng} local]")
 
     # -- Window + compute per-window --
     windows = split_into_windows(physiological)
