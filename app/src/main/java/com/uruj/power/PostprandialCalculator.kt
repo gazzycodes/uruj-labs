@@ -83,6 +83,8 @@ class PostprandialCalculator {
             mealMarkId = mealMark.id,
             mealMarkMs = mealMark.timestampMs,
             dateIsoLocal = dateIsoLocal,
+            eventType = mealMark.eventType,
+            note = mealMark.note,
 
             preWindowStartMs = preStart,
             preWindowEndMs = preEnd,

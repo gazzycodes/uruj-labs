@@ -122,11 +122,20 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
      * Idempotent in the sense that each tap saves a NEW mark; future
      * iteration may add 60-sec debounce.
      */
-    fun markMeal(offsetMinutesAgo: Int = 0) {
+    fun markMeal(
+        offsetMinutesAgo: Int = 0,
+        eventType: String = "meal",
+        note: String? = null,
+    ) {
         viewModelScope.launch {
             val offsetMs = offsetMinutesAgo.toLong() * 60_000L
             val timestampMs = System.currentTimeMillis() - offsetMs
-            val mark = MealMark(timestampMs = timestampMs)
+            val cleanNote = note?.trim()?.takeIf { it.isNotEmpty() }
+            val mark = MealMark(
+                timestampMs = timestampMs,
+                eventType = eventType,
+                note = cleanNote,
+            )
             val ok = mealMarkRepo.save(mark)
             _markMealMessage.value = if (ok) {
                 val hhmm = java.time.LocalTime.ofInstant(
@@ -134,9 +143,17 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
                     java.time.ZoneId.systemDefault(),
                 ).withSecond(0).withNano(0).toString()
                 val ago = if (offsetMinutesAgo > 0) " (backdated $offsetMinutesAgo min)" else ""
-                "Meal marked at $hhmm$ago. Postprandial analysis in 75 min from meal time."
+                val typeLabel = when (eventType) {
+                    "coffee" -> "Coffee"
+                    "drink" -> "Drink"
+                    "alcohol" -> "Alcohol"
+                    "snack" -> "Snack"
+                    "custom" -> "Event"
+                    else -> "Meal"
+                }
+                "$typeLabel marked at $hhmm$ago. Postprandial analysis in 75 min from event time."
             } else {
-                "Failed to save meal mark. Try again."
+                "Failed to save event mark. Try again."
             }
         }
     }
