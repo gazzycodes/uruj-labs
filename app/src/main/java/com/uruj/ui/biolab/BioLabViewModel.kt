@@ -7,7 +7,9 @@ import androidx.lifecycle.viewModelScope
 import com.uruj.data.BioLabRepository
 import com.uruj.data.BioLabSnapshot
 import com.uruj.data.HcReadGuard
+import com.uruj.data.MealMarkRepository
 import com.uruj.data.ReadinessRepository
+import com.uruj.domain.MealMark
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,6 +25,12 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
     // in the day. See [[reference_snapshot_persistence_architecture]] —
     // today's mutable / past immutable.
     private val readinessRepo = ReadinessRepository(application)
+    // v0.9.31 — meal-mark events for Tier B postprandial test
+    private val mealMarkRepo = MealMarkRepository(application)
+
+    // v0.9.31 — one-shot toast/snackbar message for meal-mark confirmation
+    private val _markMealMessage = MutableStateFlow<String?>(null)
+    val markMealMessage: StateFlow<String?> = _markMealMessage.asStateFlow()
 
     private val _snapshot = MutableStateFlow<BioLabSnapshot?>(null)
     val snapshot: StateFlow<BioLabSnapshot?> = _snapshot.asStateFlow()
@@ -99,6 +107,34 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
                 _isLoading.value = false
             }
         }
+    }
+
+    /**
+     * v0.9.31 — Mark a meal at the current wall-clock time. Triggers the
+     * postprandial HRV response test pipeline: 75 min from now, the
+     * pre-meal (-30..-5 min) and post-meal (+45..+75 min) windows can be
+     * sliced from strap NDJSON and compared via [PostprandialCalculator].
+     *
+     * Idempotent in the sense that each tap saves a NEW mark — if the
+     * rider accidentally double-taps within seconds, both marks save
+     * (both compute identical postprandial responses, which is harmless
+     * but does cost extra disk). Future UX iteration: 60-sec debounce.
+     */
+    fun markMeal() {
+        viewModelScope.launch {
+            val mark = MealMark(timestampMs = System.currentTimeMillis())
+            val ok = mealMarkRepo.save(mark)
+            _markMealMessage.value = if (ok) {
+                val hhmm = java.time.LocalTime.now().withSecond(0).withNano(0).toString()
+                "Meal marked at $hhmm. Postprandial analysis in 75 min."
+            } else {
+                "Failed to save meal mark. Try again."
+            }
+        }
+    }
+
+    fun clearMarkMealMessage() {
+        _markMealMessage.value = null
     }
 
     companion object {

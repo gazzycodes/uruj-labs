@@ -87,6 +87,16 @@ fun BioLabScreen(
     LaunchedEffect(Unit) { viewModel.refresh() }
     val snapshot by viewModel.snapshot.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    // v0.9.31 — meal-mark confirmation snackbar
+    val markMealMessage by viewModel.markMealMessage.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    LaunchedEffect(markMealMessage) {
+        markMealMessage?.let {
+            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+            kotlinx.coroutines.delay(3000)
+            viewModel.clearMarkMealMessage()
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -108,6 +118,19 @@ fun BioLabScreen(
                         letterSpacing = 3.sp,
                     )
                     Spacer(Modifier.weight(1f))
+                    // v0.9.31 — Tier B postprandial test trigger. Tap records
+                    // current wall-clock timestamp as a MealMark; 75 min later
+                    // BioLabRepository computes pre/post HRV deltas + persists
+                    // PostprandialSnapshot. Toast confirms.
+                    TextButton(onClick = { viewModel.markMeal() }) {
+                        Text(
+                            "🍽 MEAL",
+                            color = UrujAccent,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 10.sp,
+                            letterSpacing = 1.5.sp,
+                        )
+                    }
                     // v0.8.5 — explicit REFRESH tap bypasses sticky cache; user
                     // asked for fresh, give it to them verbatim even if HC blips.
                     TextButton(onClick = { viewModel.refresh(force = true) }, enabled = !isLoading) {
@@ -203,6 +226,14 @@ fun BioLabScreen(
                         cardHeight = 200.dp,
                     )
                 }
+                // v0.9.31 — postprandial card placeholder (only renders if user
+                // has marked at least one meal in last 7 days)
+                item("skel_postprandial") {
+                    com.uruj.ui.components.LoadingCardSkeleton(
+                        label = "POSTPRANDIAL HRV RESPONSE — meal stress test",
+                        cardHeight = 180.dp,
+                    )
+                }
                 return@LazyColumn
             }
 
@@ -244,6 +275,14 @@ fun BioLabScreen(
                             onSeeLfHfTrend = onOpenLfHfTrend,
                             onSeeDfaTrend = onOpenDfaAlpha1Trend,
                         )
+                    }
+                }
+                // v0.9.31 — Postprandial HRV response card. Renders only when
+                // at least one meal mark has been processed (75+ min after
+                // user tapped MARK MEAL). Auto-hides until first analysis.
+                s.latestPostprandial?.let { snap ->
+                    item("postprandial_card") {
+                        PostprandialResponseCard(snap)
                     }
                 }
             }
@@ -1469,6 +1508,114 @@ private fun dfaAlpha1Color(dfa: Float): androidx.compose.ui.graphics.Color = whe
     dfa >= 0.5f -> UrujZone4                   // above AeT (high intensity)
     dfa >= 1.15f -> UrujZone3                  // overcorrelated (overtraining?)
     else -> UrujZone5                          // anomalous
+}
+
+/**
+ * v0.9.31 — Postprandial HRV response card. Renders the latest meal
+ * mark's pre/post HRV comparison. Auto-hides until user has marked a
+ * meal AND 75 min have elapsed (full post-window captured).
+ *
+ * Headline: RMSSD % drop post-meal — primary postprandial autonomic
+ * signal per Hara 2016 + Tarvainen 2018. Larger drop = more
+ * metabolically reactive meal.
+ */
+@Composable
+private fun PostprandialResponseCard(snap: com.uruj.domain.PostprandialSnapshot) {
+    var showInfo by remember { mutableStateOf(false) }
+    val dropPct = snap.rmssdDeltaPercent
+    val accent = when {
+        dropPct == null -> UrujMuted
+        kotlin.math.abs(dropPct) < 15f -> UrujZone2  // stable
+        kotlin.math.abs(dropPct) < 30f -> UrujZone3  // typical
+        kotlin.math.abs(dropPct) < 50f -> UrujZone4  // sensitive
+        else -> UrujZone5                            // strong
+    }
+    val tierLabel = when {
+        dropPct == null -> "Insufficient strap data in pre/post window"
+        kotlin.math.abs(dropPct) < 15f -> "Stable metabolism ✓"
+        kotlin.math.abs(dropPct) < 30f -> "Typical autonomic response"
+        kotlin.math.abs(dropPct) < 50f -> "Sensitive — review meal composition + pre-ride timing"
+        else -> "Strong response — large meal, glucose-sensitive, or chronic-stress amplified"
+    }
+    val mealTimeLabel = run {
+        val instant = java.time.Instant.ofEpochMilli(snap.mealMarkMs)
+        val time = instant.atZone(java.time.ZoneId.systemDefault())
+            .toLocalTime().withSecond(0).withNano(0)
+        "Marked at $time"
+    }
+    BioCard(
+        "Postprandial HRV response — meal stress test",
+        accentColor = accent,
+        infoOnClick = { showInfo = true },
+    ) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                text = dropPct?.let { "${if (it >= 0) "+" else ""}%.1f".format(it) } ?: "—",
+                color = accent,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Black,
+                fontSize = 48.sp,
+                letterSpacing = (-1.5).sp,
+            )
+            Spacer(Modifier.width(6.dp))
+            Column(modifier = Modifier.padding(bottom = 10.dp)) {
+                Text("% RMSSD CHANGE",
+                    color = UrujMuted, fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp, letterSpacing = 1.sp)
+                Text("(negative = HRV dropped post-meal)",
+                    color = UrujMuted, fontSize = 9.sp)
+            }
+        }
+        Text(tierLabel,
+            color = UrujText, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+        Spacer(Modifier.height(4.dp))
+        Text(mealTimeLabel,
+            color = UrujMuted, fontSize = 11.sp)
+        Spacer(Modifier.height(10.dp))
+        // Breakdown
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(UrujSurfaceHigh.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                .padding(10.dp),
+        ) {
+            Text("BREAKDOWN",
+                color = UrujMuted, fontWeight = FontWeight.Black,
+                fontSize = 9.sp, letterSpacing = 1.5.sp)
+            Spacer(Modifier.height(4.dp))
+            snap.preRmssdMs?.let {
+                Text("Pre-meal RMSSD (-30..-5 min): ${"%.1f".format(it)} ms",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            snap.postRmssdMs?.let {
+                Text("Post-meal RMSSD (+45..+75 min): ${"%.1f".format(it)} ms",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            snap.hrDeltaBpm?.let {
+                Text("Mean HR change: ${if (it >= 0) "+" else ""}${"%.1f".format(it)} bpm",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            snap.hfDeltaPercent?.let {
+                Text("HF power change: ${if (it >= 0) "+" else ""}${"%.0f".format(it)}%",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            snap.lfHfDeltaPercent?.let {
+                Text("LF/HF ratio change: ${if (it >= 0) "+" else ""}${"%.0f".format(it)}%",
+                    color = UrujText, fontSize = 11.sp)
+            }
+            Text("Source: ${snap.source} · ${snap.preSampleCount}+${snap.postSampleCount} beats",
+                color = UrujMuted, fontSize = 11.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Tap ⓘ for what this means + honest caveats. " +
+                "Postprandial HRV drop is a metabolic-stress indicator " +
+                "(Hara 2016; Tarvainen 2018). Larger drops = stronger sympathetic " +
+                "response to digestion. Useful for tuning pre-ride meal timing.",
+            color = UrujMuted, fontSize = 10.sp,
+        )
+    }
+    if (showInfo) PostprandialInfoDialog(snap = snap, onDismiss = { showInfo = false })
 }
 
 /**

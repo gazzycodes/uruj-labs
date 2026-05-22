@@ -765,3 +765,98 @@ fun CarInfoDialog(
 // OrthostaticTestResult / OrthostaticInterpretation imports.
 
 // endregion
+
+// region Postprandial (v0.9.31)
+
+/**
+ * v0.9.31 — ⓘ dialog for the postprandial HRV response card. Explains
+ * Tier B postprandial methodology + honest caveats + personalized
+ * verdict from the latest snapshot. Per lab-level rules 3 + 4.
+ *
+ * Citations: Hara H et al. 2016 (postprandial autonomic response in
+ * cyclists); Tarvainen MP et al. 2018 (Kubios-grade HRV methodology);
+ * Task Force 1996 (5-min short-term HRV window standard).
+ */
+@Composable
+fun PostprandialInfoDialog(
+    snap: com.uruj.domain.PostprandialSnapshot,
+    onDismiss: () -> Unit,
+) {
+    InfoDialogShell("Postprandial HRV Response", onDismiss) {
+        InfoSection(
+            "What this is — explained simply",
+            "Every meal stresses the body. Digestion is an active process: " +
+                "blood flow shifts to the gut, the sympathetic nervous system " +
+                "engages, HRV temporarily drops, HR rises. After 1-2 hours " +
+                "HRV recovers as digestion completes.\n\n" +
+                "URUJ measures this by comparing:\n" +
+                "  Pre-meal window:   -30 to -5 min before MARK MEAL tap\n" +
+                "  Post-meal window:  +45 to +75 min after MARK MEAL tap\n\n" +
+                "The % change in RMSSD is the headline number. Larger drops " +
+                "(>30%) indicate stronger metabolic reactivity.",
+        )
+        InfoSection(
+            "Why cyclists care",
+            "Meal timing + composition affects training readiness within 2-3 hours. " +
+                "If you ride hard 60 min after a heavy meal with strong postprandial " +
+                "response, your autonomic system is already stressed — performance " +
+                "drops, recovery debt accumulates.\n\n" +
+                "Track over weeks → identify which meals/macros give you the cleanest " +
+                "post-meal recovery → optimize pre-ride nutrition strategy.",
+        )
+        InfoSection(
+            "Where to live (RMSSD drop magnitude)",
+            "0–15%  → Stable metabolism (minimal stress, can eat closer to ride)\n" +
+                "15–30% → Typical healthy response\n" +
+                "30–50% → Sensitive (allow 90+ min before hard efforts)\n" +
+                "50 %+  → Strong (consider smaller meal, lower glycemic load, OR " +
+                "rule out chronic stress amplification — recovery weeks may help)",
+        )
+        InfoSection(
+            "Honest caveats (lab-level rule 4)",
+            "• A single postprandial reading is not a diagnosis. Track 2+ weeks of " +
+                "data with similar meals to identify your personal baseline response.\n\n" +
+                "• Meal composition matters HUGELY. Carb-heavy meals produce different " +
+                "responses than fat-protein meals. URUJ doesn't yet capture macros " +
+                "(comes in v1.6 #111). For now, journal manually + correlate.\n\n" +
+                "• Chronic stress amplifies postprandial response. If recovery " +
+                "biomarkers (LF/HF, DFA α1, CAR) are elevated, postprandial drop " +
+                "will be inflated. Interpret in context.\n\n" +
+                "• Brief naps, cold exposure, intense conversation, or movement " +
+                "during the post-meal window can confound the reading.",
+        )
+        InfoSection(
+            "How URUJ computes this",
+            "1. User taps MARK MEAL in Bio Lab → MealMark saved with timestamp\n" +
+                "2. 75 min after meal mark, Bio Lab next refresh triggers compute\n" +
+                "3. Pre-meal HRV via 5-min windowed analysis (Task Force 1996), " +
+                "median-aggregated over -30..-5 min window\n" +
+                "4. Post-meal HRV computed identically over +45..+75 min window\n" +
+                "5. Deltas: RMSSD % change, HR Δ bpm, HF power % change, LF/HF % change\n" +
+                "6. Tier interpretation based on RMSSD drop magnitude\n" +
+                "7. Saved as PostprandialSnapshot to disk (trend chart in v0.9.32+)\n\n" +
+                "Methodology version: ${snap.methodologyVersion}\n" +
+                "References: Hara H 2016; Tarvainen MP 2018; Task Force 1996.",
+        )
+        val verdict = when (val drop = snap.rmssdDeltaPercent) {
+            null -> "Insufficient strap data in pre or post window. Wear strap " +
+                "consistently 30 min before and 75 min after meal for a complete reading."
+            else -> {
+                val absDrop = kotlin.math.abs(drop)
+                val tier = when {
+                    absDrop < 15f -> "STABLE — minimal postprandial autonomic perturbation"
+                    absDrop < 30f -> "TYPICAL — healthy autonomic engagement to food"
+                    absDrop < 50f -> "SENSITIVE — moderate response; review carb load + pre-ride timing"
+                    else -> "STRONG — large meal, glucose-sensitive, or chronic-stress amplified"
+                }
+                "RMSSD dropped ${absDrop.toInt()}% post-meal " +
+                    "(${"%.1f".format(snap.preRmssdMs ?: 0f)} → " +
+                    "${"%.1f".format(snap.postRmssdMs ?: 0f)} ms). " +
+                    "Tier: $tier."
+            }
+        }
+        YouSection(verdict + "\n\nPre-meal beats: ${snap.preSampleCount} · Post-meal beats: ${snap.postSampleCount}")
+    }
+}
+
+// endregion
