@@ -69,6 +69,10 @@ class BioLabRepository(context: Context) {
     // for Readiness compute. Past dates stay immutable per v0.9.8 rule.
     private val sleepSnapshots = SleepSnapshotRepository(appContext)
     private val hrvSnapshots = HrvSnapshotRepository(appContext)
+    // v0.9.31 — postprandial HRV response test (Tier B test #109).
+    private val mealMarks = MealMarkRepository(appContext)
+    private val postprandialSnapshots = PostprandialSnapshotRepository(appContext)
+    private val postprandialCalc = com.uruj.power.PostprandialCalculator()
 
     suspend fun snapshot(): BioLabSnapshot = withContext(Dispatchers.IO) {
         val profile = profileStore.current()
@@ -454,6 +458,48 @@ class BioLabRepository(context: Context) {
             }.onFailure { Log.w(TAG, "[v0.9.27] HRV snapshot save failed", it) }
         }
 
+        // v0.9.31 — Postprandial HRV response (Tier B test #109).
+        // For each recent meal mark (last 7d) that's ≥75 min old AND not
+        // already snapshotted, compute pre/post HRV via the same windowed
+        // pipeline used for overnight HRV. Save to disk for trend chart
+        // (v0.9.32 will add the screen). Surfaces the latest as
+        // `latestPostprandial` field on BioLabSnapshot.
+        val latestPostprandial: com.uruj.domain.PostprandialSnapshot? = runCatching {
+            val recentMarks = mealMarks.listRecent()
+            // Process any ready-but-unprocessed marks (idempotent)
+            for (mark in recentMarks.reversed()) {
+                if (!postprandialCalc.isReadyForCompute(mark)) continue
+                if (postprandialSnapshots.exists(mark.id)) continue
+                val preStart = Instant.ofEpochMilli(
+                    mark.timestampMs + com.uruj.data.PostprandialSnapshotRepository
+                        .PRE_WINDOW_START_OFFSET_MS,
+                )
+                val preEnd = Instant.ofEpochMilli(
+                    mark.timestampMs + com.uruj.data.PostprandialSnapshotRepository
+                        .PRE_WINDOW_END_OFFSET_MS,
+                )
+                val postStart = Instant.ofEpochMilli(
+                    mark.timestampMs + com.uruj.data.PostprandialSnapshotRepository
+                        .POST_WINDOW_START_OFFSET_MS,
+                )
+                val postEnd = Instant.ofEpochMilli(
+                    mark.timestampMs + com.uruj.data.PostprandialSnapshotRepository
+                        .POST_WINDOW_END_OFFSET_MS,
+                )
+                val preHrv = continuousBiometric.computeHrvForWindow(preStart, preEnd)
+                val postHrv = continuousBiometric.computeHrvForWindow(postStart, postEnd)
+                val preFd = continuousBiometric.computeFrequencyDomainForWindow(preStart, preEnd)
+                val postFd = continuousBiometric.computeFrequencyDomainForWindow(postStart, postEnd)
+                val snap = postprandialCalc.compute(mark, preHrv, postHrv, preFd, postFd)
+                postprandialSnapshots.save(snap)
+            }
+            // Return the most recent computed (whether new or pre-existing)
+            postprandialSnapshots.listAll().firstOrNull()
+        }
+            .rethrowCancellation()
+            .onFailure { Log.w(TAG, "[v0.9.31] postprandial compute failed", it) }
+            .getOrNull()
+
         // v0.7.2 — Cortisol Awakening Response. Only resolved when the
         // most-recent sleep ended ≥45 min ago and 24/7 NDJSON has enough
         // samples for the pre/post-wake windows. Null otherwise (card hides).
@@ -506,6 +552,9 @@ class BioLabRepository(context: Context) {
             autonomicWindowLabel = autonomicWindowLabel,
             autonomicWindowCount = autonomicWindowCount,
             autonomicDaysOfData = autonomicDaysOfData,
+
+            // v0.9.31 — postprandial HRV response (latest snapshot if any)
+            latestPostprandial = latestPostprandial,
 
             // v0.7.2 — CAR
             carResult = carResult,
@@ -783,6 +832,12 @@ data class BioLabSnapshot(
      * this fills in. See [com.uruj.power.FrequencyDomainCalculator].
      */
     val autonomicFrequencyDomain: com.uruj.power.FrequencyDomainCalculator.FrequencyDomainHrv? = null,
+
+    /** v0.9.31 — Latest postprandial HRV response (Tier B test #109).
+     *  Null until the rider's first meal mark + 75-min window has been
+     *  captured. Surfaces the most-recent computed snapshot for the
+     *  Bio Lab card; trend chart (v0.9.32+) reads the full repo. */
+    val latestPostprandial: com.uruj.domain.PostprandialSnapshot? = null,
 
     /** v0.7.2 — Cortisol Awakening Response for the most recent wake event.
      *  Null when last sleep ended <45 min ago, or 24/7 NDJSON didn't have

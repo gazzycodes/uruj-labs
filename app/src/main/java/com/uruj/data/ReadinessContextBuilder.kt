@@ -61,6 +61,7 @@ class ReadinessContextBuilder(context: Context) {
     private val tsbSnapshots = TsbSnapshotRepository(appContext)
     private val recSnapshots = RecommendationSnapshotRepository(appContext)
     private val hrvSnapshots = HrvSnapshotRepository(appContext)  // v0.9.27
+    private val postprandialSnapshots = PostprandialSnapshotRepository(appContext)  // v0.9.31
     private val carRepo = CarRepository(appContext)
     private val orthostaticRepo = OrthostaticTestRepository(appContext)
     private val carDetector = CarDetector()
@@ -98,6 +99,14 @@ class ReadinessContextBuilder(context: Context) {
         // all read from the same struct.
         val todayHrvSnap = runCatching { hrvSnapshots.load(today.toString()) }
             .rethrowCancellation().getOrNull()
+        // v0.9.31 — load the latest postprandial snapshot (within 24h) for
+        // the PostprandialToday signal pack field. Per architecture rule:
+        // every biomarker must plug into ReadinessContext from PR 1.
+        val latestPostprandialSnap = runCatching {
+            postprandialSnapshots.listAll().firstOrNull()?.takeIf {
+                System.currentTimeMillis() - it.mealMarkMs < 24L * 60L * 60L * 1000L
+            }
+        }.rethrowCancellation().getOrNull()
         val carResult = runCatching { carRepo.cachedLatest() }.rethrowCancellation().getOrNull()
         val orthostaticResult = runCatching { orthostaticRepo.latest() }.rethrowCancellation().getOrNull()
 
@@ -196,6 +205,18 @@ class ReadinessContextBuilder(context: Context) {
                     urujConsensusMlKgMin = it.urujConsensusMlKgMin,
                     samsungMlKgMin = it.samsungMlKgMin,
                     classification = it.classification,
+                    capturedAtMs = it.computedAtMs,
+                )
+            },
+            // v0.9.31 — postprandial HRV response (Tier B test #109)
+            postprandial = latestPostprandialSnap?.let {
+                com.uruj.domain.PostprandialToday(
+                    mealMarkMs = it.mealMarkMs,
+                    rmssdDeltaPercent = it.rmssdDeltaPercent,
+                    hrDeltaBpm = it.hrDeltaBpm,
+                    hfDeltaPercent = it.hfDeltaPercent,
+                    lfHfDeltaPercent = it.lfHfDeltaPercent,
+                    source = it.source,
                     capturedAtMs = it.computedAtMs,
                 )
             },

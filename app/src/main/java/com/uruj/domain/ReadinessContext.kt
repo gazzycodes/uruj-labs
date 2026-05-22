@@ -59,6 +59,8 @@ data class ReadinessContext(
         val orthostatic: OrthostaticToday? = null,
         val hrr1: Hrr1Today? = null,
         val vo2: Vo2Today? = null,
+        // v0.9.31 — postprandial HRV response (Tier B test #109)
+        val postprandial: PostprandialToday? = null,
         // Extensible: add weight, body comp, CGM, lactate, blood panels here
         // when the corresponding biomarker repository ships.
     )
@@ -213,6 +215,28 @@ data class Vo2Today(
     val samsungMlKgMin: Float?,
     /** "ELITE" / "VERY_HIGH" / "HIGH" / "ABOVE_AVERAGE" / etc. — Cooper-style band. */
     val classification: String,
+    val capturedAtMs: Long,
+)
+
+/**
+ * v0.9.31 — Postprandial HRV response signal pack (Tier B test #109).
+ *
+ * Built from the latest [com.uruj.domain.PostprandialSnapshot] (if any
+ * exists within the last 24 hours). Per [[reference_readiness_context_
+ * architecture]] every biomarker MUST plug in from PR 1 — engine + AI
+ * coach + reasoner all read this struct, not the disk repo directly.
+ *
+ * Future tier-B tests (caffeine, alcohol, cold exposure) will follow
+ * the same EventMark → ResponseToday pattern.
+ */
+data class PostprandialToday(
+    val mealMarkMs: Long,
+    val rmssdDeltaPercent: Float?,
+    val hrDeltaBpm: Float?,
+    val hfDeltaPercent: Float?,
+    val lfHfDeltaPercent: Float?,
+    /** "strap" / "partial" / "insufficient" — provenance per lab-level rule 1. */
+    val source: String,
     val capturedAtMs: Long,
 )
 
