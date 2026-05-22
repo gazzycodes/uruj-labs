@@ -238,6 +238,10 @@ data class PostprandialToday(
     /** "strap" / "partial" / "insufficient" — provenance per lab-level rule 1. */
     val source: String,
     val capturedAtMs: Long,
+    /** v0.9.35 — Event type ("meal" / "snack" / "coffee" / "drink" / "alcohol" / "custom"). */
+    val eventType: String = "meal",
+    /** v0.9.35 — Optional rider note. */
+    val note: String? = null,
 )
 
 // endregion

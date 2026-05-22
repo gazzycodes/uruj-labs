@@ -46,6 +46,12 @@ data class PostprandialSnapshot(
     val mealMarkMs: Long,
     /** Local-date the meal was marked (for trend chart x-axis). */
     val dateIsoLocal: String,
+    /** v0.9.35 — Event category (denormalized from MealMark.eventType for
+     *  fast UI access). Backward-compat default "meal" for snapshots
+     *  written before v0.9.35. */
+    val eventType: String = "meal",
+    /** v0.9.35 — Optional rider note (denormalized from MealMark.note). */
+    val note: String? = null,
 
     // ── Pre-meal window (-30 to -5 min before mark) ──
     val preWindowStartMs: Long,

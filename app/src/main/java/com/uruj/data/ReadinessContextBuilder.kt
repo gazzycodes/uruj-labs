@@ -209,6 +209,7 @@ class ReadinessContextBuilder(context: Context) {
                 )
             },
             // v0.9.31 — postprandial HRV response (Tier B test #109)
+            // v0.9.35 — event type + note propagated to signal pack
             postprandial = latestPostprandialSnap?.let {
                 com.uruj.domain.PostprandialToday(
                     mealMarkMs = it.mealMarkMs,
@@ -218,6 +219,8 @@ class ReadinessContextBuilder(context: Context) {
                     lfHfDeltaPercent = it.lfHfDeltaPercent,
                     source = it.source,
                     capturedAtMs = it.computedAtMs,
+                    eventType = it.eventType,
+                    note = it.note,
                 )
             },
         )

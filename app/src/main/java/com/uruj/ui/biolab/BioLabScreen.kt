@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -338,8 +340,8 @@ fun BioLabScreen(
     if (showMealMarkPicker) {
         MealMarkBackdatePicker(
             onDismiss = { showMealMarkPicker = false },
-            onConfirm = { offsetMinutes ->
-                viewModel.markMeal(offsetMinutes)
+            onConfirm = { offsetMinutes, eventType, note ->
+                viewModel.markMeal(offsetMinutes, eventType, note)
                 showMealMarkPicker = false
             },
         )
@@ -1620,6 +1622,15 @@ private fun PostprandialResponseCard(
             .toLocalTime().withSecond(0).withNano(0)
         "Marked at $time"
     }
+    // v0.9.35 — dynamic title based on event type
+    val cardTitle = when (snap.eventType) {
+        "coffee" -> "Coffee response — caffeine HRV signature"
+        "drink" -> "Drink response — sugar HRV signature"
+        "alcohol" -> "Alcohol response — recovery cost"
+        "snack" -> "Snack response — HRV signature"
+        "custom" -> "Event response — custom mark"
+        else -> "Postprandial HRV response — meal stress test"
+    }
     Box(
         modifier = Modifier.combinedClickable(
             interactionSource = remember { MutableInteractionSource() },
@@ -1629,7 +1640,7 @@ private fun PostprandialResponseCard(
         ),
     ) {
     BioCard(
-        "Postprandial HRV response — meal stress test",
+        cardTitle,
         accentColor = accent,
         infoOnClick = { showInfo = true },
     ) {
@@ -1656,6 +1667,13 @@ private fun PostprandialResponseCard(
         Spacer(Modifier.height(4.dp))
         Text(mealTimeLabel,
             color = UrujMuted, fontSize = 11.sp)
+        // v0.9.35 — show rider's freeform note if present
+        snap.note?.takeIf { it.isNotBlank() }?.let { n ->
+            Spacer(Modifier.height(4.dp))
+            Text("📝 $n",
+                color = UrujText, fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold)
+        }
         Spacer(Modifier.height(10.dp))
         // Breakdown
         Column(
@@ -1770,19 +1788,26 @@ private fun PostprandialResponseCard(
 }
 
 /**
- * v0.9.32 — Backdate picker for the MARK MEAL button. Lets rider choose
- * "how long ago" the meal actually started, so the pre-meal window
- * (-30..-5 min) covers actual pre-meal time rather than mid-eating.
+ * v0.9.32 → v0.9.35 — Event-mark picker.
  *
- * Options: now, 5/15/30 min ago, 45/60/90 min ago. Custom HH:MM picker
- * deferred to a future iteration if these presets prove insufficient.
+ * v0.9.35 expansion: rider now picks BOTH:
+ *   1. Event type (Meal / Snack / Coffee / Drink / Alcohol / Custom) —
+ *      tunes card title + interpretation copy. Math is identical across
+ *      types (same pre/post HRV windows).
+ *   2. Time offset (Just now / 5 / 15 / 30 / 45 / 60 / 90 min ago) —
+ *      for late-tap support.
+ *   3. Optional note (e.g. "Black coffee + 1 sugar", "Coke + chips")
+ *      — memory aid for later correlation.
+ *
+ * Custom HH:MM picker still deferred (Task #184).
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MealMarkBackdatePicker(
     onDismiss: () -> Unit,
-    onConfirm: (offsetMinutes: Int) -> Unit,
+    onConfirm: (offsetMinutes: Int, eventType: String, note: String?) -> Unit,
 ) {
-    val options = listOf(
+    val timeOptions = listOf(
         0 to "Just now",
         5 to "5 min ago",
         15 to "15 min ago",
@@ -1791,40 +1816,107 @@ private fun MealMarkBackdatePicker(
         60 to "1 hour ago",
         90 to "1.5 hours ago",
     )
-    var selected by remember { mutableStateOf(0) }
+    val typeOptions = listOf(
+        "meal" to "🍽 Meal",
+        "snack" to "🍪 Snack",
+        "coffee" to "☕ Coffee",
+        "drink" to "🥤 Drink",
+        "alcohol" to "🍺 Alcohol",
+        "custom" to "✱ Custom",
+    )
+    var selectedTime by remember { mutableStateOf(0) }
+    var selectedType by remember { mutableStateOf("meal") }
+    var noteText by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("When did this meal START?", color = UrujText) },
+        title = { Text("Mark consumption event", color = UrujText) },
         text = {
-            Column {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+            ) {
+                Text("WHAT DID YOU CONSUME?",
+                    color = UrujMuted, fontWeight = FontWeight.Black,
+                    fontSize = 10.sp, letterSpacing = 1.5.sp)
+                Spacer(Modifier.height(8.dp))
+                androidx.compose.foundation.layout.FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    typeOptions.forEach { (key, label) ->
+                        val isSelected = selectedType == key
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(
+                                    if (isSelected) UrujAccent.copy(alpha = 0.20f)
+                                    else UrujSurfaceHigh,
+                                )
+                                .border(
+                                    1.dp,
+                                    if (isSelected) UrujAccent else UrujSurfaceHigh,
+                                    RoundedCornerShape(20.dp),
+                                )
+                                .clickable { selectedType = key }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        ) {
+                            Text(label,
+                                color = if (isSelected) UrujAccent else UrujText,
+                                fontSize = 13.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Text("WHEN DID IT START?",
+                    color = UrujMuted, fontWeight = FontWeight.Black,
+                    fontSize = 10.sp, letterSpacing = 1.5.sp)
+                Spacer(Modifier.height(8.dp))
                 Text(
-                    "URUJ analyzes a -30..-5 min PRE-meal window before this " +
-                        "timestamp. Pick the closest match to your meal-START " +
-                        "time (not when you finished). If you tapped late, " +
-                        "backdate accordingly for a clean pre-meal baseline.",
-                    color = UrujMuted, fontSize = 12.sp,
+                    "URUJ analyzes -30..-5 min PRE-event window. If you tapped " +
+                        "late, backdate so pre-window covers actual baseline.",
+                    color = UrujMuted, fontSize = 11.sp,
                 )
-                Spacer(Modifier.height(12.dp))
-                options.forEach { (mins, label) ->
+                Spacer(Modifier.height(8.dp))
+                timeOptions.forEach { (mins, label) ->
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { selected = mins }
-                            .padding(vertical = 6.dp),
+                            .clickable { selectedTime = mins }
+                            .padding(vertical = 4.dp),
                     ) {
                         androidx.compose.material3.RadioButton(
-                            selected = selected == mins,
-                            onClick = { selected = mins },
+                            selected = selectedTime == mins,
+                            onClick = { selectedTime = mins },
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(label, color = UrujText, fontSize = 14.sp)
                     }
                 }
+                Spacer(Modifier.height(12.dp))
+                Text("NOTE (OPTIONAL)",
+                    color = UrujMuted, fontWeight = FontWeight.Black,
+                    fontSize = 10.sp, letterSpacing = 1.5.sp)
+                Spacer(Modifier.height(6.dp))
+                androidx.compose.material3.OutlinedTextField(
+                    value = noteText,
+                    onValueChange = { if (it.length <= 100) noteText = it },
+                    placeholder = {
+                        Text("e.g. \"Rice + chicken + 2 eggs\" or \"Black coffee + 1 sugar\"",
+                            color = UrujMuted, fontSize = 12.sp)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = false,
+                    maxLines = 2,
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        color = UrujText, fontSize = 13.sp,
+                    ),
+                )
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(selected) }) {
+            TextButton(onClick = { onConfirm(selectedTime, selectedType, noteText) }) {
                 Text("MARK", color = UrujAccent,
                     fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
             }
