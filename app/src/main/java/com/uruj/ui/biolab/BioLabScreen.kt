@@ -85,6 +85,8 @@ fun BioLabScreen(
     // v0.9.28 — freq-domain HRV trends (LF/HF + DFA α1) from HrvSnapshotRepository
     onOpenLfHfTrend: () -> Unit = {},
     onOpenDfaAlpha1Trend: () -> Unit = {},
+    // v0.9.34 — postprandial HRV response trend from PostprandialSnapshotRepository
+    onOpenPostprandialTrend: () -> Unit = {},
     viewModel: BioLabViewModel = viewModel(),
 ) {
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -216,21 +218,24 @@ fun BioLabScreen(
                 }
                 item("skel_cardio_header") { SectionHeader("Cardiovascular") }
                 item("skel_hr") {
+                    // v0.9.34 — shortened skeleton labels. Long labels were
+                    // wrapping the "ANALYZING…" status text vertically because
+                    // the header is a fixed-width Row; tight squeeze visual.
                     com.uruj.ui.components.LoadingCardSkeleton(
-                        label = "HEART RATE — ATHLETIC PROFILE",
+                        label = "HEART RATE",
                         cardHeight = 150.dp,
                     )
                 }
                 item("skel_autonomic_header") { SectionHeader("Autonomic Health") }
                 item("skel_autonomic_hrv") {
                     com.uruj.ui.components.LoadingCardSkeleton(
-                        label = "AUTONOMIC HRV — beat-to-beat parasympathetic",
+                        label = "AUTONOMIC HRV",
                         cardHeight = 180.dp,
                     )
                 }
                 item("skel_autonomic_freq") {
                     com.uruj.ui.components.LoadingCardSkeleton(
-                        label = "AUTONOMIC FREQUENCY — LF/HF + DFA α1",
+                        label = "AUTONOMIC FREQUENCY",
                         cardHeight = 200.dp,
                     )
                 }
@@ -238,7 +243,7 @@ fun BioLabScreen(
                 // has marked at least one meal in last 7 days)
                 item("skel_postprandial") {
                     com.uruj.ui.components.LoadingCardSkeleton(
-                        label = "POSTPRANDIAL HRV RESPONSE — meal stress test",
+                        label = "POSTPRANDIAL HRV",
                         cardHeight = 180.dp,
                     )
                 }
@@ -294,6 +299,7 @@ fun BioLabScreen(
                         PostprandialResponseCard(
                             snap = snap,
                             onLongPress = { deleteMarkConfirmId = snap.mealMarkId },
+                            onSeeTrend = onOpenPostprandialTrend,
                         )
                     }
                 }
@@ -1590,6 +1596,7 @@ private fun dfaAlpha1Color(dfa: Float): androidx.compose.ui.graphics.Color = whe
 private fun PostprandialResponseCard(
     snap: com.uruj.domain.PostprandialSnapshot,
     onLongPress: () -> Unit = {},
+    onSeeTrend: () -> Unit = {},
 ) {
     var showInfo by remember { mutableStateOf(false) }
     val dropPct = snap.rmssdDeltaPercent
@@ -1742,6 +1749,21 @@ private fun PostprandialResponseCard(
                 "response to digestion. Useful for tuning pre-ride meal timing.",
             color = UrujMuted, fontSize = 10.sp,
         )
+        // v0.9.34 — deep-view trend chart link. Becomes useful from
+        // meal 2 onwards as readings accumulate.
+        Spacer(Modifier.height(10.dp))
+        TextButton(
+            onClick = onSeeTrend,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                "SEE TREND →",
+                color = UrujAccent,
+                fontWeight = FontWeight.Black,
+                fontSize = 12.sp,
+                letterSpacing = 1.5.sp,
+            )
+        }
     }
     }
     if (showInfo) PostprandialInfoDialog(snap = snap, onDismiss = { showInfo = false })
