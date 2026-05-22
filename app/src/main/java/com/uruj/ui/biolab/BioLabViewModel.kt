@@ -8,6 +8,7 @@ import com.uruj.data.BioLabRepository
 import com.uruj.data.BioLabSnapshot
 import com.uruj.data.HcReadGuard
 import com.uruj.data.MealMarkRepository
+import com.uruj.data.PostprandialSnapshotRepository
 import com.uruj.data.ReadinessRepository
 import com.uruj.domain.MealMark
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,6 +28,8 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
     private val readinessRepo = ReadinessRepository(application)
     // v0.9.31 — meal-mark events for Tier B postprandial test
     private val mealMarkRepo = MealMarkRepository(application)
+    // v0.9.32 — delete-flow for the postprandial card long-press
+    private val postprandialSnapshotRepo = PostprandialSnapshotRepository(application)
 
     // v0.9.31 — one-shot toast/snackbar message for meal-mark confirmation
     private val _markMealMessage = MutableStateFlow<String?>(null)
@@ -110,23 +113,28 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * v0.9.31 — Mark a meal at the current wall-clock time. Triggers the
-     * postprandial HRV response test pipeline: 75 min from now, the
-     * pre-meal (-30..-5 min) and post-meal (+45..+75 min) windows can be
-     * sliced from strap NDJSON and compared via [PostprandialCalculator].
+     * v0.9.31 → v0.9.32 — Mark a meal. Now accepts an [offsetMinutesAgo]
+     * parameter so the rider can backdate the mark if they tapped late
+     * (e.g. 15 min after finishing eating). Pre-window is -30..-5 min
+     * before the (adjusted) timestamp, so for diagnostic accuracy the
+     * mark should approximate the meal START.
      *
-     * Idempotent in the sense that each tap saves a NEW mark — if the
-     * rider accidentally double-taps within seconds, both marks save
-     * (both compute identical postprandial responses, which is harmless
-     * but does cost extra disk). Future UX iteration: 60-sec debounce.
+     * Idempotent in the sense that each tap saves a NEW mark; future
+     * iteration may add 60-sec debounce.
      */
-    fun markMeal() {
+    fun markMeal(offsetMinutesAgo: Int = 0) {
         viewModelScope.launch {
-            val mark = MealMark(timestampMs = System.currentTimeMillis())
+            val offsetMs = offsetMinutesAgo.toLong() * 60_000L
+            val timestampMs = System.currentTimeMillis() - offsetMs
+            val mark = MealMark(timestampMs = timestampMs)
             val ok = mealMarkRepo.save(mark)
             _markMealMessage.value = if (ok) {
-                val hhmm = java.time.LocalTime.now().withSecond(0).withNano(0).toString()
-                "Meal marked at $hhmm. Postprandial analysis in 75 min."
+                val hhmm = java.time.LocalTime.ofInstant(
+                    java.time.Instant.ofEpochMilli(timestampMs),
+                    java.time.ZoneId.systemDefault(),
+                ).withSecond(0).withNano(0).toString()
+                val ago = if (offsetMinutesAgo > 0) " (backdated $offsetMinutesAgo min)" else ""
+                "Meal marked at $hhmm$ago. Postprandial analysis in 75 min from meal time."
             } else {
                 "Failed to save meal mark. Try again."
             }
@@ -135,6 +143,26 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
 
     fun clearMarkMealMessage() {
         _markMealMessage.value = null
+    }
+
+    /**
+     * v0.9.32 — Delete a meal mark + its computed postprandial snapshot.
+     * Used by long-press affordance on the PostprandialResponseCard. Lets
+     * the rider remove a bad meal mark (e.g. backdated wrong, contaminated
+     * by ride/activity) and re-mark properly. Refresh after to update card.
+     */
+    fun deleteMealMark(mealMarkId: String) {
+        viewModelScope.launch {
+            val markDeleted = mealMarkRepo.delete(mealMarkId)
+            val snapDeleted = postprandialSnapshotRepo.delete(mealMarkId)
+            _markMealMessage.value = if (markDeleted || snapDeleted) {
+                "Meal reading deleted. Refresh to update."
+            } else {
+                "Nothing to delete."
+            }
+            // Trigger Bio Lab refresh to pull the new state from disk
+            refresh(force = true)
+        }
     }
 
     companion object {
