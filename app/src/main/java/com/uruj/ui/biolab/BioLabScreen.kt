@@ -5,6 +5,9 @@ import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material3.AlertDialog
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -97,6 +100,9 @@ fun BioLabScreen(
             viewModel.clearMarkMealMessage()
         }
     }
+    // v0.9.32 — backdate picker for late taps + long-press delete confirmation
+    var showMealMarkPicker by remember { mutableStateOf(false) }
+    var deleteMarkConfirmId by remember { mutableStateOf<String?>(null) }
 
     Box(
         modifier = Modifier
@@ -118,11 +124,13 @@ fun BioLabScreen(
                         letterSpacing = 3.sp,
                     )
                     Spacer(Modifier.weight(1f))
-                    // v0.9.31 — Tier B postprandial test trigger. Tap records
-                    // current wall-clock timestamp as a MealMark; 75 min later
-                    // BioLabRepository computes pre/post HRV deltas + persists
-                    // PostprandialSnapshot. Toast confirms.
-                    TextButton(onClick = { viewModel.markMeal() }) {
+                    // v0.9.31 → v0.9.32 — Tier B postprandial test trigger.
+                    // Now opens a backdate picker (rider can choose "Now",
+                    // "5 min ago", etc.) so a late tap can be timestamped
+                    // accurately. Pre-window is anchored to the adjusted
+                    // timestamp so picking the correct meal-start gives
+                    // a clean pre-meal baseline.
+                    TextButton(onClick = { showMealMarkPicker = true }) {
                         Text(
                             "🍽 MEAL",
                             color = UrujAccent,
@@ -280,9 +288,13 @@ fun BioLabScreen(
                 // v0.9.31 — Postprandial HRV response card. Renders only when
                 // at least one meal mark has been processed (75+ min after
                 // user tapped MARK MEAL). Auto-hides until first analysis.
+                // v0.9.32 — long-press triggers delete confirmation.
                 s.latestPostprandial?.let { snap ->
                     item("postprandial_card") {
-                        PostprandialResponseCard(snap)
+                        PostprandialResponseCard(
+                            snap = snap,
+                            onLongPress = { deleteMarkConfirmId = snap.mealMarkId },
+                        )
                     }
                 }
             }
@@ -312,6 +324,55 @@ fun BioLabScreen(
             item("external_header") { SectionHeader("External — see Samsung Health") }
             item("samsung_link") { SamsungHealthDeepLinkCard() }
         }
+    }
+    // v0.9.32 — meal-mark backdate picker. Surfaces when user taps "🍽 MEAL"
+    // so a late tap (e.g. 15 min after finishing eating) can be timestamped
+    // accurately by selecting the offset. Pre-window is anchored to the
+    // adjusted timestamp = clean pre-meal baseline.
+    if (showMealMarkPicker) {
+        MealMarkBackdatePicker(
+            onDismiss = { showMealMarkPicker = false },
+            onConfirm = { offsetMinutes ->
+                viewModel.markMeal(offsetMinutes)
+                showMealMarkPicker = false
+            },
+        )
+    }
+    // v0.9.32 — delete confirmation for the long-press affordance on the
+    // postprandial card. Cascades: deletes both the MealMark file + the
+    // PostprandialSnapshot file, then triggers a Bio Lab refresh.
+    // `let` lambda is non-composable; using if-block to host the dialog.
+    if (deleteMarkConfirmId != null) {
+        val id = deleteMarkConfirmId!!
+        AlertDialog(
+            onDismissRequest = { deleteMarkConfirmId = null },
+            title = { Text("Delete meal reading?", color = UrujText) },
+            text = {
+                Text(
+                    "This permanently removes this meal mark and its " +
+                        "postprandial analysis from disk. Use if the meal was " +
+                        "wrongly timed (e.g. tapped too late) so you can re-mark " +
+                        "next time. Past readings can NOT be recreated from this.",
+                    color = UrujMuted, fontSize = 13.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteMealMark(id)
+                    deleteMarkConfirmId = null
+                }) {
+                    Text("DELETE", color = UrujZone5,
+                        fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteMarkConfirmId = null }) {
+                    Text("CANCEL", color = UrujAccent,
+                        fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
+                }
+            },
+            containerColor = UrujSurface,
+        )
     }
 }
 
@@ -1518,9 +1579,18 @@ private fun dfaAlpha1Color(dfa: Float): androidx.compose.ui.graphics.Color = whe
  * Headline: RMSSD % drop post-meal — primary postprandial autonomic
  * signal per Hara 2016 + Tarvainen 2018. Larger drop = more
  * metabolically reactive meal.
+ *
+ * v0.9.32 — Long-press anywhere on the card triggers [onLongPress]
+ * (caller shows the delete-confirmation dialog). Enables rider to
+ * remove badly-timed meals (e.g. tapped 15 min late) so they can
+ * re-mark cleanly without the wrong data polluting the trend chart.
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun PostprandialResponseCard(snap: com.uruj.domain.PostprandialSnapshot) {
+private fun PostprandialResponseCard(
+    snap: com.uruj.domain.PostprandialSnapshot,
+    onLongPress: () -> Unit = {},
+) {
     var showInfo by remember { mutableStateOf(false) }
     val dropPct = snap.rmssdDeltaPercent
     val accent = when {
@@ -1543,6 +1613,14 @@ private fun PostprandialResponseCard(snap: com.uruj.domain.PostprandialSnapshot)
             .toLocalTime().withSecond(0).withNano(0)
         "Marked at $time"
     }
+    Box(
+        modifier = Modifier.combinedClickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            onClick = {},
+            onLongClick = onLongPress,
+        ),
+    ) {
     BioCard(
         "Postprandial HRV response — meal stress test",
         accentColor = accent,
@@ -1615,7 +1693,78 @@ private fun PostprandialResponseCard(snap: com.uruj.domain.PostprandialSnapshot)
             color = UrujMuted, fontSize = 10.sp,
         )
     }
+    }
     if (showInfo) PostprandialInfoDialog(snap = snap, onDismiss = { showInfo = false })
+}
+
+/**
+ * v0.9.32 — Backdate picker for the MARK MEAL button. Lets rider choose
+ * "how long ago" the meal actually started, so the pre-meal window
+ * (-30..-5 min) covers actual pre-meal time rather than mid-eating.
+ *
+ * Options: now, 5/15/30 min ago, 45/60/90 min ago. Custom HH:MM picker
+ * deferred to a future iteration if these presets prove insufficient.
+ */
+@Composable
+private fun MealMarkBackdatePicker(
+    onDismiss: () -> Unit,
+    onConfirm: (offsetMinutes: Int) -> Unit,
+) {
+    val options = listOf(
+        0 to "Just now",
+        5 to "5 min ago",
+        15 to "15 min ago",
+        30 to "30 min ago",
+        45 to "45 min ago",
+        60 to "1 hour ago",
+        90 to "1.5 hours ago",
+    )
+    var selected by remember { mutableStateOf(0) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("When did this meal START?", color = UrujText) },
+        text = {
+            Column {
+                Text(
+                    "URUJ analyzes a -30..-5 min PRE-meal window before this " +
+                        "timestamp. Pick the closest match to your meal-START " +
+                        "time (not when you finished). If you tapped late, " +
+                        "backdate accordingly for a clean pre-meal baseline.",
+                    color = UrujMuted, fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(12.dp))
+                options.forEach { (mins, label) ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selected = mins }
+                            .padding(vertical = 6.dp),
+                    ) {
+                        androidx.compose.material3.RadioButton(
+                            selected = selected == mins,
+                            onClick = { selected = mins },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(label, color = UrujText, fontSize = 14.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(selected) }) {
+                Text("MARK", color = UrujAccent,
+                    fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL", color = UrujMuted,
+                    fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
+            }
+        },
+        containerColor = UrujSurface,
+    )
 }
 
 /**
