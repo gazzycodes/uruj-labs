@@ -50,6 +50,10 @@ class PostprandialCalculator {
         postFreqDomain: FrequencyDomainCalculator.FrequencyDomainHrv?,
         zone: ZoneId = ZoneId.systemDefault(),
         nowMs: Long = System.currentTimeMillis(),
+        // v0.9.33 — edge-case context from caller (BioLabRepository)
+        overlapsPriorMeal: Boolean = false,
+        overlapsPriorMealId: String? = null,
+        isDuringSleep: Boolean = false,
     ): PostprandialSnapshot {
         val preStart = mealMark.timestampMs + PostprandialSnapshotRepository.PRE_WINDOW_START_OFFSET_MS
         val preEnd = mealMark.timestampMs + PostprandialSnapshotRepository.PRE_WINDOW_END_OFFSET_MS
@@ -68,6 +72,12 @@ class PostprandialCalculator {
             preHrv == null || postHrv == null -> "partial"
             else -> "strap"
         }
+
+        // v0.9.33 — coverage % per window. Each 5-min window contributes
+        // 1/(window-size-in-minutes/5) to coverage. Pre-window is 25 min
+        // (max 5 windows). Post-window is 30 min (max 6 windows).
+        val preCoverage = preHrv?.windowCount?.let { (it.toFloat() / 5f).coerceIn(0f, 1f) }
+        val postCoverage = postHrv?.windowCount?.let { (it.toFloat() / 6f).coerceIn(0f, 1f) }
 
         return PostprandialSnapshot(
             mealMarkId = mealMark.id,
@@ -98,6 +108,13 @@ class PostprandialCalculator {
             hrDeltaBpm = absDelta(preHrv?.meanHrBpm, postHrv?.meanHrBpm),
             hfDeltaPercent = percentDelta(preFreqDomain?.hfMs2, postFreqDomain?.hfMs2),
             lfHfDeltaPercent = percentDelta(preFreqDomain?.lfHfRatio, postFreqDomain?.lfHfRatio),
+
+            // v0.9.33 — edge-case fields
+            overlapsPriorMeal = overlapsPriorMeal,
+            overlapsPriorMealId = overlapsPriorMealId,
+            isDuringSleep = isDuringSleep,
+            preCoveragePct = preCoverage,
+            postCoveragePct = postCoverage,
 
             source = source,
             computedAtMs = nowMs,

@@ -466,7 +466,10 @@ class BioLabRepository(context: Context) {
         // `latestPostprandial` field on BioLabSnapshot.
         val latestPostprandial: com.uruj.domain.PostprandialSnapshot? = runCatching {
             val recentMarks = mealMarks.listRecent()
-            // Process any ready-but-unprocessed marks (idempotent)
+            // Process any ready-but-unprocessed marks (idempotent).
+            // v0.9.33 — for each, also detect (a) overlap with a prior meal's
+            // post-window, (b) whether the mark fell within Samsung's last
+            // sleep window. Both surface as warning chips on the card.
             for (mark in recentMarks.reversed()) {
                 if (!postprandialCalc.isReadyForCompute(mark)) continue
                 if (postprandialSnapshots.exists(mark.id)) continue
@@ -490,7 +493,41 @@ class BioLabRepository(context: Context) {
                 val postHrv = continuousBiometric.computeHrvForWindow(postStart, postEnd)
                 val preFd = continuousBiometric.computeFrequencyDomainForWindow(preStart, preEnd)
                 val postFd = continuousBiometric.computeFrequencyDomainForWindow(postStart, postEnd)
-                val snap = postprandialCalc.compute(mark, preHrv, postHrv, preFd, postFd)
+
+                // v0.9.33 (a) — overlap detection. Walk all OTHER marks
+                // within the last 90 min before this one and check if
+                // their post-window overlaps with this one's pre-window.
+                val priorMark = recentMarks.firstOrNull { other ->
+                    other.id != mark.id &&
+                        other.timestampMs < mark.timestampMs &&
+                        mark.timestampMs - other.timestampMs < 90L * 60_000L
+                }
+                val overlapsPrior = priorMark != null && run {
+                    val priorPostEnd = priorMark.timestampMs +
+                        com.uruj.data.PostprandialSnapshotRepository.POST_WINDOW_END_OFFSET_MS
+                    priorPostEnd > preStart.toEpochMilli()
+                }
+
+                // v0.9.33 (b) — sleep-window flag. If the meal mark falls
+                // within Samsung's last sleep window (per LastSleepReader),
+                // pre-window covers sleep state. Flag so interpretation
+                // adjusts.
+                val markInsideSleep = sleepWindow != null && run {
+                    val sleepStartMs = sleepWindow.startedAt.toEpochMilli()
+                    val sleepEndMs = sleepWindow.endedAt.toEpochMilli()
+                    mark.timestampMs in sleepStartMs..sleepEndMs
+                }
+
+                val snap = postprandialCalc.compute(
+                    mealMark = mark,
+                    preHrv = preHrv,
+                    postHrv = postHrv,
+                    preFreqDomain = preFd,
+                    postFreqDomain = postFd,
+                    overlapsPriorMeal = overlapsPrior,
+                    overlapsPriorMealId = if (overlapsPrior) priorMark?.id else null,
+                    isDuringSleep = markInsideSleep,
+                )
                 postprandialSnapshots.save(snap)
             }
             // Return the most recent computed (whether new or pre-existing)

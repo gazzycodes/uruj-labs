@@ -79,8 +79,42 @@ data class PostprandialSnapshot(
     /** LF/HF ratio % change: (post − pre) / pre × 100. Positive = sympathetic dominance rose (typical). */
     val lfHfDeltaPercent: Float?,
 
+    // ── v0.9.33 — edge-case flags (overlap + sleep + coverage) ──
+    /**
+     * True if the pre-meal window overlaps with another meal mark's
+     * post-meal window (meals were <90 min apart). Pre-meal baseline is
+     * then NOT a clean baseline — it's another meal's post-response
+     * still recovering. Card shows a warning chip and interpretation
+     * should be cautious.
+     */
+    val overlapsPriorMeal: Boolean = false,
+    /**
+     * Id of the prior meal mark whose post-window overlaps with this one's
+     * pre-window. Null if no overlap. Surfaced in ⓘ dialog.
+     */
+    val overlapsPriorMealId: String? = null,
+    /**
+     * True if the meal mark fell within a Samsung-detected sleep window.
+     * Indicates a midnight snack / during-sleep eating event. Pre-window
+     * baseline is then "sleep state" (not "awake at-rest"), so deltas
+     * have different interpretation. Card shows a warning chip; data
+     * is still computed + saved.
+     */
+    val isDuringSleep: Boolean = false,
+    /**
+     * Fraction of the 25-min pre-meal window that contained valid strap
+     * data, from 0.0 to 1.0. 1.0 = strap on continuously for full window;
+     * 0.5 = strap data for ~12.5 of the 25 min. Surfaced on card.
+     */
+    val preCoveragePct: Float? = null,
+    /**
+     * Fraction of the 30-min post-meal window that contained valid strap
+     * data, from 0.0 to 1.0.
+     */
+    val postCoveragePct: Float? = null,
+
     // ── Provenance ──
-    /** Source of the strap data: "strap" / "band" / "mixed" / "insufficient". */
+    /** Source of the strap data: "strap" / "band" / "mixed" / "insufficient" / "partial". */
     val source: String,
     /** Wall-clock epoch ms when this snapshot was computed. */
     val computedAtMs: Long,
