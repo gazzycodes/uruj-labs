@@ -179,20 +179,23 @@ def filter_by_local_time(
     return out
 
 
-def validated_rr_series(beats: list[dict[str, Any]]) -> list[int]:
-    """Return RR series for windows that pass per-pair validation.
+def consecutive_diffs_ms(beats: list[dict[str, Any]]) -> list[int]:
+    """v0.9.30.1 — EXACT mirror of HrvCalculator.consecutiveDiffsMs.
 
-    Two-stage filter, exact mirror of URUJ:
-      1. Timestamp consecutiveness: |actualGap − expectedGap| ≤ tolerance
+    Returns the list of VALIDATED CONSECUTIVE DIFFS (curr.rrMs - prev.rrMs)
+    for pairs that pass:
+      1. Timestamp consecutiveness: |actualGap - expectedGap| <= tolerance
          where tolerance = max(150ms, 30% of expectedGap)
-      2. Ectopic delta cap: |curr.rrMs − prev.rrMs| / prev.rrMs ≤ 0.20
+      2. Ectopic delta cap: |curr.rrMs - prev.rrMs| / prev.rrMs <= 0.20
 
-    Returns RR values (in ms) for beats whose PRIOR pair was valid,
-    suitable for feeding into neurokit2 functions.
+    These diffs are EXACTLY what URUJ feeds into its RMSSD/SD1/pNN50
+    calculations. We compute time-domain metrics MANUALLY in Python from
+    this list (mirror URUJ exactly), instead of passing a "cleaned RR
+    series" to neurokit2 (which would incorrectly compute cross-gap diffs).
     """
     if len(beats) < 2:
         return []
-    rr_series = [beats[0]['rrMs']]
+    diffs = []
     for i in range(1, len(beats)):
         prev = beats[i - 1]
         curr = beats[i]
@@ -200,12 +203,12 @@ def validated_rr_series(beats: list[dict[str, Any]]) -> list[int]:
         actual_gap = curr['timestampMs'] - prev['timestampMs']
         tolerance = max(MIN_TOLERANCE_MS, expected_gap * TIMESTAMP_TOLERANCE_PCT)
         if abs(actual_gap - expected_gap) > tolerance:
-            continue  # cross-gap pair rejected
+            continue
         delta_pct = abs(curr['rrMs'] - prev['rrMs']) / prev['rrMs']
         if delta_pct > ECTOPIC_THRESHOLD:
-            continue  # ectopic pair rejected
-        rr_series.append(curr['rrMs'])
-    return rr_series
+            continue
+        diffs.append(curr['rrMs'] - prev['rrMs'])
+    return diffs
 
 
 # ========================================================================
@@ -227,42 +230,67 @@ def split_into_windows(beats: list[dict[str, Any]]) -> list[list[dict[str, Any]]
 def compute_window_metrics(
     win_beats: list[dict[str, Any]],
 ) -> dict[str, float] | None:
-    """Run neurokit2 on a single 5-min window. Returns None if window
-    has insufficient validated diffs.
+    """v0.9.30.1 — Per-window HRV metrics matching URUJ exactly.
 
-    Uses Lomb-Scargle PSD (psd_method='lomb') to match URUJ v0.9.28
-    primary frequency-domain method.
+    PRINCIPLE: For time-domain (RMSSD, SDNN, pNN50, SD1, SD2), compute
+    MANUALLY in Python from validated diffs (mirror URUJ.HrvCalculator).
+    This avoids the bug where passing a 'cleaned RR series' to neurokit2
+    causes it to compute cross-gap diffs at rejection boundaries.
+
+    For frequency-domain (LF/HF/VLF), pass REAL beat timestamps to
+    neurokit2's Lomb-Scargle so it correctly handles non-uniform sampling
+    + gaps from ectopic rejection.
+
+    For DFA + sample entropy, neurokit2 receives the real-time-stamped
+    peaks too (matches URUJ pattern of computing on all physiological RR).
     """
+    import math
+
     if len(win_beats) < MIN_BEATS_PER_WINDOW:
         return None
-    rr_series = validated_rr_series(win_beats)
-    if len(rr_series) < MIN_DIFFS_PER_WINDOW:
+
+    # ===== Time-domain (manual computation, EXACT mirror of URUJ) =====
+    diffs = consecutive_diffs_ms(win_beats)
+    if len(diffs) < MIN_DIFFS_PER_WINDOW:
         return None
 
-    # neurokit2 expects PEAK indices (cumulative beat positions in samples),
-    # not raw RR intervals. Convert: peaks[i] = sum(rr[0..i]) in ms,
-    # then converted to "samples" at 1000Hz (1 sample per ms).
-    rri_ms = np.array(rr_series, dtype=float)
-    peaks = np.cumsum(rri_ms).astype(int)  # cumulative ms → "samples" at 1000Hz
-    SAMPLING_RATE = 1000  # 1 sample per ms
+    all_rr = [b['rrMs'] for b in win_beats]
+    n_diffs = len(diffs)
+    n_rr = len(all_rr)
 
-    out: dict[str, float] = {'beat_count': len(rr_series)}
+    rmssd = math.sqrt(sum(d * d for d in diffs) / n_diffs)
+    mean_rr = sum(all_rr) / n_rr
+    sdnn = math.sqrt(sum((r - mean_rr) ** 2 for r in all_rr) / n_rr)
+    mean_diff = sum(diffs) / n_diffs
+    diff_var = sum((d - mean_diff) ** 2 for d in diffs) / n_diffs
+    sd1 = math.sqrt(diff_var) / math.sqrt(2)
+    sd2_sq = 2 * sdnn * sdnn - sd1 * sd1
+    sd2 = math.sqrt(sd2_sq) if sd2_sq > 0 else 0.0
+    pnn50 = sum(1 for d in diffs if abs(d) > 50) / n_diffs * 100
 
-    # -- Time-domain --
-    try:
-        hrv_time = nk.hrv_time(peaks, sampling_rate=SAMPLING_RATE, show=False)
-        out['rmssd'] = float(hrv_time['HRV_RMSSD'].iloc[0])
-        out['sdnn'] = float(hrv_time['HRV_SDNN'].iloc[0])
-        if 'HRV_pNN50' in hrv_time.columns:
-            out['pnn50'] = float(hrv_time['HRV_pNN50'].iloc[0])
-    except Exception as e:
-        print(f"  time-domain failed: {e}", file=sys.stderr)
-        return None
+    out: dict[str, float] = {
+        'beat_count': n_rr,
+        'validated_diff_count': n_diffs,
+        'rmssd': rmssd,
+        'sdnn': sdnn,
+        'sd1': sd1,
+        'sd2': sd2,
+        'pnn50': pnn50,
+        'mean_rr_ms': mean_rr,
+    }
 
-    # -- Frequency-domain (Lomb-Scargle, matches URUJ v0.9.28) --
+    # ===== Frequency-domain + non-linear (real timestamps) =====
+    # Pass REAL beat times (zero-anchored) to neurokit2 with sampling_rate=1000.
+    # This means each ms = 1 sample, so peaks in ms = peaks in samples.
+    # Lomb-Scargle handles non-uniform timestamps natively, preserving gaps.
+    t0 = win_beats[0]['timestampMs']
+    peaks_ms = np.array([b['timestampMs'] - t0 for b in win_beats], dtype=int)
+    SAMPLING_RATE = 1000
+
+    # Frequency-domain (Lomb-Scargle PSD, matches URUJ v0.9.28)
     try:
         hrv_freq = nk.hrv_frequency(
-            peaks,
+            peaks_ms,
             sampling_rate=SAMPLING_RATE,
             psd_method='lomb',
             show=False,
@@ -278,14 +306,9 @@ def compute_window_metrics(
     except Exception as e:
         print(f"  freq-domain failed: {e}", file=sys.stderr)
 
-    # -- Non-linear --
+    # Non-linear (DFA + sample entropy on all physiological RR via timestamps)
     try:
-        hrv_nl = nk.hrv_nonlinear(peaks, sampling_rate=SAMPLING_RATE, show=False)
-        if 'HRV_SD1' in hrv_nl.columns:
-            out['sd1'] = float(hrv_nl['HRV_SD1'].iloc[0])
-        if 'HRV_SD2' in hrv_nl.columns:
-            out['sd2'] = float(hrv_nl['HRV_SD2'].iloc[0])
-        # neurokit2 field name varies by version
+        hrv_nl = nk.hrv_nonlinear(peaks_ms, sampling_rate=SAMPLING_RATE, show=False)
         for k in ('HRV_DFA_alpha1', 'HRV_DFA_alpha_1', 'HRV_DFA1'):
             if k in hrv_nl.columns:
                 out['dfa_alpha1'] = float(hrv_nl[k].iloc[0])
@@ -309,6 +332,9 @@ def median_aggregate(window_results: list[dict[str, float]]) -> dict[str, float 
         values = [w[k] for w in window_results if k in w and not np.isnan(w[k])]
         aggregated[k] = float(np.median(values)) if values else float('nan')
     aggregated['total_beats'] = int(sum(w.get('beat_count', 0) for w in window_results))
+    aggregated['total_validated_diffs'] = int(
+        sum(w.get('validated_diff_count', 0) for w in window_results),
+    )
     return aggregated
 
 
