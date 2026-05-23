@@ -2024,8 +2024,16 @@ private fun TrackerSummaryCard(
     val latestEnergy = s.energyEntriesToday.firstOrNull()?.numericValue?.toInt()
     val totalHydration = s.hydrationEntriesToday.sumOf { (it.numericValue ?: 0f).toInt() }
     val totalCaffeine = s.caffeineEntriesToday.sumOf { (it.numericValue ?: 0f).toInt() }
+    // v0.9.40 Phase 2 trackers
+    val supplementCount = s.supplementsEntriesToday.size
+    val supplementNames = s.supplementsEntriesToday.mapNotNull { it.textValue }
+    val bristolScore = s.bristolEntriesToday.firstOrNull()?.numericValue?.toInt()
+    val sleepQualityScore = s.sleepQualityEntriesToday.firstOrNull()?.numericValue?.toInt()
+    val sorenessLatest = s.sorenessEntriesToday.firstOrNull()
     val totalEntries = s.moodEntriesToday.size + s.energyEntriesToday.size +
-        s.hydrationEntriesToday.size + s.caffeineEntriesToday.size
+        s.hydrationEntriesToday.size + s.caffeineEntriesToday.size +
+        s.supplementsEntriesToday.size + s.bristolEntriesToday.size +
+        s.sleepQualityEntriesToday.size + s.sorenessEntriesToday.size
 
     BioCard("Subjective + Behavioral — today") {
         if (totalEntries == 0) {
@@ -2054,6 +2062,26 @@ private fun TrackerSummaryCard(
         TrackerRow(emoji = "☕", label = "CAFFEINE",
             value = if (totalCaffeine > 0) "$totalCaffeine mg" else "—",
             sub = if (s.caffeineEntriesToday.size > 1) "${s.caffeineEntriesToday.size} entries" else null)
+        // v0.9.40 Phase 2 trackers
+        TrackerRow(emoji = "💊", label = "SUPPLEMENTS",
+            value = if (supplementCount > 0) "$supplementCount logged" else "—",
+            sub = if (supplementNames.isNotEmpty()) supplementNames.joinToString(", ").take(40) else null)
+        TrackerRow(emoji = "🌀", label = "BRISTOL",
+            value = bristolScore?.let { "Type $it" } ?: "—",
+            sub = bristolScore?.let { num ->
+                when {
+                    num == 4 -> "ideal ✓"
+                    num in 3..5 -> "normal"
+                    num <= 2 -> "constipation risk"
+                    else -> "loose"
+                }
+            })
+        TrackerRow(emoji = "🌙", label = "SLEEP QUALITY",
+            value = sleepQualityScore?.let { "$it / 10" } ?: "—",
+            sub = s.sleepQualityEntriesToday.firstOrNull()?.note)
+        TrackerRow(emoji = "🦵", label = "SORENESS",
+            value = sorenessLatest?.numericValue?.toInt()?.let { "$it / 10" } ?: "—",
+            sub = sorenessLatest?.textValue)
         Spacer(Modifier.height(10.dp))
         Text(
             "Subjective data captures what sensors can't — mood, hunger, " +

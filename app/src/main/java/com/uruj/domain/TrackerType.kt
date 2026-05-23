@@ -21,11 +21,21 @@ enum class TrackerType(
     val displayName: String,
     val unit: String,
 ) {
-    // Phase 1
+    // Phase 1 (v0.9.39)
     MOOD("mood", "Mood", "1-10"),
     ENERGY("energy", "Energy", "1-10"),
     HYDRATION_ML("hydration_ml", "Hydration", "ml"),
     CAFFEINE_MG("caffeine_mg", "Caffeine", "mg"),
+
+    // Phase 2 (v0.9.40) — recovery-period biohacker essentials
+    /** Supplement intake (textValue = name, numericValue = optional dose mg). */
+    SUPPLEMENTS("supplements", "Supplements", "name + mg"),
+    /** Bristol stool scale 1-7 (classic gut-health biohacker metric). */
+    BRISTOL("bristol", "Bristol Stool", "1-7"),
+    /** Subjective sleep quality 1-10 — cross-check against Samsung's score. */
+    SLEEP_QUALITY("sleep_quality", "Sleep Quality", "1-10"),
+    /** Subjective soreness 1-10 (textValue = optional body location). */
+    SORENESS("soreness", "Soreness", "1-10"),
     ;
 
     companion object {

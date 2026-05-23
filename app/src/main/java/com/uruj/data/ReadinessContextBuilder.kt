@@ -123,6 +123,19 @@ class ReadinessContextBuilder(context: Context) {
         val caffeineTodayList = runCatching {
             trackerRepo.listForToday(com.uruj.domain.TrackerType.CAFFEINE_MG.key)
         }.rethrowCancellation().getOrNull().orEmpty()
+        // v0.9.40 Phase 2 tracker types for signal pack
+        val supplementsTodayList = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.SUPPLEMENTS.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val bristolTodayList = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.BRISTOL.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val sleepQualityTodayList = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.SLEEP_QUALITY.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val sorenessTodayList = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.SORENESS.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
         val carResult = runCatching { carRepo.cachedLatest() }.rethrowCancellation().getOrNull()
         val orthostaticResult = runCatching { orthostaticRepo.latest() }.rethrowCancellation().getOrNull()
 
@@ -239,7 +252,7 @@ class ReadinessContextBuilder(context: Context) {
                     note = it.note,
                 )
             },
-            // v0.9.39 — subjective + behavioral tracker layer (#111)
+            // v0.9.39 → v0.9.40 — subjective + behavioral tracker layer (#111)
             tracker = com.uruj.domain.TrackerToday(
                 latestMood = moodTodayList.firstOrNull()?.numericValue,
                 latestEnergy = energyTodayList.firstOrNull()?.numericValue,
@@ -249,8 +262,17 @@ class ReadinessContextBuilder(context: Context) {
                 totalCaffeineMg = caffeineTodayList.sumOf {
                     (it.numericValue ?: 0f).toInt()
                 },
+                // v0.9.40 Phase 2 — supplements / bristol / sleep / soreness
+                supplementsLoggedCount = supplementsTodayList.size,
+                supplementsLoggedNames = supplementsTodayList.mapNotNull { it.textValue },
+                bristolScore = bristolTodayList.firstOrNull()?.numericValue?.toInt(),
+                sleepQualitySubjective = sleepQualityTodayList.firstOrNull()?.numericValue,
+                latestSoreness = sorenessTodayList.firstOrNull()?.numericValue,
+                latestSorenessLocation = sorenessTodayList.firstOrNull()?.textValue,
                 totalEntriesToday = moodTodayList.size + energyTodayList.size +
-                    hydrationTodayList.size + caffeineTodayList.size,
+                    hydrationTodayList.size + caffeineTodayList.size +
+                    supplementsTodayList.size + bristolTodayList.size +
+                    sleepQualityTodayList.size + sorenessTodayList.size,
             ),
         )
 

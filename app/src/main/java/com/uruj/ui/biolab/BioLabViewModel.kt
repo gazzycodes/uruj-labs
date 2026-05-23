@@ -195,6 +195,16 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
                     TrackerType.ENERGY -> "Energy ${numericValue?.toInt() ?: "—"} / 10 logged"
                     TrackerType.HYDRATION_ML -> "+${numericValue?.toInt() ?: "—"} ml hydration logged"
                     TrackerType.CAFFEINE_MG -> "+${numericValue?.toInt() ?: "—"} mg caffeine logged"
+                    TrackerType.SUPPLEMENTS -> {
+                        val dose = numericValue?.toInt()?.let { " $it mg" } ?: ""
+                        "${cleanText ?: "Supplement"}$dose logged"
+                    }
+                    TrackerType.BRISTOL -> "Bristol type ${numericValue?.toInt() ?: "—"} logged"
+                    TrackerType.SLEEP_QUALITY -> "Sleep quality ${numericValue?.toInt() ?: "—"} / 10 logged"
+                    TrackerType.SORENESS -> {
+                        val loc = cleanText?.let { " ($it)" } ?: ""
+                        "Soreness ${numericValue?.toInt() ?: "—"} / 10$loc logged"
+                    }
                 }
                 display
             } else {
