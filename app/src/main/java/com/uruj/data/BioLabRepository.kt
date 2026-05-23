@@ -466,6 +466,12 @@ class BioLabRepository(context: Context) {
         // `latestPostprandial` field on BioLabSnapshot.
         val latestPostprandial: com.uruj.domain.PostprandialSnapshot? = runCatching {
             val recentMarks = mealMarks.listRecent()
+            // v0.9.38 — pre-fetch recent ride history once for ride-overlap detection.
+            // Used to flag postprandial snapshots whose post-window was captured
+            // during exercise (interpretation = exercise effect, not meal response).
+            val recentRides = rideHistory.listAll().filter {
+                now.toEpochMilli() - it.startedAtMs < 7L * 24L * 60L * 60L * 1000L
+            }
             // Process any ready-but-unprocessed marks (idempotent).
             // v0.9.33 — for each, also detect (a) overlap with a prior meal's
             // post-window, (b) whether the mark fell within Samsung's last
@@ -518,6 +524,26 @@ class BioLabRepository(context: Context) {
                     mark.timestampMs in sleepStartMs..sleepEndMs
                 }
 
+                // v0.9.38 (#190) — ride-overlap detection. If any ride's
+                // session interval overlaps the meal's post-window
+                // [mark+45min .. mark+75min], flag the snapshot as
+                // exercise-confounded. Also compute minutes-to-next-ride
+                // for the warning chip text.
+                val postStartMs = postStart.toEpochMilli()
+                val postEndMs = postEnd.toEpochMilli()
+                val rideOverlap = recentRides.any { ride ->
+                    // standard overlap: ride.start < postEnd AND ride.end > postStart
+                    ride.startedAtMs < postEndMs && ride.endedAtMs > postStartMs
+                }
+                val nextRideStart = recentRides
+                    .filter { it.startedAtMs > mark.timestampMs &&
+                              it.startedAtMs - mark.timestampMs < 4L * 60L * 60L * 1000L }
+                    .minByOrNull { it.startedAtMs }
+                    ?.startedAtMs
+                val minutesToNextRide = nextRideStart?.let {
+                    (it - mark.timestampMs) / 60_000L
+                }
+
                 val snap = postprandialCalc.compute(
                     mealMark = mark,
                     preHrv = preHrv,
@@ -527,6 +553,8 @@ class BioLabRepository(context: Context) {
                     overlapsPriorMeal = overlapsPrior,
                     overlapsPriorMealId = if (overlapsPrior) priorMark?.id else null,
                     isDuringSleep = markInsideSleep,
+                    rideOverlapsPostprandial = rideOverlap,
+                    minutesToNextRide = minutesToNextRide,
                 )
                 postprandialSnapshots.save(snap)
             }

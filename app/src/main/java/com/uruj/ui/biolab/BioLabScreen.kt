@@ -1717,8 +1717,9 @@ private fun PostprandialResponseCard(
             Text("Source: ${snap.source} · ${snap.preSampleCount}+${snap.postSampleCount} beats",
                 color = UrujMuted, fontSize = 11.sp)
         }
-        // v0.9.33 — edge-case warning chips. Render only when relevant.
+        // v0.9.33 → v0.9.38 — edge-case warning chips. Render only when relevant.
         if (snap.overlapsPriorMeal || snap.isDuringSleep ||
+            snap.rideOverlapsPostprandial ||
             (snap.preCoveragePct != null && snap.preCoveragePct < 0.6f) ||
             (snap.postCoveragePct != null && snap.postCoveragePct < 0.6f)
         ) {
@@ -1750,6 +1751,26 @@ private fun PostprandialResponseCard(
                         "⚠ Meal mark falls inside last sleep window. Pre-window " +
                             "is sleep state (not awake baseline). Useful midnight-snack " +
                             "data but interpret deltas differently than daytime meals.",
+                        color = UrujText, fontSize = 11.sp,
+                    )
+                }
+                if (snap.rideOverlapsPostprandial) {
+                    val rideGap = snap.minutesToNextRide
+                    val gapText = if (rideGap != null) {
+                        if (rideGap < 75L) {
+                            "Ride started $rideGap min after meal (recommended: 75+ min)."
+                        } else {
+                            "Ride overlapped post-window."
+                        }
+                    } else {
+                        "Ride overlapped the post-window."
+                    }
+                    Text(
+                        "⚠ Post-window captured during a RIDE — exercise " +
+                            "autonomic effect dominates, not meal response. $gapText " +
+                            "For clean postprandial data, wait 75+ min between meal " +
+                            "start and ride start. This reading reflects exercise + " +
+                            "digestion mixed.",
                         color = UrujText, fontSize = 11.sp,
                     )
                 }

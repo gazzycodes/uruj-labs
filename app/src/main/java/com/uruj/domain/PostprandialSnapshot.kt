@@ -119,6 +119,24 @@ data class PostprandialSnapshot(
      */
     val postCoveragePct: Float? = null,
 
+    // ── v0.9.38 — ride-overlap flag (#190) ──
+    /**
+     * True if any ride session overlapped with the post-meal window
+     * (mealMarkMs + 45 min to + 75 min). When this fires, the post-window
+     * captures exercise sympathetic dominance rather than meal-induced
+     * digestion response — the reading is exercise-confounded.
+     *
+     * Card surfaces a warning chip; rider knows to interpret cautiously
+     * (or delete the reading from the trend chart).
+     */
+    val rideOverlapsPostprandial: Boolean = false,
+    /**
+     * Minutes from meal mark to next ride start. Null when no ride
+     * occurred within 4 hours after the meal. Surfaced in the warning
+     * chip + ⓘ so rider can see how late the ride started.
+     */
+    val minutesToNextRide: Long? = null,
+
     // ── Provenance ──
     /** Source of the strap data: "strap" / "band" / "mixed" / "insufficient" / "partial". */
     val source: String,
