@@ -542,6 +542,13 @@ class BioLabRepository(context: Context) {
         // samples for the pre/post-wake windows. Null otherwise (card hides).
         val carResult = carRepo.computeForLastWake()
         val carInterpretation = carResult?.let { carDetector.interpret(it) }
+        // v0.9.36 — minutes since last sleep ended. Drives CAR card UX
+        // polish (#180): when sleep ended <45 min ago, card shows
+        // "computing post-wake window" placeholder instead of silent
+        // hide. Null when no sleep window available.
+        val carMinutesSinceWake: Long? = sleepWindow?.let {
+            (now.toEpochMilli() - it.endedAt.toEpochMilli()) / 60_000L
+        }
 
         BioLabSnapshot(
             computedAtMs = System.currentTimeMillis(),
@@ -596,6 +603,8 @@ class BioLabRepository(context: Context) {
             // v0.7.2 — CAR
             carResult = carResult,
             carInterpretation = carInterpretation,
+            // v0.9.36 — minutes since wake for CAR placeholder UX (#180)
+            carMinutesSinceWake = carMinutesSinceWake,
         )
     }
 
@@ -882,6 +891,10 @@ data class BioLabSnapshot(
     val carResult: CarResult? = null,
     /** Tier classification + plain-English summary, paired with carResult. */
     val carInterpretation: CarInterpretation? = null,
+    /** v0.9.36 — Minutes since last sleep ended. Used by CAR card to show
+     *  a "computing post-wake window" placeholder when <45 min post-wake
+     *  (carResult is null in that window). Null when no sleep window. */
+    val carMinutesSinceWake: Long? = null,
 ) {
     /**
      * v0.8.5 — fraction of the 7 key cycling-training signals that

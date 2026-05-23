@@ -310,9 +310,15 @@ fun BioLabScreen(
             // v0.7.2 — CAR (Cortisol Awakening Response). Auto-resolved from
             // 24/7 NDJSON + last SleepSessionRecord. Card hides until ~45 min
             // post-wake when the window is complete.
+            // v0.9.36 — when sleep ended <45 min ago, show placeholder instead
+            // of silent hide so rider knows the test is COMPUTING (not broken).
             if (s.carResult != null && s.carInterpretation != null) {
                 item("car_card") {
                     CarCard(s.carResult, s.carInterpretation, onSeeTrend = onOpenCarTrend)
+                }
+            } else if (s.carMinutesSinceWake != null && s.carMinutesSinceWake < 45) {
+                item("car_pending_card") {
+                    CarPendingCard(minutesSinceWake = s.carMinutesSinceWake)
                 }
             }
 
@@ -1632,12 +1638,14 @@ private fun PostprandialResponseCard(
         else -> "Postprandial HRV response — meal stress test"
     }
     Box(
-        modifier = Modifier.combinedClickable(
-            interactionSource = remember { MutableInteractionSource() },
-            indication = null,
-            onClick = {},
-            onLongClick = onLongPress,
-        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {},
+                onLongClick = onLongPress,
+            ),
     ) {
     BioCard(
         cardTitle,
@@ -1747,13 +1755,17 @@ private fun PostprandialResponseCard(
                 }
                 snap.preCoveragePct?.takeIf { it < 0.6f }?.let { pct ->
                     Text(
-                        "⚠ Pre-window strap coverage: ${(pct * 100).toInt()}% (strap was off for part of window).",
+                        "⚠ Pre-window strap coverage: ${(pct * 100).toInt()}% " +
+                            "(strap was off / disconnected / 24/7 service paused for " +
+                            "part of window). Check Pipeline → 24/7 MONITORING is ON " +
+                            "and strap is connected continuously for cleaner readings.",
                         color = UrujText, fontSize = 11.sp,
                     )
                 }
                 snap.postCoveragePct?.takeIf { it < 0.6f }?.let { pct ->
                     Text(
-                        "⚠ Post-window strap coverage: ${(pct * 100).toInt()}% (strap was off for part of window).",
+                        "⚠ Post-window strap coverage: ${(pct * 100).toInt()}% " +
+                            "(strap was off / disconnected for part of window).",
                         color = UrujText, fontSize = 11.sp,
                     )
                 }
@@ -1940,6 +1952,36 @@ private fun MealMarkBackdatePicker(
  * gets its own card because the methodology is different (single-event
  * detector, not windowed average).
  */
+@Composable
+private fun CarPendingCard(minutesSinceWake: Long) {
+    // v0.9.36 — placeholder shown when sleep ended <45 min ago. CAR's
+    // post-wake window needs ~30 min of data to be valid; until then
+    // we'd otherwise silently hide the card (rider thinks it's broken).
+    // This makes the COMPUTING state explicit.
+    val minutesRemaining = (45L - minutesSinceWake).coerceAtLeast(1L)
+    BioCard("CAR — computing post-wake window", accentColor = UrujMuted) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                color = UrujAccent,
+                strokeWidth = 2.dp,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text(
+                    "Awake $minutesSinceWake min · need ~$minutesRemaining more",
+                    color = UrujText, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+                )
+                Text(
+                    "Cortisol Awakening Response needs the first ~45 min " +
+                        "after you wake. Card will populate once the window completes.",
+                    color = UrujMuted, fontSize = 11.sp,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun CarCard(
     car: com.uruj.domain.CarResult,
