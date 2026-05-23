@@ -54,6 +54,9 @@ class PostprandialCalculator {
         overlapsPriorMeal: Boolean = false,
         overlapsPriorMealId: String? = null,
         isDuringSleep: Boolean = false,
+        // v0.9.38 — ride-overlap context (#190)
+        rideOverlapsPostprandial: Boolean = false,
+        minutesToNextRide: Long? = null,
     ): PostprandialSnapshot {
         val preStart = mealMark.timestampMs + PostprandialSnapshotRepository.PRE_WINDOW_START_OFFSET_MS
         val preEnd = mealMark.timestampMs + PostprandialSnapshotRepository.PRE_WINDOW_END_OFFSET_MS
@@ -117,6 +120,10 @@ class PostprandialCalculator {
             isDuringSleep = isDuringSleep,
             preCoveragePct = preCoverage,
             postCoveragePct = postCoverage,
+
+            // v0.9.38 — ride-overlap fields (#190)
+            rideOverlapsPostprandial = rideOverlapsPostprandial,
+            minutesToNextRide = minutesToNextRide,
 
             source = source,
             computedAtMs = nowMs,
