@@ -10,7 +10,10 @@ import com.uruj.data.HcReadGuard
 import com.uruj.data.MealMarkRepository
 import com.uruj.data.PostprandialSnapshotRepository
 import com.uruj.data.ReadinessRepository
+import com.uruj.data.TrackerRepository
 import com.uruj.domain.MealMark
+import com.uruj.domain.TrackerEntry
+import com.uruj.domain.TrackerType
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,6 +33,8 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
     private val mealMarkRepo = MealMarkRepository(application)
     // v0.9.32 — delete-flow for the postprandial card long-press
     private val postprandialSnapshotRepo = PostprandialSnapshotRepository(application)
+    // v0.9.39 — in-app subjective + behavioral tracker layer (#111)
+    private val trackerRepo = TrackerRepository(application)
 
     // v0.9.31 — one-shot toast/snackbar message for meal-mark confirmation
     private val _markMealMessage = MutableStateFlow<String?>(null)
@@ -160,6 +165,59 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
 
     fun clearMarkMealMessage() {
         _markMealMessage.value = null
+    }
+
+    /**
+     * v0.9.39 — Save a generic tracker entry (#111). Used for mood / energy /
+     * hydration / caffeine in Phase 1; extensible to all 13 tracker types.
+     * Triggers a Bio Lab refresh so the cards update with the new entry.
+     */
+    fun saveTrackerEntry(
+        type: TrackerType,
+        numericValue: Float? = null,
+        textValue: String? = null,
+        note: String? = null,
+    ) {
+        viewModelScope.launch {
+            val cleanNote = note?.trim()?.takeIf { it.isNotEmpty() }
+            val cleanText = textValue?.trim()?.takeIf { it.isNotEmpty() }
+            val entry = TrackerEntry(
+                type = type.key,
+                numericValue = numericValue,
+                textValue = cleanText,
+                timestampMs = System.currentTimeMillis(),
+                note = cleanNote,
+            )
+            val ok = trackerRepo.save(entry)
+            _markMealMessage.value = if (ok) {
+                val display = when (type) {
+                    TrackerType.MOOD -> "Mood ${numericValue?.toInt() ?: "—"} / 10 logged"
+                    TrackerType.ENERGY -> "Energy ${numericValue?.toInt() ?: "—"} / 10 logged"
+                    TrackerType.HYDRATION_ML -> "+${numericValue?.toInt() ?: "—"} ml hydration logged"
+                    TrackerType.CAFFEINE_MG -> "+${numericValue?.toInt() ?: "—"} mg caffeine logged"
+                }
+                display
+            } else {
+                "Failed to save ${type.displayName} entry. Try again."
+            }
+            refresh(force = true)
+        }
+    }
+
+    /**
+     * v0.9.39 — Delete a specific tracker entry by type + id. Used by
+     * long-press affordance on tracker cards + trend READINGS list rows.
+     */
+    fun deleteTrackerEntry(type: TrackerType, id: String) {
+        viewModelScope.launch {
+            val ok = trackerRepo.delete(type.key, id)
+            _markMealMessage.value = if (ok) {
+                "${type.displayName} entry deleted."
+            } else {
+                "Nothing to delete."
+            }
+            refresh(force = true)
+        }
     }
 
     /**

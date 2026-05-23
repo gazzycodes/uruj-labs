@@ -69,6 +69,8 @@ class BioLabRepository(context: Context) {
     // for Readiness compute. Past dates stay immutable per v0.9.8 rule.
     private val sleepSnapshots = SleepSnapshotRepository(appContext)
     private val hrvSnapshots = HrvSnapshotRepository(appContext)
+    // v0.9.39 — in-app subjective + behavioral tracker layer (#111)
+    private val trackerRepo = TrackerRepository(appContext)
     // v0.9.31 — postprandial HRV response test (Tier B test #109).
     private val mealMarks = MealMarkRepository(appContext)
     private val postprandialSnapshots = PostprandialSnapshotRepository(appContext)
@@ -578,6 +580,21 @@ class BioLabRepository(context: Context) {
             (now.toEpochMilli() - it.endedAt.toEpochMilli()) / 60_000L
         }
 
+        // v0.9.39 — load today's subjective + behavioral tracker entries (#111)
+        // for Bio Lab cards + ReadinessContext signal pack.
+        val moodToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.MOOD.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val energyToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.ENERGY.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val hydrationToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.HYDRATION_ML.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val caffeineToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.CAFFEINE_MG.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+
         BioLabSnapshot(
             computedAtMs = System.currentTimeMillis(),
             healthConnectAvailable = true,
@@ -633,6 +650,11 @@ class BioLabRepository(context: Context) {
             carInterpretation = carInterpretation,
             // v0.9.36 — minutes since wake for CAR placeholder UX (#180)
             carMinutesSinceWake = carMinutesSinceWake,
+            // v0.9.39 — subjective + behavioral tracker today (#111)
+            moodEntriesToday = moodToday,
+            energyEntriesToday = energyToday,
+            hydrationEntriesToday = hydrationToday,
+            caffeineEntriesToday = caffeineToday,
         )
     }
 
@@ -923,6 +945,14 @@ data class BioLabSnapshot(
      *  a "computing post-wake window" placeholder when <45 min post-wake
      *  (carResult is null in that window). Null when no sleep window. */
     val carMinutesSinceWake: Long? = null,
+    /** v0.9.39 — Today's mood tracker entries (#111). Newest first. */
+    val moodEntriesToday: List<com.uruj.domain.TrackerEntry> = emptyList(),
+    /** v0.9.39 — Today's energy tracker entries. */
+    val energyEntriesToday: List<com.uruj.domain.TrackerEntry> = emptyList(),
+    /** v0.9.39 — Today's hydration tracker entries (sum for daily total). */
+    val hydrationEntriesToday: List<com.uruj.domain.TrackerEntry> = emptyList(),
+    /** v0.9.39 — Today's caffeine tracker entries (sum for daily mg total). */
+    val caffeineEntriesToday: List<com.uruj.domain.TrackerEntry> = emptyList(),
 ) {
     /**
      * v0.8.5 — fraction of the 7 key cycling-training signals that
