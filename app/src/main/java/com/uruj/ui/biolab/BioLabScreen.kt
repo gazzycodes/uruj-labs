@@ -107,6 +107,8 @@ fun BioLabScreen(
     // v0.9.32 — backdate picker for late taps + long-press delete confirmation
     var showMealMarkPicker by remember { mutableStateOf(false) }
     var deleteMarkConfirmId by remember { mutableStateOf<String?>(null) }
+    // v0.9.39 — tracker sheet (#111 in-app tracker layer)
+    var showTrackerSheet by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -128,6 +130,18 @@ fun BioLabScreen(
                         letterSpacing = 3.sp,
                     )
                     Spacer(Modifier.weight(1f))
+                    // v0.9.39 — TRACK button opens the in-app tracker sheet
+                    // (#111) for mood / energy / hydration / caffeine entries.
+                    // Same UX pattern as the MEAL button — quick log + save.
+                    TextButton(onClick = { showTrackerSheet = true }) {
+                        Text(
+                            "+ TRACK",
+                            color = UrujAccent,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 10.sp,
+                            letterSpacing = 1.5.sp,
+                        )
+                    }
                     // v0.9.31 → v0.9.32 — Tier B postprandial test trigger.
                     // Now opens a backdate picker (rider can choose "Now",
                     // "5 min ago", etc.) so a late tap can be timestamped
@@ -307,6 +321,17 @@ fun BioLabScreen(
                 }
             }
 
+            // v0.9.39 — Subjective + Behavioral Tracker section (#111).
+            // One compact summary card showing all 4 Phase 1 trackers today's
+            // values. Tap card → opens TrackerSheet to log a new entry.
+            item("tracker_header") { SectionHeader("Subjective + Behavioral") }
+            item("tracker_summary_card") {
+                TrackerSummaryCard(
+                    s = s,
+                    onLogEntry = { showTrackerSheet = true },
+                )
+            }
+
             // v0.7.2 — CAR (Cortisol Awakening Response). Auto-resolved from
             // 24/7 NDJSON + last SleepSessionRecord. Card hides until ~45 min
             // post-wake when the window is complete.
@@ -349,6 +374,17 @@ fun BioLabScreen(
             onConfirm = { offsetMinutes, eventType, note ->
                 viewModel.markMeal(offsetMinutes, eventType, note)
                 showMealMarkPicker = false
+            },
+        )
+    }
+    // v0.9.39 — tracker sheet (#111). Universal sheet for all tracker types
+    // chosen in Phase 1; extends cleanly as phase 2-4 trackers ship.
+    if (showTrackerSheet) {
+        TrackerSheet(
+            onDismiss = { showTrackerSheet = false },
+            onSave = { type, numericValue, textValue, note ->
+                viewModel.saveTrackerEntry(type, numericValue, textValue, note)
+                showTrackerSheet = false
             },
         )
     }
@@ -1962,6 +1998,116 @@ private fun MealMarkBackdatePicker(
         },
         containerColor = UrujSurface,
     )
+}
+
+/**
+ * v0.9.39 — Compact tracker summary card for the in-app subjective +
+ * behavioral tracker layer (#111). Displays today's Mood / Energy /
+ * Hydration / Caffeine values from the disk-persisted TrackerEntry list.
+ *
+ * **Why one summary card instead of 4 separate**: Bio Lab already has
+ * many cards. The subjective layer is a single "self-rating" surface
+ * conceptually — Whoop / Oura combine these into one journal too. Per-
+ * tracker trend screens come in v0.9.40 once data has accumulated.
+ *
+ * Tap anywhere → opens TrackerSheet to log a new entry. Each row shows:
+ *   - Tracker name + emoji
+ *   - Today's value or "—" if not yet logged
+ *   - Tap to log more
+ */
+@Composable
+private fun TrackerSummaryCard(
+    s: BioLabSnapshot,
+    onLogEntry: () -> Unit = {},
+) {
+    val latestMood = s.moodEntriesToday.firstOrNull()?.numericValue?.toInt()
+    val latestEnergy = s.energyEntriesToday.firstOrNull()?.numericValue?.toInt()
+    val totalHydration = s.hydrationEntriesToday.sumOf { (it.numericValue ?: 0f).toInt() }
+    val totalCaffeine = s.caffeineEntriesToday.sumOf { (it.numericValue ?: 0f).toInt() }
+    val totalEntries = s.moodEntriesToday.size + s.energyEntriesToday.size +
+        s.hydrationEntriesToday.size + s.caffeineEntriesToday.size
+
+    BioCard("Subjective + Behavioral — today") {
+        if (totalEntries == 0) {
+            Text(
+                "No entries today yet. Tap + TRACK above to log mood, energy, " +
+                    "hydration, or caffeine.",
+                color = UrujMuted, fontSize = 12.sp,
+            )
+        } else {
+            Text(
+                "$totalEntries entries logged today",
+                color = UrujMuted, fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+        Spacer(Modifier.height(6.dp))
+        TrackerRow(emoji = "🎭", label = "MOOD",
+            value = latestMood?.let { "$it / 10" } ?: "—",
+            sub = s.moodEntriesToday.firstOrNull()?.note)
+        TrackerRow(emoji = "⚡", label = "ENERGY",
+            value = latestEnergy?.let { "$it / 10" } ?: "—",
+            sub = s.energyEntriesToday.firstOrNull()?.note)
+        TrackerRow(emoji = "💧", label = "HYDRATION",
+            value = if (totalHydration > 0) "$totalHydration ml" else "—",
+            sub = if (s.hydrationEntriesToday.size > 1) "${s.hydrationEntriesToday.size} entries" else null)
+        TrackerRow(emoji = "☕", label = "CAFFEINE",
+            value = if (totalCaffeine > 0) "$totalCaffeine mg" else "—",
+            sub = if (s.caffeineEntriesToday.size > 1) "${s.caffeineEntriesToday.size} entries" else null)
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "Subjective data captures what sensors can't — mood, hunger, " +
+                "supplements, breathing, drinking water. Track over weeks to " +
+                "correlate with HRV, sleep, performance.",
+            color = UrujMuted, fontSize = 10.sp,
+        )
+        Spacer(Modifier.height(6.dp))
+        TextButton(
+            onClick = onLogEntry,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                "+ LOG ENTRY",
+                color = UrujAccent,
+                fontWeight = FontWeight.Black,
+                fontSize = 12.sp, letterSpacing = 1.5.sp,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Trend charts ship in v0.9.40 once you have a few days of data.",
+            color = UrujMuted, fontSize = 9.sp,
+        )
+    }
+}
+
+@Composable
+private fun TrackerRow(
+    emoji: String,
+    label: String,
+    value: String,
+    sub: String? = null,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("$emoji  $label",
+            color = UrujMuted, fontSize = 11.sp,
+            letterSpacing = 1.sp, fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f))
+        Column(horizontalAlignment = Alignment.End) {
+            Text(value,
+                color = if (value == "—") UrujMuted else UrujText,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold)
+            if (sub != null) {
+                Text(sub, color = UrujMuted, fontSize = 9.sp)
+            }
+        }
+    }
 }
 
 /**

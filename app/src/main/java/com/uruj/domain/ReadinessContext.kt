@@ -61,6 +61,8 @@ data class ReadinessContext(
         val vo2: Vo2Today? = null,
         // v0.9.31 — postprandial HRV response (Tier B test #109)
         val postprandial: PostprandialToday? = null,
+        // v0.9.39 — subjective + behavioral tracker layer (#111 in-app tracker)
+        val tracker: TrackerToday? = null,
         // Extensible: add weight, body comp, CGM, lactate, blood panels here
         // when the corresponding biomarker repository ships.
     )
@@ -229,6 +231,34 @@ data class Vo2Today(
  * Future tier-B tests (caffeine, alcohol, cold exposure) will follow
  * the same EventMark → ResponseToday pattern.
  */
+/**
+ * v0.9.39 — Subjective + behavioral tracker signal pack (#111).
+ *
+ * Surfaces the latest values + daily totals from the in-app tracker layer.
+ * Per [[reference_readiness_context_architecture]], every biomarker
+ * (including subjective ones) must plug into the signal pack from PR 1 —
+ * engine + AI coach + reasoner all read this struct.
+ *
+ * Phase 1 fields cover Mood / Energy / Hydration / Caffeine.
+ * Phase 2-4 expansions will add: supplements (List<String>), bristolStool,
+ * sleepQualitySubjective, soreness, coldExposureMinutes,
+ * meditationMinutes, morningErection, dreamRecall, symptoms.
+ */
+data class TrackerToday(
+    /** Latest mood rating today (1-10). Null = not yet logged today. */
+    val latestMood: Float? = null,
+    /** Latest energy rating today (1-10). */
+    val latestEnergy: Float? = null,
+    /** Sum of hydration_ml entries logged today. */
+    val totalHydrationMl: Int = 0,
+    /** Sum of caffeine_mg entries logged today. */
+    val totalCaffeineMg: Int = 0,
+    /** Number of distinct entries logged across all tracker types today. */
+    val totalEntriesToday: Int = 0,
+    /** Wall-clock epoch ms when this snapshot was built. */
+    val capturedAtMs: Long = System.currentTimeMillis(),
+)
+
 data class PostprandialToday(
     val mealMarkMs: Long,
     val rmssdDeltaPercent: Float?,

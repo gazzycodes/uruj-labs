@@ -62,6 +62,7 @@ class ReadinessContextBuilder(context: Context) {
     private val recSnapshots = RecommendationSnapshotRepository(appContext)
     private val hrvSnapshots = HrvSnapshotRepository(appContext)  // v0.9.27
     private val postprandialSnapshots = PostprandialSnapshotRepository(appContext)  // v0.9.31
+    private val trackerRepo = TrackerRepository(appContext)  // v0.9.39
     private val carRepo = CarRepository(appContext)
     private val orthostaticRepo = OrthostaticTestRepository(appContext)
     private val carDetector = CarDetector()
@@ -107,6 +108,21 @@ class ReadinessContextBuilder(context: Context) {
                 System.currentTimeMillis() - it.mealMarkMs < 24L * 60L * 60L * 1000L
             }
         }.rethrowCancellation().getOrNull()
+        // v0.9.39 — load today's tracker entries for the signal pack (#111).
+        // Per architecture rule: every biomarker (subjective included) must
+        // plug into ReadinessContext from PR 1 — engine + AI coach + reasoner.
+        val moodTodayList = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.MOOD.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val energyTodayList = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.ENERGY.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val hydrationTodayList = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.HYDRATION_ML.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val caffeineTodayList = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.CAFFEINE_MG.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
         val carResult = runCatching { carRepo.cachedLatest() }.rethrowCancellation().getOrNull()
         val orthostaticResult = runCatching { orthostaticRepo.latest() }.rethrowCancellation().getOrNull()
 
@@ -223,6 +239,19 @@ class ReadinessContextBuilder(context: Context) {
                     note = it.note,
                 )
             },
+            // v0.9.39 — subjective + behavioral tracker layer (#111)
+            tracker = com.uruj.domain.TrackerToday(
+                latestMood = moodTodayList.firstOrNull()?.numericValue,
+                latestEnergy = energyTodayList.firstOrNull()?.numericValue,
+                totalHydrationMl = hydrationTodayList.sumOf {
+                    (it.numericValue ?: 0f).toInt()
+                },
+                totalCaffeineMg = caffeineTodayList.sumOf {
+                    (it.numericValue ?: 0f).toInt()
+                },
+                totalEntriesToday = moodTodayList.size + energyTodayList.size +
+                    hydrationTodayList.size + caffeineTodayList.size,
+            ),
         )
 
         val trends = ReadinessContext.Trends(
