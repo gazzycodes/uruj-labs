@@ -1,14 +1,26 @@
 package com.uruj.ui.trend
 
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import com.uruj.data.MealMarkRepository
 import com.uruj.data.PostprandialSnapshotRepository
 import com.uruj.domain.PostprandialSnapshot
+import com.uruj.ui.theme.UrujMuted
+import com.uruj.ui.theme.UrujText
+import com.uruj.ui.theme.UrujZone5
+import kotlinx.coroutines.launch
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujZone2
 import com.uruj.ui.theme.UrujZone3
@@ -53,10 +65,18 @@ import kotlin.math.abs
 fun PostprandialTrendScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val repo = remember { PostprandialSnapshotRepository(context) }
+    // v0.9.37 — MealMarkRepository for cascading delete (both mark + snapshot
+    // removed when rider long-presses a row to delete a specific reading).
+    val mealMarkRepo = remember { MealMarkRepository(context) }
+    val scope = rememberCoroutineScope()
     var snapshots by remember { mutableStateOf<List<PostprandialSnapshot>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    // v0.9.37 — pending delete state. Holds the snapshot the rider long-pressed
+    // until they confirm or cancel the deletion dialog.
+    var pendingDelete by remember { mutableStateOf<PostprandialSnapshot?>(null) }
+    var reloadKey by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(reloadKey) {
         loading = true
         snapshots = withContext(Dispatchers.IO) { repo.listAll() }
         loading = false
@@ -133,7 +153,54 @@ fun PostprandialTrendScreen(onBack: () -> Unit) {
                 "(prior meal still recovering), ⚠sleep (mark during sleep), " +
                 "⚠pre-low/post-low (strap off >40% of window).",
             loading = loading,
+            // v0.9.37 — long-press a row in READINGS list to delete that
+            // specific reading. Cascading delete (mark + snapshot) via
+            // both repos. Refresh triggered by bumping reloadKey.
+            onRowLongPress = { p ->
+                snapshots.firstOrNull { it.mealMarkMs == p.labelMs }?.let {
+                    pendingDelete = it
+                }
+            },
         ),
         onBack = onBack,
     )
+    // v0.9.37 — delete confirmation for the long-press row affordance
+    val pending = pendingDelete
+    if (pending != null) {
+        val mealTime = Instant.ofEpochMilli(pending.mealMarkMs)
+            .atZone(zone).toLocalTime().withSecond(0).withNano(0).toString()
+        val mealDate = Instant.ofEpochMilli(pending.mealMarkMs)
+            .atZone(zone).toLocalDate().toString()
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete this reading?", color = UrujText) },
+            text = {
+                Text(
+                    "This permanently removes the meal mark from $mealDate at $mealTime " +
+                        "and its postprandial analysis from disk. The trend chart will " +
+                        "lose this dot. Past readings can NOT be recreated from this.",
+                    color = UrujMuted, fontSize = 13.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        repo.delete(pending.mealMarkId)
+                        mealMarkRepo.delete(pending.mealMarkId)
+                        reloadKey++
+                    }
+                    pendingDelete = null
+                }) {
+                    Text("DELETE", color = UrujZone5,
+                        fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text("CANCEL", color = UrujMuted,
+                        fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
+                }
+            },
+        )
+    }
 }
