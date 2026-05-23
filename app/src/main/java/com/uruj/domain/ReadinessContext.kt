@@ -253,6 +253,22 @@ data class TrackerToday(
     val totalHydrationMl: Int = 0,
     /** Sum of caffeine_mg entries logged today. */
     val totalCaffeineMg: Int = 0,
+
+    // ── v0.9.40 Phase 2 fields ──
+    /** Count of supplements logged today (each entry = one supplement). */
+    val supplementsLoggedCount: Int = 0,
+    /** Names of supplements logged today (for display + AI coach input). */
+    val supplementsLoggedNames: List<String> = emptyList(),
+    /** Bristol stool score 1-7 if logged today. */
+    val bristolScore: Int? = null,
+    /** Subjective sleep quality 1-10 (rider's own perception, cross-check
+     *  against Samsung's algorithm-derived sleep score). */
+    val sleepQualitySubjective: Float? = null,
+    /** Latest soreness rating 1-10. */
+    val latestSoreness: Float? = null,
+    /** Latest soreness location text (e.g. "legs", "lower back"). */
+    val latestSorenessLocation: String? = null,
+
     /** Number of distinct entries logged across all tracker types today. */
     val totalEntriesToday: Int = 0,
     /** Wall-clock epoch ms when this snapshot was built. */

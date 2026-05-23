@@ -132,6 +132,27 @@ fun TrackerSheet(
                                 onSave(TrackerType.CAFFEINE_MG, value.toFloat(), null, note)
                             },
                         )
+                        TrackerType.SUPPLEMENTS -> SupplementInput(
+                            onSave = { name, doseMg, note ->
+                                onSave(TrackerType.SUPPLEMENTS, doseMg, name, note)
+                            },
+                        )
+                        TrackerType.BRISTOL -> BristolInput(
+                            onSave = { value, note ->
+                                onSave(TrackerType.BRISTOL, value.toFloat(), null, note)
+                            },
+                        )
+                        TrackerType.SLEEP_QUALITY -> ScaleInput(
+                            scaleLabel = "SLEEP QUALITY (1 = terrible, 10 = perfect)",
+                            onSave = { value, note ->
+                                onSave(TrackerType.SLEEP_QUALITY, value, null, note)
+                            },
+                        )
+                        TrackerType.SORENESS -> SorenessInput(
+                            onSave = { value, location, note ->
+                                onSave(TrackerType.SORENESS, value, location, note)
+                            },
+                        )
                         null -> Unit
                     }
                 }
@@ -161,6 +182,10 @@ private fun TypeChip(type: TrackerType, onClick: () -> Unit) {
         TrackerType.ENERGY -> "⚡"
         TrackerType.HYDRATION_ML -> "💧"
         TrackerType.CAFFEINE_MG -> "☕"
+        TrackerType.SUPPLEMENTS -> "💊"
+        TrackerType.BRISTOL -> "🌀"
+        TrackerType.SLEEP_QUALITY -> "🌙"
+        TrackerType.SORENESS -> "🦵"
     }
     Box(
         modifier = Modifier
@@ -323,6 +348,282 @@ private fun QuantityInput(
                 color = if (effectiveValue > 0) UrujAccent else UrujMuted,
                 fontWeight = FontWeight.Black, letterSpacing = 1.5.sp,
             )
+        }
+    }
+}
+
+/**
+ * v0.9.40 — Supplement entry input. Supplement NAME (text) is required;
+ * dose (mg) is optional. Preset chips for common biohacker supplements
+ * the rider has been taking (magnesium glycinate / melatonin / vitamin D
+ * etc.); freeform input for anything else.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SupplementInput(
+    onSave: (name: String, doseMg: Float?, note: String?) -> Unit,
+) {
+    val presets = listOf(
+        "Magnesium glycinate" to 200,
+        "Melatonin" to 1,
+        "Vitamin D3" to 2000,
+        "Vitamin C" to 1000,
+        "Omega-3" to 1000,
+        "Creatine" to 5000,
+        "Zinc" to 15,
+        "Ashwagandha" to 600,
+    )
+    var name by remember { mutableStateOf("") }
+    var doseText by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
+
+    Column {
+        Text("SUPPLEMENT", color = UrujMuted, fontWeight = FontWeight.Black,
+            fontSize = 10.sp, letterSpacing = 1.5.sp)
+        Spacer(Modifier.height(8.dp))
+        Text("Quick presets:", color = UrujMuted, fontSize = 11.sp)
+        Spacer(Modifier.height(6.dp))
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            presets.forEach { (presetName, defaultDose) ->
+                val isSelected = name == presetName
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(
+                            if (isSelected) UrujAccent.copy(alpha = 0.2f) else UrujSurfaceHigh,
+                        )
+                        .border(
+                            1.dp,
+                            if (isSelected) UrujAccent else UrujSurfaceHigh,
+                            RoundedCornerShape(16.dp),
+                        )
+                        .clickable {
+                            name = presetName
+                            if (doseText.isEmpty()) doseText = defaultDose.toString()
+                        }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                ) {
+                    Text(presetName,
+                        color = if (isSelected) UrujAccent else UrujText,
+                        fontSize = 11.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Text("OR CUSTOM NAME:", color = UrujMuted, fontSize = 11.sp)
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = name,
+            onValueChange = { if (it.length <= 60) name = it },
+            placeholder = { Text("e.g. \"L-Theanine\"", color = UrujMuted, fontSize = 12.sp) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            textStyle = TextStyle(color = UrujText, fontSize = 14.sp),
+        )
+        Spacer(Modifier.height(10.dp))
+        Text("DOSE (mg, optional):", color = UrujMuted, fontSize = 11.sp)
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = doseText,
+            onValueChange = { doseText = it.filter { ch -> ch.isDigit() }.take(6) },
+            placeholder = { Text("e.g. 200", color = UrujMuted, fontSize = 12.sp) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            textStyle = TextStyle(color = UrujText, fontSize = 14.sp),
+        )
+        Spacer(Modifier.height(10.dp))
+        Text("NOTE (OPTIONAL)", color = UrujMuted, fontWeight = FontWeight.Black,
+            fontSize = 10.sp, letterSpacing = 1.5.sp)
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = note,
+            onValueChange = { if (it.length <= 100) note = it },
+            placeholder = { Text("e.g. \"before bed\"", color = UrujMuted, fontSize = 12.sp) },
+            modifier = Modifier.fillMaxWidth(),
+            maxLines = 2,
+            textStyle = TextStyle(color = UrujText, fontSize = 13.sp),
+        )
+        Spacer(Modifier.height(12.dp))
+        TextButton(
+            onClick = {
+                val trimmed = name.trim()
+                if (trimmed.isNotEmpty()) {
+                    onSave(trimmed, doseText.toFloatOrNull(), note)
+                }
+            },
+            enabled = name.trim().isNotEmpty(),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (name.trim().isNotEmpty()) "SAVE" else "PICK A SUPPLEMENT",
+                color = if (name.trim().isNotEmpty()) UrujAccent else UrujMuted,
+                fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
+        }
+    }
+}
+
+/**
+ * v0.9.40 — Bristol stool scale input. Classic biohacker gut-health metric.
+ * 1 = hard pellets (constipation) → 4 = ideal sausage shape → 7 = liquid.
+ * Single tap per day typically.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BristolInput(
+    onSave: (value: Int, note: String?) -> Unit,
+) {
+    val descriptions = listOf(
+        1 to "1 - Hard pellets",
+        2 to "2 - Lumpy sausage",
+        3 to "3 - Cracked sausage",
+        4 to "4 - Smooth sausage ✓ ideal",
+        5 to "5 - Soft blobs",
+        6 to "6 - Mushy",
+        7 to "7 - Liquid",
+    )
+    var selected by remember { mutableIntStateOf(0) }
+    var note by remember { mutableStateOf("") }
+
+    Column {
+        Text("BRISTOL STOOL SCALE", color = UrujMuted, fontWeight = FontWeight.Black,
+            fontSize = 10.sp, letterSpacing = 1.5.sp)
+        Spacer(Modifier.height(4.dp))
+        Text("Type 4 = ideal. Track over weeks for gut-health pattern.",
+            color = UrujMuted, fontSize = 11.sp)
+        Spacer(Modifier.height(10.dp))
+        descriptions.forEach { (num, desc) ->
+            val isSelected = selected == num
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        if (isSelected) UrujAccent.copy(alpha = 0.2f) else UrujSurfaceHigh.copy(alpha = 0.5f),
+                    )
+                    .border(
+                        1.dp,
+                        if (isSelected) UrujAccent else UrujSurfaceHigh,
+                        RoundedCornerShape(8.dp),
+                    )
+                    .clickable { selected = num }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                Text(desc,
+                    color = if (isSelected) UrujAccent else UrujText,
+                    fontSize = 13.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+            }
+            Spacer(Modifier.height(4.dp))
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = note,
+            onValueChange = { if (it.length <= 100) note = it },
+            placeholder = { Text("Note (optional)", color = UrujMuted, fontSize = 12.sp) },
+            modifier = Modifier.fillMaxWidth(),
+            maxLines = 2,
+            textStyle = TextStyle(color = UrujText, fontSize = 13.sp),
+        )
+        Spacer(Modifier.height(12.dp))
+        TextButton(
+            onClick = { if (selected > 0) onSave(selected, note) },
+            enabled = selected > 0,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                if (selected > 0) "SAVE TYPE $selected" else "PICK A TYPE",
+                color = if (selected > 0) UrujAccent else UrujMuted,
+                fontWeight = FontWeight.Black, letterSpacing = 1.5.sp,
+            )
+        }
+    }
+}
+
+/**
+ * v0.9.40 — Soreness 1-10 + optional body location chip. Critical for athletes
+ * tracking training adaptation curve. Persistent legs/back soreness signals
+ * incomplete recovery or training overload.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SorenessInput(
+    onSave: (value: Float, location: String?, note: String?) -> Unit,
+) {
+    val locations = listOf("Legs", "Lower back", "Upper back", "Shoulders", "Glutes", "Whole body")
+    var value by remember { mutableFloatStateOf(5f) }
+    var selectedLocation by remember { mutableStateOf<String?>(null) }
+    var note by remember { mutableStateOf("") }
+
+    Column {
+        Text("SORENESS (1 = none, 10 = severe)",
+            color = UrujMuted, fontWeight = FontWeight.Black,
+            fontSize = 10.sp, letterSpacing = 1.5.sp)
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(value.toInt().toString(),
+                color = UrujAccent, fontWeight = FontWeight.Black, fontSize = 32.sp)
+            Text(" / 10", color = UrujMuted, fontSize = 14.sp)
+        }
+        Slider(
+            value = value,
+            onValueChange = { value = it },
+            valueRange = 1f..10f,
+            steps = 8,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text("LOCATION (OPTIONAL)", color = UrujMuted, fontWeight = FontWeight.Black,
+            fontSize = 10.sp, letterSpacing = 1.5.sp)
+        Spacer(Modifier.height(6.dp))
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            locations.forEach { loc ->
+                val isSelected = selectedLocation == loc
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(
+                            if (isSelected) UrujAccent.copy(alpha = 0.2f) else UrujSurfaceHigh,
+                        )
+                        .border(
+                            1.dp,
+                            if (isSelected) UrujAccent else UrujSurfaceHigh,
+                            RoundedCornerShape(16.dp),
+                        )
+                        .clickable {
+                            selectedLocation = if (isSelected) null else loc
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    Text(loc,
+                        color = if (isSelected) UrujAccent else UrujText,
+                        fontSize = 12.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(
+            value = note,
+            onValueChange = { if (it.length <= 100) note = it },
+            placeholder = { Text("Note (optional)", color = UrujMuted, fontSize = 12.sp) },
+            modifier = Modifier.fillMaxWidth(),
+            maxLines = 2,
+            textStyle = TextStyle(color = UrujText, fontSize = 13.sp),
+        )
+        Spacer(Modifier.height(12.dp))
+        TextButton(
+            onClick = { onSave(value, selectedLocation, note) },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("SAVE ENTRY", color = UrujAccent,
+                fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
         }
     }
 }

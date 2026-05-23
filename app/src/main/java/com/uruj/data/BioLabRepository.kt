@@ -594,6 +594,19 @@ class BioLabRepository(context: Context) {
         val caffeineToday = runCatching {
             trackerRepo.listForToday(com.uruj.domain.TrackerType.CAFFEINE_MG.key)
         }.rethrowCancellation().getOrNull().orEmpty()
+        // v0.9.40 Phase 2 tracker types
+        val supplementsToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.SUPPLEMENTS.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val bristolToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.BRISTOL.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val sleepQualityToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.SLEEP_QUALITY.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val sorenessToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.SORENESS.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
 
         BioLabSnapshot(
             computedAtMs = System.currentTimeMillis(),
@@ -655,6 +668,11 @@ class BioLabRepository(context: Context) {
             energyEntriesToday = energyToday,
             hydrationEntriesToday = hydrationToday,
             caffeineEntriesToday = caffeineToday,
+            // v0.9.40 Phase 2 — supplements / bristol / sleep quality / soreness
+            supplementsEntriesToday = supplementsToday,
+            bristolEntriesToday = bristolToday,
+            sleepQualityEntriesToday = sleepQualityToday,
+            sorenessEntriesToday = sorenessToday,
         )
     }
 
@@ -953,6 +971,14 @@ data class BioLabSnapshot(
     val hydrationEntriesToday: List<com.uruj.domain.TrackerEntry> = emptyList(),
     /** v0.9.39 — Today's caffeine tracker entries (sum for daily mg total). */
     val caffeineEntriesToday: List<com.uruj.domain.TrackerEntry> = emptyList(),
+    /** v0.9.40 — Today's supplements entries (each has textValue = name, optional numericValue = dose mg). */
+    val supplementsEntriesToday: List<com.uruj.domain.TrackerEntry> = emptyList(),
+    /** v0.9.40 — Today's Bristol stool entry (typically once daily). */
+    val bristolEntriesToday: List<com.uruj.domain.TrackerEntry> = emptyList(),
+    /** v0.9.40 — Today's subjective sleep quality rating (1-10). */
+    val sleepQualityEntriesToday: List<com.uruj.domain.TrackerEntry> = emptyList(),
+    /** v0.9.40 — Today's soreness entries (1-10 + optional body location). */
+    val sorenessEntriesToday: List<com.uruj.domain.TrackerEntry> = emptyList(),
 ) {
     /**
      * v0.8.5 — fraction of the 7 key cycling-training signals that
