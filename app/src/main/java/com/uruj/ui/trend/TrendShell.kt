@@ -1,6 +1,7 @@
 package com.uruj.ui.trend
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -152,6 +153,7 @@ fun TrendShell(
                     points = filteredPoints,
                     valueFormatter = spec.valueFormatter,
                     detailFormatter = spec.detailFormatter,
+                    onLongPress = spec.onRowLongPress,
                 )
             }
 
@@ -180,6 +182,14 @@ data class TrendSpec(
     val emptyBody: String,
     val methodologyFootnote: String,
     val loading: Boolean = false,
+    /**
+     * v0.9.37 — optional long-press handler per row in the READINGS list.
+     * When provided, each row becomes long-pressable; caller typically
+     * shows a delete confirmation for that specific reading. Null = no
+     * long-press affordance (default, backward-compat for trend screens
+     * that don't support row-level deletion).
+     */
+    val onRowLongPress: ((TrendPoint) -> Unit)? = null,
 )
 
 @Composable
@@ -247,11 +257,13 @@ private fun androidx.compose.foundation.layout.RowScope.StatCell(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun ReadingsList(
     points: List<TrendPoint>,
     valueFormatter: (Float) -> String,
     detailFormatter: ((TrendPoint) -> String)?,
+    onLongPress: ((TrendPoint) -> Unit)? = null,
 ) {
     if (points.isEmpty()) return
     val sorted = points.sortedByDescending { it.labelMs }
@@ -267,10 +279,32 @@ private fun ReadingsList(
             color = UrujMuted, fontWeight = FontWeight.Black,
             fontSize = 9.sp, letterSpacing = 1.5.sp,
         )
+        if (onLongPress != null) {
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "Long-press a row to delete that reading",
+                color = UrujMuted, fontSize = 10.sp,
+            )
+        }
         Spacer(Modifier.height(2.dp))
         val fmt = SimpleDateFormat("EEE MMM d", Locale.getDefault())
         for (p in sorted.take(14)) {
-            Row(modifier = Modifier.fillMaxWidth(),
+            // v0.9.37 — rows are individually long-pressable when caller
+            // provides onLongPress (e.g. PostprandialTrendScreen wires this
+            // to a delete-confirmation dialog so the rider can delete a
+            // specific bad reading from the trend, not just the latest).
+            val rowModifier = if (onLongPress != null) {
+                Modifier
+                    .fillMaxWidth()
+                    .combinedClickable(
+                        onClick = {},
+                        onLongClick = { onLongPress(p) },
+                    )
+                    .padding(vertical = 4.dp)
+            } else {
+                Modifier.fillMaxWidth()
+            }
+            Row(modifier = rowModifier,
                 verticalAlignment = Alignment.CenterVertically) {
                 Text(fmt.format(Date(p.labelMs)), color = UrujText, fontSize = 12.sp,
                     modifier = Modifier.weight(1f))
