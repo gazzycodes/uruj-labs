@@ -325,6 +325,85 @@ class RuleBasedReasoner : ReadinessReasoner {
     }
 
     /**
+     * v0.9.43 — FORWARD UNLOCK ESTIMATE for a training tier.
+     *
+     * Linear extrapolation from current trend slopes per gating signal.
+     * Returns the predicted "X days at current trajectory" until ALL
+     * gating signals cross their thresholds for the tier.
+     *
+     * Bottleneck = slowest signal. If any signal is moving the WRONG way
+     * (e.g. HRV trending down when we need it to rise), returns warning
+     * copy explaining the divergence.
+     *
+     * TSB defaults to +1.5/day rise during rest (typical Coggan EWMA decay).
+     * HRV slope from 7d trend. Future v0.9.44+ will refine with personalized
+     * recovery-rate learning.
+     *
+     * Returns null when:
+     *   - Already unlocked (no estimate needed)
+     *   - Insufficient data (no HRV today / no trend yet)
+     *   - Critical signals trending wrong direction (different copy)
+     */
+    private fun computeTierUnlockDays(
+        today: ReadinessContext.TodaySnapshot,
+        trends: ReadinessContext.Trends,
+        tierKey: String,
+    ): String? {
+        val hrvNow = today.hrv?.rmssdMs ?: return null
+        val tsbNow = today.tsb?.value
+        val hrvTrend = trends.hrv
+
+        val (hrvTarget, tsbTarget, tierLabel) = when (tierKey) {
+            "tempo" -> Triple(18f, -10f, "TEMPO (Z3)")
+            "threshold" -> Triple(25f, -10f, "THRESHOLD (Z4)")
+            else -> return null
+        }
+
+        // Already cleared? Skip.
+        if (hrvNow >= hrvTarget && (tsbNow == null || tsbNow >= tsbTarget)) {
+            return null
+        }
+
+        // HRV gap days
+        val hrvDays: Int? = if (hrvNow >= hrvTarget) {
+            0
+        } else {
+            val slope = hrvTrend?.slopePerDay
+            if (slope == null || slope <= 0f) {
+                // Not improving — warn explicitly
+                if (hrvTrend?.direction == TrendDirection.FALLING) {
+                    return "$tierLabel unlock: deferring — HRV trending DOWN " +
+                        "${"%.1f".format(kotlin.math.abs(hrvTrend.slopePerDay))} ms/day, " +
+                        "need to reverse first"
+                }
+                return "$tierLabel unlock: HRV stable at " +
+                    "${"%.1f".format(hrvNow)} ms (need ${hrvTarget.toInt()}+) — " +
+                    "no improvement trend yet, give it a few days"
+            }
+            ((hrvTarget - hrvNow) / slope).toInt().coerceAtLeast(1)
+        }
+
+        // TSB gap days (assume +1.5/day rest decay if no negative training)
+        val tsbDays: Int = if (tsbNow == null || tsbNow >= tsbTarget) {
+            0
+        } else {
+            val effectiveSlope = 1.5f  // typical TSB EWMA decay at full rest
+            ((tsbTarget - tsbNow) / effectiveSlope).toInt().coerceAtLeast(1)
+        }
+
+        // Bottleneck = slowest gating signal
+        val days = maxOf(hrvDays ?: 0, tsbDays)
+        if (days <= 0) return null
+
+        val bottleneck = when {
+            hrvDays != null && hrvDays >= tsbDays -> "HRV bottleneck (gap ${"%.1f".format(hrvTarget - hrvNow)} ms)"
+            else -> "TSB bottleneck (gap ${"%.1f".format(tsbTarget - tsbNow!!)} pts)"
+        }
+
+        return "$tierLabel unlock: ~$days days at current trajectory · $bottleneck"
+    }
+
+    /**
      * v0.9.41 — Returns the more conservative (lower) of two ReadinessTier
      * values. Tier ordering: FullRest < ActiveRecovery < EasyAerobic
      *   < ModerateEndurance < HardGreenLight.
@@ -562,6 +641,51 @@ class RuleBasedReasoner : ReadinessReasoner {
         if (patterns.consecutiveLowReadinessDays >= 3) {
             insights += "Readiness < 50 for ${patterns.consecutiveLowReadinessDays} days running — check sleep + load"
         }
+
+        // v0.9.43 — FORWARD UNLOCK ESTIMATES (motivational layer).
+        // For each LOCKED tier, compute "X days at current trajectory until
+        // unlock." Linear extrapolation from 7d trend slopes. Reads gating
+        // signal current values + slopes, picks the bottleneck signal, shows
+        // estimated days. Critical: tells rider WHEN they'll be cleared,
+        // ending the "never ready" worry. Caveats noted in copy.
+        val tempoEstimate = computeTierUnlockDays(today, trends, tierKey = "tempo")
+        val thresholdEstimate = computeTierUnlockDays(today, trends, tierKey = "threshold")
+        if (tempoEstimate != null) insights += tempoEstimate
+        if (thresholdEstimate != null) insights += thresholdEstimate
+
+        // v0.9.43 — SUBJECTIVE / Body Voice insight (#111 visibility).
+        // When rider has logged subjective tracker values today, surface them
+        // explicitly so they know body input is being heard by the engine.
+        // Skipped when not logged (no nagging — graceful per v0.9.42 design).
+        val subjMood = today.tracker?.latestMood
+        val subjEnergy = today.tracker?.latestEnergy
+        val subjSoreness = today.tracker?.latestSoreness
+        val subjSleepQuality = today.tracker?.sleepQualitySubjective
+        val anySubjective = subjMood != null || subjEnergy != null ||
+            subjSoreness != null || subjSleepQuality != null
+
+        if (anySubjective) {
+            val parts = mutableListOf<String>()
+            subjMood?.let { parts += "mood ${it.toInt()}/10" }
+            subjEnergy?.let { parts += "energy ${it.toInt()}/10" }
+            subjSoreness?.let { parts += "soreness ${it.toInt()}/10" }
+            subjSleepQuality?.let { parts += "sleep ${it.toInt()}/10" }
+
+            // Determine prefix based on whether subjective is in concern band
+            val anyConcern = (subjMood != null && subjMood <= 4f) ||
+                (subjEnergy != null && subjEnergy <= 4f) ||
+                (subjSoreness != null && subjSoreness >= 7f) ||
+                (subjSleepQuality != null && subjSleepQuality <= 4f)
+
+            val prefix = if (anyConcern) {
+                "Body voice ⚠"
+            } else {
+                "Body voice ✓"
+            }
+            insights += "$prefix — ${parts.joinToString(" · ")}"
+        }
+        // Note: when NO subjective logged, no insight added (graceful degradation
+        // per v0.9.42 — engine doesn't nag rider to log more).
 
         // CAR / today's stress signal — surface MILD cases (SUPPRESSED) here
         // since rationale only lists EXAGGERATED/BLUNTED as severe drivers.
