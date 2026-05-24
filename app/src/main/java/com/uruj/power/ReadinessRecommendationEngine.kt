@@ -214,6 +214,21 @@ class RuleBasedReasoner : ReadinessReasoner {
         val missingCallout = buildMissingDataCallout(context.provenance.missingSignals)
         // endregion
 
+        // v0.9.45 — ENGINE DECISION LOGCAT for debugging + audit.
+        // One summary line per compute showing inputs + decision flow.
+        // Tag: URUJ-ReadinessEngine. Grep this to verify tier overrides.
+        android.util.Log.d(
+            "URUJ-ReadinessEngine",
+            "[v0.9.45] score=$score · tier=$tier (was $baseTier · ceiling $absoluteCeiling) · " +
+                "severe=${severeFlags.size}[${severeFlags.joinToString(",")}] · " +
+                "mild=${mildFlags.size} · " +
+                "hrv=${hrvAbs?.let { "%.1f".format(it) } ?: "—"}ms · " +
+                "tsb=${tsbValue?.toInt() ?: "—"} · " +
+                "rhrΔ=${rhrDelta ?: "—"} · " +
+                "car=${carTier?.name ?: "—"} · " +
+                "subj=mood${subjMood?.toInt() ?: "—"}/energy${subjEnergy?.toInt() ?: "—"}/sore${subjSoreness?.toInt() ?: "—"}/sleep${subjSleepQuality?.toInt() ?: "—"}"
+        )
+
         return Recommendation(
             tier = tier,
             headline = headline,
@@ -704,7 +719,30 @@ class RuleBasedReasoner : ReadinessReasoner {
             } else {
                 "Body voice ✓"
             }
-            insights += "$prefix — ${parts.joinToString(" · ")}"
+
+            // v0.9.45 — STALENESS flag for subjective entries.
+            // When the LATEST entry today is older than 12 hours, surface
+            // a hint that mood/energy may have shifted since logging.
+            // Uses tracker.capturedAtMs (timestamp when entries were loaded
+            // into context — close enough to "now" that comparing to entry
+            // timestamps works as freshness proxy).
+            val latestMs = listOfNotNull(
+                today.tracker?.capturedAtMs,
+            ).maxOrNull() ?: System.currentTimeMillis()
+            val anyStale = today.tracker?.let { tracker ->
+                // We don't have per-entry timestamps in TrackerToday signal pack
+                // (it surfaces latest values not full entries). Best heuristic
+                // available: if today is well into evening (>18:00) AND entries
+                // exist, assume they were likely logged earlier and may be stale.
+                // Future v0.9.46+ refinement: thread entry timestamps through.
+                val nowHour = java.time.Instant.ofEpochMilli(latestMs)
+                    .atZone(java.time.ZoneId.systemDefault())
+                    .hour
+                nowHour >= 18 && tracker.totalEntriesToday > 0
+            } ?: false
+
+            val staleSuffix = if (anyStale) " (logged earlier today — may have shifted)" else ""
+            insights += "$prefix — ${parts.joinToString(" · ")}$staleSuffix"
         }
         // Note: when NO subjective logged, no insight added (graceful degradation
         // per v0.9.42 — engine doesn't nag rider to log more).
