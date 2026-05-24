@@ -203,7 +203,7 @@ class ReadinessCalculator {
 
         // Day 7+: ratio vs personal 7d median baseline
         val ratio = today / baseline
-        val score = when {
+        val ratioScore = when {
             ratio > 1.10f -> 100  // unusually high — exceptional recovery
             ratio > 1.00f -> 95
             ratio > 0.90f -> 90
@@ -212,9 +212,44 @@ class ReadinessCalculator {
             ratio > 0.60f -> 35
             else -> 25
         }
+
+        // v0.9.41 — ABSOLUTE FLOOR (chronic-baseline trap fix).
+        //
+        // Bug we're fixing: when RMSSD has been suppressed for 7+ nights, the
+        // 7d-baseline IS the suppressed state. ratio = today / baseline →
+        // looks like "+0% vs avg" = score 95 = "autonomic primed ✓" even when
+        // the absolute value is severely below athletic norm.
+        //
+        // Fix: cap the ratio-derived score by an absolute-tier floor. If
+        // RMSSD is critically low, no amount of "stable vs your suppressed
+        // self" can produce a green-light score.
+        //
+        // Population norms (Shaffer & Ginsberg 2017; Plews et al. 2013):
+        //   - Healthy endurance athlete RMSSD: 30-50 ms
+        //   - <25 ms = below athletic average
+        //   - <20 ms = suppressed
+        //   - <15 ms = severely suppressed (illness/overtraining territory)
+        //   - <12 ms = critically suppressed (non-functional overreach)
+        val absoluteCap = when {
+            today < 12f -> 35   // critically suppressed
+            today < 15f -> 50   // severely suppressed
+            today < 20f -> 70   // suppressed
+            today < 25f -> 85   // below athletic norm
+            else -> 100         // no cap — ratio scoring stands
+        }
+
+        val finalScore = minOf(ratioScore, absoluteCap)
+
         val pct = ((ratio - 1f) * 100).roundToInt()
         val pctStr = if (pct >= 0) "+$pct%" else "$pct%"
-        return score to "$pctStr vs 7d avg"
+        val detail = if (finalScore < ratioScore) {
+            // Absolute floor caught a suppression that ratio-tier missed.
+            // Lead the detail with the absolute value so user sees the truth.
+            "${"%.1f".format(today)} ms suppressed · cap $absoluteCap"
+        } else {
+            "$pctStr vs 7d avg"
+        }
+        return finalScore to detail
     }
 
     private fun scoreRestingHr(today: Int?, baseline: Int?): Pair<Int, String>? {
