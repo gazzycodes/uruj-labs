@@ -356,7 +356,20 @@ class RuleBasedReasoner : ReadinessReasoner {
         val (hrvTarget, tsbTarget, tierLabel) = when (tierKey) {
             "tempo" -> Triple(18f, -10f, "TEMPO (Z3)")
             "threshold" -> Triple(25f, -10f, "THRESHOLD (Z4)")
+            "vo2" -> Triple(30f, -10f, "VO2 (Z5)")
             else -> return null
+        }
+
+        // v0.9.44 — VO2 tier additionally gated by DFA α1 ≤ 1.3 (chronic
+        // marker — weeks-to-months timescale). When chronic, defer with
+        // descriptive copy rather than huge numeric estimate.
+        if (tierKey == "vo2") {
+            val dfa = today.hrv?.frequencyDomain?.dfaAlpha1
+            if (dfa != null && dfa > 1.3f) {
+                return "VO2 (Z5) unlock: gated by DFA α1 (currently ${"%.2f".format(dfa)}, " +
+                    "need ≤ 1.30). Chronic marker — typically 4-12 weeks of " +
+                    "consistent recovery to normalize."
+            }
         }
 
         // Already cleared? Skip.
@@ -392,15 +405,22 @@ class RuleBasedReasoner : ReadinessReasoner {
         }
 
         // Bottleneck = slowest gating signal
-        val days = maxOf(hrvDays ?: 0, tsbDays)
-        if (days <= 0) return null
+        val daysRaw = maxOf(hrvDays ?: 0, tsbDays)
+        if (daysRaw <= 0) return null
+
+        // v0.9.44 — cap at 90 days. Beyond that, slope-based estimate is
+        // mostly noise — recovery rate will likely change before then.
+        // Surface as "90+ days" rather than misleading huge numbers.
+        val daysDisplay = if (daysRaw > 90) "90+" else daysRaw.toString()
 
         val bottleneck = when {
             hrvDays != null && hrvDays >= tsbDays -> "HRV bottleneck (gap ${"%.1f".format(hrvTarget - hrvNow)} ms)"
             else -> "TSB bottleneck (gap ${"%.1f".format(tsbTarget - tsbNow!!)} pts)"
         }
 
-        return "$tierLabel unlock: ~$days days at current trajectory · $bottleneck"
+        // v0.9.44 — removed "~" tilde (rendered as "-" on some Android fonts).
+        // Use "in" word + "(est.)" parenthetical for clarity.
+        return "$tierLabel unlock in $daysDisplay days (est.) · $bottleneck"
     }
 
     /**
@@ -650,8 +670,10 @@ class RuleBasedReasoner : ReadinessReasoner {
         // ending the "never ready" worry. Caveats noted in copy.
         val tempoEstimate = computeTierUnlockDays(today, trends, tierKey = "tempo")
         val thresholdEstimate = computeTierUnlockDays(today, trends, tierKey = "threshold")
+        val vo2Estimate = computeTierUnlockDays(today, trends, tierKey = "vo2")
         if (tempoEstimate != null) insights += tempoEstimate
         if (thresholdEstimate != null) insights += thresholdEstimate
+        if (vo2Estimate != null) insights += vo2Estimate
 
         // v0.9.43 — SUBJECTIVE / Body Voice insight (#111 visibility).
         // When rider has logged subjective tracker values today, surface them
