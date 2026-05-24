@@ -88,6 +88,14 @@ class RuleBasedReasoner : ReadinessReasoner {
         if ((hrvRatio != null && hrvRatio < 0.70f) ||
             (hrvRatio == null && hrvAbs != null && hrvAbs < 12f)
         ) severeFlags += "hrv-crashed"
+        // v0.9.41 — ABSOLUTE HRV FLOOR severe flag (chronic-baseline trap fix).
+        // The old check above only fired when hrvRatio < 0.70 OR baseline absent.
+        // Adds: even when ratio says "stable vs your suppressed self", an absolute
+        // RMSSD < 15ms is the body screaming "non-functional overreach territory."
+        // This is independent of ratio — pure population-norm safety net.
+        if (hrvAbs != null && hrvAbs < 15f && "hrv-crashed" !in severeFlags) {
+            severeFlags += "hrv-absolute-suppressed"
+        }
         if (rhrDelta != null && rhrDelta >= 5) severeFlags += "rhr-elevated"
         // v0.9.4 — CAR as 5th severe flag. Exaggerated OR blunted both
         // signal HPA dysregulation (acute stress / chronic over-reach).
@@ -113,7 +121,7 @@ class RuleBasedReasoner : ReadinessReasoner {
         val mildCount = mildFlags.size
 
         // region Tier selection — multi-signal over-ride on composite score
-        val tier = when {
+        val baseTier = when {
             severeCount >= 2 -> ReadinessTier.FullRest
             score < 30 -> ReadinessTier.FullRest
             severeCount == 1 && score < 55 -> ReadinessTier.ActiveRecovery
@@ -123,6 +131,17 @@ class RuleBasedReasoner : ReadinessReasoner {
             score < 75 -> ReadinessTier.ModerateEndurance
             else -> ReadinessTier.HardGreenLight
         }
+
+        // v0.9.41 — TIER CEILING from absolute physiology floors.
+        //
+        // Even when composite score says "go hard", the absolute biomarker
+        // values can veto a tier. This implements the safety net that prevents
+        // "Green light" recommendations during chronic non-functional overreach
+        // when 7d-baseline ratios are misleading.
+        //
+        // Rule: take the MORE CONSERVATIVE of baseTier vs absoluteCeiling.
+        val absoluteCeiling = computeAbsoluteCeiling(today)
+        val tier = pickMoreConservative(baseTier, absoluteCeiling)
         // endregion
 
         // region Headline + duration — rotating taglines keyed off day-of-year
@@ -168,6 +187,82 @@ class RuleBasedReasoner : ReadinessReasoner {
             severeFlags = severeFlags,
             mildFlags = mildFlags,
         )
+    }
+
+    /**
+     * v0.9.41 — Compute the maximum tier permitted by today's absolute
+     * physiology values. Returns the most aggressive tier allowed.
+     *
+     * This is the population-norm safety ceiling that complements the
+     * personal-baseline scoring. Rationale: a chronically overreached athlete
+     * has a suppressed personal baseline, so "vs your 7d avg" comparisons
+     * can permit hard sessions that population norms forbid.
+     *
+     * Thresholds anchored to:
+     *   - Shaffer & Ginsberg 2017 (HRV norms)
+     *   - Plews et al. 2013 (athlete HRV)
+     *   - Coggan & Allen (TSB / training stress)
+     *   - Pruessner 1997 / Clow 2010 (CAR norms)
+     */
+    private fun computeAbsoluteCeiling(today: ReadinessContext.TodaySnapshot): ReadinessTier {
+        val hrvAbs = today.hrv?.rmssdMs
+        val tsb = today.tsb?.value
+        val rhrDelta = today.rhr?.let { r ->
+            if (r.baselineBpm != null) r.todayBpm - r.baselineBpm else null
+        }
+
+        // HRV absolute ceiling
+        val hrvCeiling = when {
+            hrvAbs == null -> ReadinessTier.HardGreenLight
+            hrvAbs < 12f -> ReadinessTier.FullRest         // critically suppressed
+            hrvAbs < 15f -> ReadinessTier.ActiveRecovery   // severely suppressed
+            hrvAbs < 20f -> ReadinessTier.EasyAerobic      // suppressed
+            hrvAbs < 25f -> ReadinessTier.ModerateEndurance // below athletic norm
+            else -> ReadinessTier.HardGreenLight
+        }
+
+        // TSB ceiling — only allow hard sessions when fatigue is resolved
+        val tsbCeiling = when {
+            tsb == null -> ReadinessTier.HardGreenLight
+            tsb <= -25f -> ReadinessTier.FullRest
+            tsb <= -20f -> ReadinessTier.ActiveRecovery
+            tsb <= -15f -> ReadinessTier.EasyAerobic
+            tsb <= -10f -> ReadinessTier.ModerateEndurance
+            else -> ReadinessTier.HardGreenLight
+        }
+
+        // RHR elevation = illness brewing
+        val rhrCeiling = if (rhrDelta == null) {
+            ReadinessTier.HardGreenLight
+        } else {
+            when {
+                rhrDelta >= 8 -> ReadinessTier.FullRest
+                rhrDelta >= 5 -> ReadinessTier.ActiveRecovery
+                rhrDelta >= 3 -> ReadinessTier.EasyAerobic
+                else -> ReadinessTier.HardGreenLight
+            }
+        }
+
+        // Take the most conservative (lowest tier) of all ceilings
+        return pickMoreConservative(pickMoreConservative(hrvCeiling, tsbCeiling), rhrCeiling)
+    }
+
+    /**
+     * v0.9.41 — Returns the more conservative (lower) of two ReadinessTier
+     * values. Tier ordering: FullRest < ActiveRecovery < EasyAerobic
+     *   < ModerateEndurance < HardGreenLight.
+     */
+    private fun pickMoreConservative(a: ReadinessTier, b: ReadinessTier): ReadinessTier {
+        val order = listOf(
+            ReadinessTier.FullRest,
+            ReadinessTier.ActiveRecovery,
+            ReadinessTier.EasyAerobic,
+            ReadinessTier.ModerateEndurance,
+            ReadinessTier.HardGreenLight,
+        )
+        val aIdx = order.indexOf(a)
+        val bIdx = order.indexOf(b)
+        return order[minOf(aIdx, bIdx)]
     }
 
     /**
