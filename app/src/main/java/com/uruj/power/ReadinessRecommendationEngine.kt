@@ -82,6 +82,14 @@ class RuleBasedReasoner : ReadinessReasoner {
         val carTier = today.car?.tier
         val carIsRecent = today.car != null && today.car.ageHours <= 24f
 
+        // v0.9.42 — subjective tracker inputs (#111). All optional. Null
+        // when rider hasn't logged today. Engine treats missing data as
+        // "no constraint" (gracefully degrades vs penalizing absence).
+        val subjMood = today.tracker?.latestMood
+        val subjEnergy = today.tracker?.latestEnergy
+        val subjSoreness = today.tracker?.latestSoreness
+        val subjSleepQuality = today.tracker?.sleepQualitySubjective
+
         val severeFlags = mutableListOf<String>()
         if (tsbValue != null && tsbValue <= -25f) severeFlags += "tsb-crashed"
         if (sleepHours != null && sleepHours < 5f) severeFlags += "sleep-crashed"
@@ -107,6 +115,15 @@ class RuleBasedReasoner : ReadinessReasoner {
         val hrvTrendFalling = trends.hrv?.direction == TrendDirection.FALLING
         if (hrvTrendFalling) severeFlags += "hrv-trending-down"
 
+        // v0.9.42 — SUBJECTIVE severe flags (#111 tracker integration).
+        // Rider's body knows things sensors don't capture. When mood / energy
+        // crashes, or soreness spikes — engine must respect it. Null-safe:
+        // when rider hasn't logged, no flag fires (graceful degradation).
+        if (subjMood != null && subjMood <= 3f) severeFlags += "subjective-mood-crashed"
+        if (subjEnergy != null && subjEnergy <= 3f) severeFlags += "subjective-energy-crashed"
+        if (subjSoreness != null && subjSoreness >= 8f) severeFlags += "subjective-soreness-severe"
+        if (subjSleepQuality != null && subjSleepQuality <= 3f) severeFlags += "subjective-sleep-poor"
+
         val mildFlags = mutableListOf<String>()
         if (tsbValue != null && tsbValue <= -15f && "tsb-crashed" !in severeFlags) mildFlags += "tsb-deep"
         if (sleepHours != null && sleepHours < 6f && "sleep-crashed" !in severeFlags) mildFlags += "sleep-low"
@@ -115,6 +132,21 @@ class RuleBasedReasoner : ReadinessReasoner {
         if (rhrDelta != null && rhrDelta >= 3 && "rhr-elevated" !in severeFlags) mildFlags += "rhr-creeping"
         if (carIsRecent && carTier == CarTier.SUPPRESSED) mildFlags += "car-suppressed"
         if (patterns.tsbUnderwaterDays >= 3) mildFlags += "tsb-underwater-streak"
+
+        // v0.9.42 — SUBJECTIVE mild flags. Rider feeling "meh" (4 / 10) is
+        // caution but not crash. Soreness 5-7 = noticeable, not severe.
+        if (subjMood != null && subjMood <= 4f && "subjective-mood-crashed" !in severeFlags) {
+            mildFlags += "subjective-mood-low"
+        }
+        if (subjEnergy != null && subjEnergy <= 4f && "subjective-energy-crashed" !in severeFlags) {
+            mildFlags += "subjective-energy-low"
+        }
+        if (subjSoreness != null && subjSoreness in 5f..7f) {
+            mildFlags += "subjective-soreness-moderate"
+        }
+        if (subjSleepQuality != null && subjSleepQuality <= 4f && "subjective-sleep-poor" !in severeFlags) {
+            mildFlags += "subjective-sleep-meh"
+        }
         // endregion
 
         val severeCount = severeFlags.size
@@ -163,6 +195,11 @@ class RuleBasedReasoner : ReadinessReasoner {
             carTier = if (carIsRecent) carTier else null,
             carAmplitude = today.car?.amplitudeBpm,
             components = components,
+            // v0.9.42 — subjective drivers for narration
+            subjMood = subjMood,
+            subjEnergy = subjEnergy,
+            subjSoreness = subjSoreness,
+            subjSleepQuality = subjSleepQuality,
         )
         // endregion
 
@@ -243,8 +280,48 @@ class RuleBasedReasoner : ReadinessReasoner {
             }
         }
 
-        // Take the most conservative (lowest tier) of all ceilings
-        return pickMoreConservative(pickMoreConservative(hrvCeiling, tsbCeiling), rhrCeiling)
+        // v0.9.42 — SUBJECTIVE ceilings (#111 tracker integration).
+        // Rider's body knows things sensors don't. When subjective indicators
+        // crash, even objective-green can't override (body knows illness
+        // brewing, emotional load, hidden fatigue). Null-safe: missing input
+        // → no constraint (returns HardGreenLight, allowing other ceilings to dominate).
+        val subjMood = today.tracker?.latestMood
+        val subjEnergy = today.tracker?.latestEnergy
+        val subjSoreness = today.tracker?.latestSoreness
+        val subjSleepQuality = today.tracker?.sleepQualitySubjective
+
+        val moodCeiling = when {
+            subjMood == null -> ReadinessTier.HardGreenLight
+            subjMood <= 3f -> ReadinessTier.ActiveRecovery
+            subjMood <= 4f -> ReadinessTier.EasyAerobic
+            else -> ReadinessTier.HardGreenLight  // 5+ = no cap from mood alone
+        }
+        val energyCeiling = when {
+            subjEnergy == null -> ReadinessTier.HardGreenLight
+            subjEnergy <= 3f -> ReadinessTier.ActiveRecovery
+            subjEnergy <= 4f -> ReadinessTier.EasyAerobic
+            else -> ReadinessTier.HardGreenLight
+        }
+        val sorenessCeiling = if (subjSoreness == null) {
+            ReadinessTier.HardGreenLight
+        } else {
+            when {
+                subjSoreness >= 8f -> ReadinessTier.ActiveRecovery
+                subjSoreness >= 7f -> ReadinessTier.EasyAerobic
+                else -> ReadinessTier.HardGreenLight
+            }
+        }
+        val sleepQualityCeiling = when {
+            subjSleepQuality == null -> ReadinessTier.HardGreenLight
+            subjSleepQuality <= 3f -> ReadinessTier.ActiveRecovery
+            subjSleepQuality <= 4f -> ReadinessTier.EasyAerobic
+            else -> ReadinessTier.HardGreenLight
+        }
+
+        // Take the most conservative (lowest tier) of all ceilings — objective + subjective.
+        return listOf(hrvCeiling, tsbCeiling, rhrCeiling,
+            moodCeiling, energyCeiling, sorenessCeiling, sleepQualityCeiling)
+            .reduce { acc, next -> pickMoreConservative(acc, next) }
     }
 
     /**
@@ -347,6 +424,11 @@ class RuleBasedReasoner : ReadinessReasoner {
         carTier: CarTier?,
         carAmplitude: Float?,
         components: List<ReadinessComponent>,
+        // v0.9.42 — subjective drivers (#111). Null when rider hasn't logged.
+        subjMood: Float? = null,
+        subjEnergy: Float? = null,
+        subjSoreness: Float? = null,
+        subjSleepQuality: Float? = null,
     ): String {
         val drivers = mutableListOf<String>()
         when {
@@ -383,6 +465,22 @@ class RuleBasedReasoner : ReadinessReasoner {
             CarTier.BLUNTED -> drivers += "CAR flat (chronic-stress pattern)"
             CarTier.SUPPRESSED -> drivers += "CAR suppressed (HPA-axis dampened)"
             else -> {}
+        }
+
+        // v0.9.42 — SUBJECTIVE drivers (#111). Only included when rider
+        // logged AND value is in caution-or-worse band. Positive subjective
+        // (7-10) doesn't add to driver list (no concern to surface).
+        if (subjMood != null && subjMood <= 4f) {
+            drivers += "mood ${subjMood.toInt()}/10 (low)"
+        }
+        if (subjEnergy != null && subjEnergy <= 4f) {
+            drivers += "energy ${subjEnergy.toInt()}/10 (low)"
+        }
+        if (subjSoreness != null && subjSoreness >= 7f) {
+            drivers += "soreness ${subjSoreness.toInt()}/10 (high)"
+        }
+        if (subjSleepQuality != null && subjSleepQuality <= 4f) {
+            drivers += "sleep quality ${subjSleepQuality.toInt()}/10 subjective (low)"
         }
 
         if (drivers.isNotEmpty()) {
