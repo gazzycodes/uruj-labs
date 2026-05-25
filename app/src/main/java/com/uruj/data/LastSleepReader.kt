@@ -78,6 +78,85 @@ class LastSleepReader {
     }
 
     /**
+     * v0.9.46 — Aggregated sleep duration across ALL sleep blocks within
+     * the last 18 hours. Fixes 2026-05-25 bug where fragmented sleep
+     * (multiple rollovers between 7 AM and 12 PM following a 7-hour main
+     * block) appeared as 4.6h "severe deficit" in URUJ because [read]
+     * returned only the LAST contiguous block. Samsung Health correctly
+     * showed 9h 47m actual sleep. URUJ now matches.
+     *
+     * Semantic: "How much total sleep did the user get?"
+     * vs [read]'s semantic: "Which window should I use for HRV/RHR math?"
+     *
+     * Two different questions, two different answers. This method is for
+     * the user-facing SLEEP HOURS display + the SleepSnapshot total. HRV
+     * window selection still uses [read] — that path needs a single clean
+     * deep-sleep period for parasympathetic dominance, not the union of
+     * all blocks including brief wakings.
+     *
+     * Overlap handling: intervals are merged before summing, so any
+     * overlapping records (Samsung occasionally writes a "nap detected"
+     * record overlapping the main sleep session) don't double-count.
+     *
+     * Window: 18 hours captures a night + morning rollovers without
+     * pulling in yesterday's separate sleep block.
+     *
+     * Returns null when no sleep records found in window.
+     */
+    suspend fun readAggregated(
+        client: HealthConnectClient,
+        granted: Set<String>,
+    ): Result? {
+        if (HealthPermission.getReadPermission(SleepSessionRecord::class) !in granted) return null
+        val now = Instant.now()
+        val window = now.minus(Duration.ofHours(18))
+        return runCatching {
+            val response = client.readRecords(
+                ReadRecordsRequest(
+                    recordType = SleepSessionRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(window, now),
+                    ascendingOrder = true,
+                ),
+            )
+            if (response.records.isEmpty()) return@runCatching null
+
+            // Merge overlapping intervals to avoid double-counting any
+            // overlapping records Samsung might write (rare but defensive).
+            val intervals = response.records
+                .map { it.startTime to it.endTime }
+                .sortedBy { it.first }
+            val merged = mutableListOf<Pair<Instant, Instant>>()
+            for ((start, end) in intervals) {
+                if (merged.isEmpty() || merged.last().second.isBefore(start)) {
+                    merged += start to end
+                } else {
+                    val (prevStart, prevEnd) = merged.last()
+                    merged[merged.lastIndex] = prevStart to maxOf(prevEnd, end)
+                }
+            }
+            val totalMs = merged.sumOf {
+                Duration.between(it.first, it.second).toMillis()
+            }
+            if (totalMs <= 0) return@runCatching null
+            val earliestStart = merged.first().first
+            val latestEnd = merged.last().second
+            Log.d(
+                TAG,
+                "[v0.9.46] aggregated sleep: ${response.records.size} blocks → " +
+                    "${merged.size} merged · total ${"%.1f".format(totalMs / 3_600_000f)}h " +
+                    "(span $earliestStart → $latestEnd)",
+            )
+            Result(
+                durationMs = totalMs,
+                startedAt = earliestStart,
+                endedAt = latestEnd,
+            )
+        }.rethrowCancellation()
+            .onFailure { Log.w(TAG, "aggregated sleep read failed", it) }
+            .getOrNull()
+    }
+
+    /**
      * v0.7.4 follow-up — list the last N days of sleep sessions, one per day
      * (the longest session ending on each calendar date). Used by the HRV
      * trend chart so per-day RMSSD is sliced from the SAME sleep window that
