@@ -377,21 +377,28 @@ class BioLabRepository(context: Context) {
         // agree exactly on HRV window resolution. Pre-v0.9.8: Bio Lab used 24h
         // fallback, Readiness used 8h fallback → divergent values on fallback
         // nights.
+        // v0.9.46 — TWO sleep reads (see ReadinessRepository for the rule):
+        //   sleepWindow      → single contiguous block, used as HRV window
+        //   sleepAggregated  → sum of ALL blocks in last 18h, used for the
+        //                      user-facing SLEEP HOURS + SleepSnapshot total.
+        // Pre-v0.9.46 fragmented-sleep nights under-reported total hours
+        // because [read] returns only the most recent block.
         val sleepWindow = lastSleepReader.read(client, granted)
+        val sleepAggregated = lastSleepReader.readAggregated(client, granted)
         // v0.9.11 — also persist today's sleep snapshot when Bio Lab opens
         // independently of Checklist (e.g. LAB-tab-direct entry from app
         // restore). Sleep snapshot was previously only written by Readiness
         // compute, leaving a gap if Bio Lab ran first. Today-mutable rule
         // from v0.9.8 lets us safely overwrite; past dates stay immutable.
-        if (sleepWindow != null) {
+        if (sleepAggregated != null) {
             runCatching {
                 val today = java.time.LocalDate.now(java.time.ZoneId.systemDefault())
                 sleepSnapshots.save(
                     SleepSnapshot(
                         dateIsoLocal = today.toString(),
-                        hoursTotal = sleepWindow.hours,
-                        sessionStartMs = sleepWindow.startedAt.toEpochMilli(),
-                        sessionEndMs = sleepWindow.endedAt.toEpochMilli(),
+                        hoursTotal = sleepAggregated.hours,
+                        sessionStartMs = sleepAggregated.startedAt.toEpochMilli(),
+                        sessionEndMs = sleepAggregated.endedAt.toEpochMilli(),
                         source = "samsung-hc",
                         methodologyVersion = SleepSnapshotRepository.METHODOLOGY_VERSION,
                         computedAtMs = System.currentTimeMillis(),

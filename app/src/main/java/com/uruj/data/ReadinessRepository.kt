@@ -558,17 +558,28 @@ class ReadinessRepository(context: Context) {
         // so the snapshot can persist start/end times alongside hours.
         // Sleep is the largest Readiness input (35% weight); persisting it
         // unlocks the long-arc sleep trend chart + audit trail.
-        val sleepResult = lastSleepReader.read(client, granted)
-        val sleep = sleepResult?.hours
-        if (sleepResult != null) {
+        //
+        // v0.9.46 — TWO reads now:
+        //   1. [readAggregated]  → sum of ALL sleep blocks in last 18h, used
+        //      for the user-facing SLEEP HOURS display + SleepSnapshot total.
+        //      Fixes the 2026-05-25 fragmented-sleep bug where 9.7h actual
+        //      sleep appeared as 4.6h "severe deficit" because the rider
+        //      rolled over multiple times after a main sleep block.
+        //   2. [read]            → most-recent contiguous sleep block, used
+        //      as the HRV/RHR computation window. That math needs a single
+        //      clean parasympathetic-dominant period, not the union of all
+        //      blocks. Two questions, two reads.
+        val sleepAggregated = lastSleepReader.readAggregated(client, granted)
+        val sleep = sleepAggregated?.hours
+        if (sleepAggregated != null) {
             runCatching {
                 val sleepDate = LocalDate.now(ZoneId.systemDefault())
                 sleepSnapshots.save(
                     SleepSnapshot(
                         dateIsoLocal = sleepDate.toString(),
-                        hoursTotal = sleepResult.hours,
-                        sessionStartMs = sleepResult.startedAt.toEpochMilli(),
-                        sessionEndMs = sleepResult.endedAt.toEpochMilli(),
+                        hoursTotal = sleepAggregated.hours,
+                        sessionStartMs = sleepAggregated.startedAt.toEpochMilli(),
+                        sessionEndMs = sleepAggregated.endedAt.toEpochMilli(),
                         source = "samsung-hc",
                         methodologyVersion = SleepSnapshotRepository.METHODOLOGY_VERSION,
                         computedAtMs = System.currentTimeMillis(),
