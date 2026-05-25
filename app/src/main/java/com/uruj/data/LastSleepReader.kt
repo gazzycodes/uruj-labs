@@ -208,6 +208,112 @@ class LastSleepReader {
             .getOrDefault(emptyList())
     }
 
+    /**
+     * v0.9.48 — read sleep STAGE segments from HC for a given session.
+     *
+     * Returns the list of [SleepStageSegment] within the session window.
+     * Empty list when:
+     *   - HC has the session record but it has no stages (some firmware
+     *     versions write only session boundaries, not detailed staging)
+     *   - Permission missing
+     *   - Session not found
+     *
+     * Caller should accept empty as a graceful degradation signal (fall
+     * back to whole-window HRV — pre-v0.9.48 method, tagged accordingly).
+     *
+     * Stage mapping (HC constant → our string label):
+     *   STAGE_TYPE_DEEP      = 5 → "deep"
+     *   STAGE_TYPE_REM       = 6 → "rem"
+     *   STAGE_TYPE_LIGHT     = 4 → "light"
+     *   STAGE_TYPE_SLEEPING  = 2 → "asleep"  (generic asleep)
+     *   STAGE_TYPE_AWAKE     = 1 → "awake"
+     *   STAGE_TYPE_AWAKE_IN_BED = 7 → "awake"
+     *   STAGE_TYPE_OUT_OF_BED   = 3 → "awake"
+     *   STAGE_TYPE_UNKNOWN   = 0 → "unknown"
+     */
+    suspend fun readStagesForSession(
+        client: HealthConnectClient,
+        granted: Set<String>,
+        sessionStart: Instant,
+        sessionEnd: Instant,
+    ): List<SleepStageSegment> {
+        if (HealthPermission.getReadPermission(SleepSessionRecord::class) !in granted) {
+            return emptyList()
+        }
+        return runCatching {
+            val response = client.readRecords(
+                ReadRecordsRequest(
+                    recordType = SleepSessionRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(sessionStart, sessionEnd),
+                    ascendingOrder = true,
+                ),
+            )
+            if (response.records.isEmpty()) return@runCatching emptyList()
+            val segments = mutableListOf<SleepStageSegment>()
+            for (record in response.records) {
+                for (stage in record.stages) {
+                    val label = stageTypeToLabel(stage.stage)
+                    segments += SleepStageSegment(
+                        stageType = label,
+                        startMs = stage.startTime.toEpochMilli(),
+                        endMs = stage.endTime.toEpochMilli(),
+                    )
+                }
+            }
+            // Sort by start time. Overlapping segments preserved as-is
+            // (rare; HC usually writes non-overlapping stages per session
+            // but multiple sessions in the window can have adjacent stages).
+            segments.sortBy { it.startMs }
+            Log.d(
+                TAG,
+                "[v0.9.48] stages for session $sessionStart..$sessionEnd: " +
+                    "${segments.size} segments (" +
+                    segments.groupBy { it.stageType }
+                        .mapValues { (_, list) ->
+                            list.sumOf { it.endMs - it.startMs } / 60_000L
+                        }
+                        .entries.joinToString(", ") { "${it.key}=${it.value}m" } +
+                    ")",
+            )
+            segments
+        }.rethrowCancellation()
+            .onFailure { Log.w(TAG, "stages read failed", it) }
+            .getOrDefault(emptyList())
+    }
+
+    /**
+     * v0.9.48 — convenience method: read stages for the result returned
+     * by [read] or [readAggregated]. Spans the full result's window so
+     * fragmented sleep nights get all stages across all blocks.
+     */
+    suspend fun readStagesForResult(
+        client: HealthConnectClient,
+        granted: Set<String>,
+        result: Result,
+    ): List<SleepStageSegment> = readStagesForSession(
+        client = client,
+        granted = granted,
+        sessionStart = result.startedAt,
+        sessionEnd = result.endedAt,
+    )
+
+    /**
+     * Map HC SleepSessionRecord.Stage type int → string label used in our
+     * disk schema. Constants per HC documentation; abstracted so future
+     * HC API changes don't break our snapshots.
+     */
+    private fun stageTypeToLabel(stage: Int): String = when (stage) {
+        SleepSessionRecord.STAGE_TYPE_DEEP -> "deep"
+        SleepSessionRecord.STAGE_TYPE_REM -> "rem"
+        SleepSessionRecord.STAGE_TYPE_LIGHT -> "light"
+        SleepSessionRecord.STAGE_TYPE_SLEEPING -> "asleep"
+        SleepSessionRecord.STAGE_TYPE_AWAKE -> "awake"
+        SleepSessionRecord.STAGE_TYPE_AWAKE_IN_BED -> "awake"
+        SleepSessionRecord.STAGE_TYPE_OUT_OF_BED -> "awake"
+        SleepSessionRecord.STAGE_TYPE_UNKNOWN -> "unknown"
+        else -> "unknown"
+    }
+
     companion object {
         private const val TAG = "URUJ-LastSleep"
     }

@@ -385,11 +385,24 @@ class BioLabRepository(context: Context) {
         // because [read] returns only the most recent block.
         val sleepWindow = lastSleepReader.read(client, granted)
         val sleepAggregated = lastSleepReader.readAggregated(client, granted)
+        // v0.9.48 — read sleep stage segments for HRV stage-aware filtering.
+        // Empty list = stages unavailable → HRV math gracefully falls back to
+        // pre-v0.9.48 whole-window method (snapshot tagged accordingly).
+        val stageSegments: List<SleepStageSegment> = if (sleepAggregated != null) {
+            lastSleepReader.readStagesForResult(client, granted, sleepAggregated)
+        } else emptyList()
+        val awakeMinutesExcluded = stageSegments
+            .filter { !it.isAsleep }
+            .sumOf { (it.endMs - it.startMs) / 60_000L }
+            .toInt()
+        val asleepHours = sleepAggregated?.let { it.hours - (awakeMinutesExcluded / 60f) }
         // v0.9.11 — also persist today's sleep snapshot when Bio Lab opens
         // independently of Checklist (e.g. LAB-tab-direct entry from app
         // restore). Sleep snapshot was previously only written by Readiness
         // compute, leaving a gap if Bio Lab ran first. Today-mutable rule
         // from v0.9.8 lets us safely overwrite; past dates stay immutable.
+        // v0.9.48 — now also persists stage segments + asleepHours so future
+        // re-aggregation survives HC's 30d retention.
         if (sleepAggregated != null) {
             runCatching {
                 val today = java.time.LocalDate.now(java.time.ZoneId.systemDefault())
@@ -402,13 +415,17 @@ class BioLabRepository(context: Context) {
                         source = "samsung-hc",
                         methodologyVersion = SleepSnapshotRepository.METHODOLOGY_VERSION,
                         computedAtMs = System.currentTimeMillis(),
+                        stages = stageSegments,
+                        asleepHours = asleepHours,
                     ),
                     date = today,
                 )
             }.onFailure { Log.w(TAG, "[v0.9.11] sleep snapshot dual-save failed", it) }
         }
         val (hrvWindowStart, hrvWindowEnd) = effectiveHrvWindow(sleepWindow, now)
-        val autonomicHrv = continuousBiometric.computeHrvForWindow(hrvWindowStart, hrvWindowEnd)
+        // v0.9.48 — stage-aware HRV compute. Empty stages = graceful fallback
+        // to pre-v0.9.48 whole-window method.
+        val autonomicHrv = continuousBiometric.computeHrvForWindow(hrvWindowStart, hrvWindowEnd, stageSegments)
         // v0.9.25 — frequency-domain + non-linear HRV on the SAME RR window.
         // Reuses cached samples from the same NDJSON walk (no extra disk I/O).
         // Null when < 240 beats — frequency-domain math needs more data than
@@ -459,8 +476,21 @@ class BioLabRepository(context: Context) {
                         sd2Ms = autonomicFreqDomain?.sd2Ms,
                         dfaAlpha1 = autonomicFreqDomain?.dfaAlpha1,
                         sampleEntropy = autonomicFreqDomain?.sampleEntropy,
+                        // v0.9.48 — per-stage breakdown when stage filter ran
+                        deepRmssdMs = autonomicHrv?.perStageRmssdMs?.get("deep"),
+                        remRmssdMs = autonomicHrv?.perStageRmssdMs?.get("rem"),
+                        lightRmssdMs = autonomicHrv?.perStageRmssdMs?.get("light"),
+                        stageFiltered = stageSegments.isNotEmpty(),
+                        awakeMinutesExcluded = if (stageSegments.isNotEmpty()) awakeMinutesExcluded else null,
                         computedAtMs = System.currentTimeMillis(),
-                        methodologyVersion = HrvSnapshotRepository.METHODOLOGY_VERSION,
+                        // Tag with stage-aware version when stages applied,
+                        // fallback tag otherwise — preserves the audit trail
+                        // for nights that couldn't get the lab-grade treatment.
+                        methodologyVersion = if (stageSegments.isNotEmpty()) {
+                            HrvSnapshotRepository.METHODOLOGY_VERSION
+                        } else {
+                            HrvSnapshotRepository.METHODOLOGY_VERSION_FALLBACK
+                        },
                     ),
                     date = today,
                 )
