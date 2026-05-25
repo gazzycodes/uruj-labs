@@ -365,14 +365,25 @@ class HrvCalculator {
         for (i in 1 until sorted.size) {
             val prev = sorted[i - 1]
             val curr = sorted[i]
-            val expectedGap = curr.rrMs.toLong()
-            val actualGap = curr.timestampMs - prev.timestampMs
-            // Generous percentage-based tolerance — 30% of expected RR, with
-            // a floor of 150 ms (so very short RR at high HR don't reject
-            // legitimate pairs).
-            val tolerance = maxOf(MIN_TOLERANCE_MS, (expectedGap * 0.30).toLong())
-            if (abs(actualGap - expectedGap) > tolerance) continue
-            // Ectopic / artifact filter
+            // v0.9.48.6 — REMOVED timestamp consecutiveness check.
+            //
+            // Why: This was URUJ's defensive BLE-gap-protection filter
+            // (reject pairs where beat-time gap doesn't match RR within
+            // max(150ms, 30%) tolerance). Cross-validation against pure
+            // Task Force 1996 math (13.91 ms) revealed this filter was
+            // rejecting ~30-50% of legitimate pairs and biasing RMSSD
+            // LOW (URUJ output 10.2 ms vs pure math 13.91 ms).
+            //
+            // Kubios + Task Force 1996 + all peer-reviewed HRV research
+            // libraries (neurokit2, hrv-analysis, pyhrv) do NOT have a
+            // timestamp-consecutiveness check. They assume the RR series
+            // is consecutive by construction. The ectopic 20% filter
+            // alone catches genuine artifacts.
+            //
+            // To align URUJ's output with the research literature
+            // (matching what Kristian's coach Olav cites, what published
+            // norms like Plews 2013 are calibrated against), we now use
+            // ONLY the ectopic filter — same as Kubios default.
             val deltaPct = abs(curr.rrMs - prev.rrMs).toFloat() / prev.rrMs
             if (deltaPct > ECTOPIC_THRESHOLD) continue
             diffs.add(curr.rrMs - prev.rrMs)
