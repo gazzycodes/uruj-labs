@@ -262,29 +262,38 @@ class HrvCalculator {
         private val segments: List<com.uruj.data.SleepStageSegment>,
     ) {
         /**
-         * Returns true if the timestamp falls in an asleep stage. When
-         * segments overlap (Samsung writes both a generic ASLEEP wrapper
-         * and detailed deep/rem/light/awake sub-stages), **AWAKE wins** —
-         * conservative bias: better to filter more than less.
+         * Returns true if the timestamp falls in an asleep stage.
          *
-         * Pre-v0.9.48-patch: returned the FIRST matching segment, which
-         * could be the generic ASLEEP, masking AWAKE sub-segments. Caught
-         * 2026-05-25 evening when stages logged 981 min total across a
-         * 732-min span (1.34× overlap from Samsung's nested stage writes).
+         * v0.9.48.2 — three-rule decision tree:
+         *
+         *   1. If [segments] is EMPTY → include all (legacy path, no
+         *      stage data available)
+         *   2. If ANY segment covering the beat is AWAKE → exclude
+         *      (AWAKE always wins per the v0.9.48.1 nested-stage fix)
+         *   3. Otherwise → include ONLY if at least one ASLEEP segment
+         *      covers the beat. Uncovered timestamps (gaps between sleep
+         *      blocks) are excluded — when stages are present, an
+         *      uncovered beat is in a between-blocks gap (rider was up,
+         *      no stage was written), NOT clean asleep data.
+         *
+         * The rule-3 change is critical for the aggregated-window mode
+         * introduced in v0.9.48.2: HRV now spans earliest sleep start →
+         * latest sleep end, which crosses inter-block gaps. Without this
+         * gate, gap beats would get included as if asleep — biasing the
+         * RMSSD with sympathetic-tinged "rolling-over" data.
          */
         fun shouldInclude(timestampMs: Long): Boolean {
-            // Walk ALL covering segments. If any AWAKE covers this beat,
-            // exclude regardless of other overlapping stages.
-            var coveredByAnything = false
+            if (segments.isEmpty()) return true  // No stages → legacy include-all
+            var awakeOverlap = false
+            var asleepOverlap = false
             for (seg in segments) {
                 if (timestampMs in seg.startMs until seg.endMs) {
-                    coveredByAnything = true
-                    if (!seg.isAsleep) return false  // AWAKE wins
+                    if (seg.isAsleep) asleepOverlap = true
+                    else awakeOverlap = true
                 }
             }
-            // No segment covered → include (defensive). Any segment covered
-            // AND none was AWAKE → include.
-            return true
+            if (awakeOverlap) return false  // AWAKE always wins
+            return asleepOverlap  // Only include if explicitly asleep-covered
         }
 
         /** Returns the dominant stage label across a [windowStartMs,

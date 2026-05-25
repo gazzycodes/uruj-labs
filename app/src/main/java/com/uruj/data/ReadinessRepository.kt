@@ -689,7 +689,15 @@ class ReadinessRepository(context: Context) {
             // proxy when no sleep session present — matches deep-sleep
             // duration typical for trained adults).
             val sleepWindowResult = lastSleepReader.read(client, granted)
-            val (start, end) = effectiveHrvWindow(sleepWindowResult, now)
+            // v0.9.48.2 — full aggregated span when stages available (matches
+            // BioLabRepository.snapshot() — see that file for rationale).
+            // Stage filter handles AWAKE exclusion + between-block gap exclusion.
+            // Falls back to single-block last-sleep window when stages absent.
+            val (start, end) = if (sleepStages.isNotEmpty() && sleepAggregated != null) {
+                sleepAggregated.startedAt to sleepAggregated.endedAt
+            } else {
+                effectiveHrvWindow(sleepWindowResult, now)
+            }
             // v0.9.48 — reuse stages we already pulled for snapshot. Saves
             // a second HC read. Empty list = graceful fallback to pre-v0.9.48
             // whole-window method in computeHrvForWindow.

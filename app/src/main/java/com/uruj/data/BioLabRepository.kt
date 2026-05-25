@@ -422,7 +422,25 @@ class BioLabRepository(context: Context) {
                 )
             }.onFailure { Log.w(TAG, "[v0.9.11] sleep snapshot dual-save failed", it) }
         }
-        val (hrvWindowStart, hrvWindowEnd) = effectiveHrvWindow(sleepWindow, now)
+        // v0.9.48.2 — when sleep stages are available, span the FULL aggregated
+        // window (earliest start → latest end) so all sleep blocks contribute
+        // to HRV math, not just the most-recent contiguous one. Stage filter
+        // does the heavy lifting: AWAKE periods excluded, between-block gaps
+        // excluded (uncovered timestamps → return false in shouldInclude).
+        //
+        // Pre-v0.9.48.2: HRV used [sleepWindow] (single LAST block). On
+        // fragmented nights (multiple rollovers) the main 6-8h sleep got
+        // ignored and only the morning 4h rollover was analyzed. Caught
+        // 2026-05-25 evening — user's 10.6h sleep produced HRV from only
+        // 4h35m of data.
+        //
+        // When stages are EMPTY (legacy fallback), keep the v0.9.46 last-
+        // block behavior — the single clean window approach still applies.
+        val (hrvWindowStart, hrvWindowEnd) = if (stageSegments.isNotEmpty() && sleepAggregated != null) {
+            sleepAggregated.startedAt to sleepAggregated.endedAt
+        } else {
+            effectiveHrvWindow(sleepWindow, now)
+        }
         // v0.9.48 — stage-aware HRV compute. Empty stages = graceful fallback
         // to pre-v0.9.48 whole-window method.
         val autonomicHrv = continuousBiometric.computeHrvForWindow(hrvWindowStart, hrvWindowEnd, stageSegments)
