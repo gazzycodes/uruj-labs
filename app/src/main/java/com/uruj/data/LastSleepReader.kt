@@ -9,6 +9,7 @@ import androidx.health.connect.client.time.TimeRangeFilter
 import com.uruj.util.rethrowCancellation
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 
 /**
  * Single source of truth for "last sleep" across the app.
@@ -109,10 +110,11 @@ class LastSleepReader {
     ): Result? {
         if (HealthPermission.getReadPermission(SleepSessionRecord::class) !in granted) return null
         val now = Instant.now()
-        // v0.9.48.3 — widen window to 36h so we don't miss main-sleep blocks
-        // when checking late in the day. The cluster algorithm below picks
-        // the biological-night cluster regardless of clock-time position.
+        // v0.9.48.4 — widen window so a midnight-crossing sleep started
+        // ~30h ago still appears (handles shift work, very early sleep, etc.).
+        // The calendar-day filter below picks the right set out of this pool.
         val window = now.minus(Duration.ofHours(36))
+        val zone = ZoneId.systemDefault()
         return runCatching {
             val response = client.readRecords(
                 ReadRecordsRequest(
@@ -123,9 +125,44 @@ class LastSleepReader {
             )
             if (response.records.isEmpty()) return@runCatching null
 
-            // Step 1: merge overlapping intervals (defensive — Samsung
-            // sometimes writes nested session records, see v0.9.48.1 fix).
-            val intervals = response.records
+            // v0.9.48.4 — CALENDAR-DAY-BY-WAKE-DATE aggregation.
+            //
+            // Matches URUJ's existing architectural convention used by
+            // listLastNDays (v0.7.4), trend charts, and every "today"
+            // grouping elsewhere in the app. Replaces the v0.9.48.3
+            // biological-night cluster algorithm — that was a working
+            // but architecturally inconsistent invention.
+            //
+            // Algorithm:
+            //   1. Find the most-recent sleep block's end time
+            //   2. Take its date in the phone's CURRENT local timezone
+            //      (handles timezone changes naturally — Instant under
+            //       the hood, local conversion at compute time)
+            //   3. Include ALL sleep blocks whose end falls on that date
+            //   4. Merge overlaps (defensive — Samsung writes nested)
+            //   5. Sum durations
+            //
+            // This is "sleep belongs to the date you woke up on" — same
+            // semantic Samsung Health, Apple Health, Whoop, Oura all use.
+            //
+            // Handles all real-life scenarios:
+            //   - Sleep 11pm-7am          → ends today → today's "night"
+            //   - Sleep 10pm-4am (early)  → ends today → today's "night"
+            //   - Sleep 6pm-1am (super early) → ends today → today's "night"
+            //   - Sleep Dec 31 11pm-Jan 1 7am → ends Jan 1 → Jan 1's "night"
+            //   - Multi-block main + rollover, both ending today → summed
+            //   - Shift work, sleep 6am-2pm → ends today (2pm) → today's "night"
+            //   - Timezone change → wake date computed in CURRENT local zone
+            //   - Same answer if app checked at noon vs 6pm (stable)
+            val mostRecentEndTime = response.records.maxOf { it.endTime }
+            val mostRecentWakeDate = mostRecentEndTime.atZone(zone).toLocalDate()
+            val sameDayBlocks = response.records.filter { record ->
+                record.endTime.atZone(zone).toLocalDate() == mostRecentWakeDate
+            }
+            if (sameDayBlocks.isEmpty()) return@runCatching null
+
+            // Merge overlapping intervals (defensive — Samsung nested writes)
+            val intervals = sameDayBlocks
                 .map { it.startTime to it.endTime }
                 .sortedBy { it.first }
             val merged = mutableListOf<Pair<Instant, Instant>>()
@@ -137,54 +174,18 @@ class LastSleepReader {
                     merged[merged.lastIndex] = prevStart to maxOf(prevEnd, end)
                 }
             }
-
-            // Step 2 (v0.9.48.3): cluster merged intervals into biological
-            // nights. Adjacent intervals with gap < BIOLOGICAL_NIGHT_GAP_
-            // THRESHOLD (4h) belong to the same cluster. Same approach
-            // Whoop / Oura / Polar Flow / HRV4Training use for "last
-            // night's sleep" detection — biological cluster, not clock
-            // window. Fixes 2026-05-25 PM regression where main 7h sleep
-            // dropped off the 18h rolling cutoff when the user checked
-            // the app late in the day.
-            val clusters = mutableListOf<MutableList<Pair<Instant, Instant>>>()
-            for (interval in merged) {
-                val lastCluster = clusters.lastOrNull()
-                val lastEnd = lastCluster?.lastOrNull()?.second
-                val gap = if (lastEnd != null) Duration.between(lastEnd, interval.first) else null
-                if (gap == null || gap > BIOLOGICAL_NIGHT_GAP_THRESHOLD) {
-                    clusters += mutableListOf(interval)
-                } else {
-                    lastCluster!!.add(interval)
-                }
+            val totalMs = merged.sumOf {
+                Duration.between(it.first, it.second).toMillis()
             }
-
-            // Step 3: pick cluster with maximum total sleep duration. Tie-
-            // breaker: most recent endTime (so naps don't displace main
-            // sleep if equal length, which is statistically impossible
-            // but defensive).
-            val winnerPair = clusters
-                .map { cluster ->
-                    val total = cluster.sumOf {
-                        Duration.between(it.first, it.second).toMillis()
-                    }
-                    cluster to total
-                }
-                .maxWithOrNull(
-                    compareBy<Pair<List<Pair<Instant, Instant>>, Long>> { it.second }
-                        .thenBy { it.first.last().second.toEpochMilli() },
-                )
-                ?: return@runCatching null
-
-            val cluster = winnerPair.first
-            val totalMs = winnerPair.second
             if (totalMs <= 0) return@runCatching null
-            val earliestStart = cluster.first().first
-            val latestEnd = cluster.last().second
+            val earliestStart = merged.first().first
+            val latestEnd = merged.last().second
             Log.d(
                 TAG,
-                "[v0.9.48.3] biological-night: ${clusters.size} clusters in last 36h, " +
-                    "winner has ${cluster.size} blocks · " +
-                    "total ${"%.1f".format(totalMs / 3_600_000f)}h " +
+                "[v0.9.48.4] calendar-day aggregation (wake date $mostRecentWakeDate): " +
+                    "${response.records.size} records in 36h window → " +
+                    "${sameDayBlocks.size} blocks ending on wake date → " +
+                    "${merged.size} merged · total ${"%.1f".format(totalMs / 3_600_000f)}h " +
                     "(span $earliestStart → $latestEnd)",
             )
             Result(
@@ -357,15 +358,5 @@ class LastSleepReader {
 
     companion object {
         private const val TAG = "URUJ-LastSleep"
-
-        /**
-         * v0.9.48.3 — Max gap between adjacent sleep blocks for them to be
-         * considered part of the SAME biological night. 4h is the standard
-         * the consumer sleep-tracking industry converged on (Whoop, Oura,
-         * Polar Flow, HRV4Training). Captures all reasonable fragmented-
-         * sleep + brief-rollover patterns without merging a daytime nap
-         * into the previous night.
-         */
-        private val BIOLOGICAL_NIGHT_GAP_THRESHOLD: Duration = Duration.ofHours(4)
     }
 }
