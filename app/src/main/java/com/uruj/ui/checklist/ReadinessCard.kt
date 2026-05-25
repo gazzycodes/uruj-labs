@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 import com.uruj.data.ReadinessSnapshot
+import com.uruj.domain.HrvStatsSignals
 import com.uruj.domain.ReadinessComponent
 import com.uruj.domain.ReadinessGrade
 import com.uruj.domain.ReadinessResult
@@ -192,7 +193,14 @@ fun ReadinessCard(
         }
         Spacer(Modifier.height(8.dp))
         result.components.forEach { component ->
-            ComponentRow(component, onInfo = { infoFor = component.label })
+            // v0.9.46.B — pass HRV statistical context to the HRV row so it
+            // can render the 7d median + trend sub-line. Other rows ignore.
+            val hrvStatsForRow = if (component.label == "HRV") result.hrvStats else null
+            ComponentRow(
+                component,
+                hrvStats = hrvStatsForRow,
+                onInfo = { infoFor = component.label },
+            )
             Spacer(Modifier.height(4.dp))
         }
         Spacer(Modifier.height(8.dp))
@@ -422,7 +430,11 @@ private fun DiagnosticsLine(snapshot: ReadinessSnapshot) {
 }
 
 @Composable
-private fun ComponentRow(component: ReadinessComponent, onInfo: () -> Unit) {
+private fun ComponentRow(
+    component: ReadinessComponent,
+    hrvStats: HrvStatsSignals? = null,
+    onInfo: () -> Unit,
+) {
     val score = component.score
     // v0.4.2: dim the whole row when score is null (HRV on Fit Band 3, RHR
     // without sleep). Looks like a disabled state — clean for screenshots.
@@ -511,6 +523,103 @@ private fun ComponentRow(component: ReadinessComponent, onInfo: () -> Unit) {
                 )
             }
         }
+        // v0.9.46.B — HRV statistical sub-line. Ends the daily-noise-as-signal
+        // anti-pattern by surfacing the 7d rolling median + CV% + 14d
+        // trend regression + week-over-week comparison. Two compact lines.
+        // Only HRV gets this; other rows fall through.
+        if (hrvStats != null && hrvStats.recent7dMedianMs != null) {
+            HrvStatsSubLine(hrvStats)
+        }
+    }
+}
+
+/**
+ * v0.9.46.B — two-line statistical context under the HRV component row.
+ *
+ * Line A: "7d median X.X ms · today Y.Y · CV Z%"
+ *         The headline-replacement. Median is robust to single-night noise;
+ *         CV% tells the rider how stable their own physiology is (CV <10% is
+ *         very stable, 10-20% normal, >20% indicates lifestyle chaos or
+ *         strap issues).
+ *
+ * Line B: "Trend ↑/→/↓ +X.X ms/day · this week vs prior +Y.Y% (sig/noise)"
+ *         The week-over-week comparison + significance call. "sig" only
+ *         appears when |t-stat| > 2.0 (~p<0.05). Otherwise we say "within
+ *         noise" so the rider stops reading noise as trend.
+ *
+ * Aligned with the existing 98dp label gutter so it visually belongs to
+ * the HRV row.
+ */
+@Composable
+private fun HrvStatsSubLine(stats: HrvStatsSignals) {
+    val median = stats.recent7dMedianMs ?: return
+    val cv = stats.cvPercent
+    val slope = stats.trendSlopeMsPerDay
+    val wow = stats.weekOverWeekPercent
+    val significant = stats.trendIsSignificant
+    val n = stats.samplesUsed
+
+    val arrow = when {
+        slope == null -> "—"
+        slope > 0.20f -> "↑"
+        slope < -0.20f -> "↓"
+        else -> "→"
+    }
+    val arrowColor = when (arrow) {
+        "↑" -> UrujZone1   // improving — green
+        "↓" -> UrujZone5   // declining — red
+        else -> UrujMuted
+    }
+
+    val lineA = buildString {
+        append("7d median ${"%.1f".format(median)} ms")
+        cv?.let { append(" · CV ${"%.0f".format(it)}%") }
+        append(" · n=$n")
+    }
+    val lineB = buildString {
+        if (slope != null) {
+            append("trend ${"%+.2f".format(slope)} ms/day")
+            if (wow != null) {
+                append(" · WoW ${"%+.1f".format(wow)}%")
+            }
+            append(" · ${if (significant) "significant" else "within noise"}")
+        } else {
+            append("need ≥4 nights for trend (have $n)")
+        }
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 98.dp, top = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = lineA,
+            color = UrujText,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Medium,
+        )
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 98.dp, top = 1.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = arrow,
+            color = arrowColor,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Black,
+            modifier = Modifier.width(12.dp),
+        )
+        Spacer(Modifier.width(2.dp))
+        Text(
+            text = lineB,
+            color = UrujMuted,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }
 
