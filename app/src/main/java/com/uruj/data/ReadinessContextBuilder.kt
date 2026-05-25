@@ -15,6 +15,7 @@ import com.uruj.domain.TrendSeries
 import com.uruj.domain.TsbToday
 import com.uruj.domain.Vo2Today
 import com.uruj.power.CarDetector
+import com.uruj.power.HrvStatsCalculator
 import com.uruj.util.rethrowCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -66,6 +67,10 @@ class ReadinessContextBuilder(context: Context) {
     private val carRepo = CarRepository(appContext)
     private val orthostaticRepo = OrthostaticTestRepository(appContext)
     private val carDetector = CarDetector()
+    // v0.9.46.B — 7d rolling median + CV% + 14d regression with significance.
+    // Replaces the daily-number-as-signal anti-pattern that was making riders
+    // read 20-30% natural physiological CV as if it were a trend.
+    private val hrvStatsCalc = HrvStatsCalculator()
 
     /**
      * Build the context. Cheap — reads disk snapshots (already on file, no
@@ -100,6 +105,33 @@ class ReadinessContextBuilder(context: Context) {
         // all read from the same struct.
         val todayHrvSnap = runCatching { hrvSnapshots.load(today.toString()) }
             .rethrowCancellation().getOrNull()
+        // v0.9.46.B — full HRV snapshot history for statistical layer (7d
+        // rolling median + CV% + 14d regression). Disk-only read (HC 30d
+        // retention doesn't bound us). Newest-first ordering already
+        // guaranteed by HrvSnapshotRepository.listAll().
+        val hrvHistory = runCatching { hrvSnapshots.listAll() }
+            .rethrowCancellation().getOrDefault(emptyList())
+        val hrvNightsFromDisk = hrvHistory
+            .mapNotNull { it.rmssdMs }
+            .filter { it > 0f }
+        // Prefer disk history (covers older nights beyond the 7d list passed
+        // in from ReadinessRepository); fall back to the live 7d list if disk
+        // is empty (first-install / pre-v0.9.27 install).
+        val hrvNightlyForStats = if (hrvNightsFromDisk.size >= urujHrvNightlyRmssdMs.size) {
+            hrvNightsFromDisk
+        } else {
+            urujHrvNightlyRmssdMs
+        }
+        val hrvStats = hrvStatsCalc.compute(hrvNightlyForStats)
+        Log.d(
+            TAG,
+            "[v0.9.46.B] HRV stats: n=${hrvStats.samplesUsed} · " +
+                "7d median=${hrvStats.recent7dMedianMs?.let { "%.1f".format(it) } ?: "—"} ms · " +
+                "CV=${hrvStats.cvPercent?.let { "%.1f%%".format(it) } ?: "—"} · " +
+                "trend slope=${hrvStats.trendSlopeMsPerDay?.let { "%+.2f".format(it) } ?: "—"} ms/day " +
+                "(sig=${hrvStats.trendIsSignificant}) · " +
+                "WoW=${hrvStats.weekOverWeekPercent?.let { "%+.1f%%".format(it) } ?: "—"}",
+        )
         // v0.9.31 — load the latest postprandial snapshot (within 24h) for
         // the PostprandialToday signal pack field. Per architecture rule:
         // every biomarker must plug into ReadinessContext from PR 1.
@@ -175,6 +207,21 @@ class ReadinessContextBuilder(context: Context) {
                             sampleCount = snap.sampleCount,
                         )
                     },
+                    // v0.9.46.B — statistical layer plugs into the signal pack.
+                    // Null when < 2 nights of data; reasoner + UI handle gracefully.
+                    stats = if (hrvStats.samplesUsed >= 2) {
+                        com.uruj.domain.HrvStatsSignals(
+                            recent7dMedianMs = hrvStats.recent7dMedianMs,
+                            recent7dMeanMs = hrvStats.recent7dMeanMs,
+                            cvPercent = hrvStats.cvPercent,
+                            trendSlopeMsPerDay = hrvStats.trendSlopeMsPerDay,
+                            trendIsSignificant = hrvStats.trendIsSignificant,
+                            thisWeekMeanMs = hrvStats.thisWeekMeanMs,
+                            priorWeekMeanMs = hrvStats.priorWeekMeanMs,
+                            weekOverWeekPercent = hrvStats.weekOverWeekPercent,
+                            samplesUsed = hrvStats.samplesUsed,
+                        )
+                    } else null,
                 )
             },
             rhr = inputs.restingHrToday?.let {

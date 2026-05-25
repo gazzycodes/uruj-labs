@@ -149,6 +149,37 @@ data class HrvToday(
      * detection (DFA α1 ramp) read the same struct.
      */
     val frequencyDomain: HrvFrequencyDomainSignals? = null,
+    /**
+     * v0.9.46.B — statistical context surfacing 7d rolling median + CV% +
+     * week-over-week comparison + regression significance. Replaces the
+     * pre-v0.9.46.B "daily number as headline" pattern which made riders
+     * read 20-30% natural physiological CV as if it were a trend.
+     *
+     * Null when fewer than 2 nights of data available. See
+     * [com.uruj.power.HrvStatsCalculator] for methodology.
+     */
+    val stats: HrvStatsSignals? = null,
+)
+
+/**
+ * v0.9.46.B — domain-level shape mirroring [com.uruj.power.HrvStatsCalculator.HrvStats]
+ * so the engine + AI coach + UI all read one canonical struct. Per the
+ * signal-pack rule, every biomarker statistic plugs in here from PR 1.
+ *
+ * Serializable because it's referenced from [com.uruj.domain.ReadinessResult]
+ * which is persisted via [com.uruj.data.RecommendationSnapshotRepository].
+ */
+@kotlinx.serialization.Serializable
+data class HrvStatsSignals(
+    val recent7dMedianMs: Float?,
+    val recent7dMeanMs: Float?,
+    val cvPercent: Float?,
+    val trendSlopeMsPerDay: Float?,
+    val trendIsSignificant: Boolean,
+    val thisWeekMeanMs: Float?,
+    val priorWeekMeanMs: Float?,
+    val weekOverWeekPercent: Float?,
+    val samplesUsed: Int,
 )
 
 /**

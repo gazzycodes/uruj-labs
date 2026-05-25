@@ -70,6 +70,13 @@ data class ReadinessResult(
     val tsbCtl: Float? = null,
     val tsbAtl: Float? = null,
     val tsbTotalLoad42d: Float? = null,
+    /**
+     * v0.9.46.B — HRV statistical context (7d rolling median + CV% + 14d
+     * regression with significance + week-over-week comparison). Surfaces
+     * the trend layer that ends the daily-noise-as-signal anti-pattern.
+     * Null when fewer than 2 nights of HRV data available.
+     */
+    val hrvStats: HrvStatsSignals? = null,
 )
 
 enum class ReadinessGrade(val label: String) {

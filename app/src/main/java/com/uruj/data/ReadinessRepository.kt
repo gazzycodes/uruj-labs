@@ -412,6 +412,11 @@ class ReadinessRepository(context: Context) {
                 tsbCtl = ctx.today.tsb?.ctl,
                 tsbAtl = ctx.today.tsb?.atl,
                 tsbTotalLoad42d = ctx.today.tsb?.totalLoad42d,
+                // v0.9.46.B — surface HRV statistical context for the card's
+                // new sub-line (7d median + trend + week-over-week). Replaces
+                // the daily-noise-as-signal pattern with proper variability
+                // framing per HrvStatsCalculator methodology.
+                hrvStats = ctx.today.hrv?.stats,
             )
         }
 
