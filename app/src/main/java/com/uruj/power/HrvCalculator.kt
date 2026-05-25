@@ -162,9 +162,24 @@ class HrvCalculator {
         stageFilter: StageFilter? = null,
         perStageBreakdown: Boolean = false,
     ): TimeDomainHrv? {
+        // v0.9.48.5 — REMOVED stage filter from primary beat filtering.
+        //
+        // Why: Task Force 1996 + Kubios + published HRV research compute
+        // RMSSD across the entire sleep window WITHOUT excluding awake
+        // periods. Excluding awake produced URUJ's 10 ms while pure
+        // Task Force math on the same data produced 13.91 ms (cross-
+        // validated against eHRV which agreed at ~11 ms paced).
+        //
+        // To produce a number directly comparable to published norms
+        // (Plews 2013, Shaffer & Ginsberg 2017) and to Kubios output,
+        // we now include ALL beats in the overall RMSSD computation.
+        //
+        // The stage filter is STILL USED for per-stage breakdown
+        // labeling (see dominantStage below) — so the rider sees
+        // deep/REM/light/awake RMSSD individually. That's the
+        // transparency layer. The HEADLINE is research-comparable.
         val filtered = beats
             .filter { it.rrMs in PHYSIOLOGICAL_MIN..PHYSIOLOGICAL_MAX }
-            .filter { stageFilter?.shouldInclude(it.timestampMs) ?: true }
             .sortedBy { it.timestampMs }
         if (filtered.isEmpty()) return null
 
