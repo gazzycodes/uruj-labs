@@ -219,7 +219,7 @@ class RuleBasedReasoner : ReadinessReasoner {
         // Tag: URUJ-ReadinessEngine. Grep this to verify tier overrides.
         android.util.Log.d(
             "URUJ-ReadinessEngine",
-            "[v0.9.45] score=$score · tier=$tier (was $baseTier · ceiling $absoluteCeiling) · " +
+            "[v0.9.48] score=$score · tier=$tier (was $baseTier · ceiling $absoluteCeiling) · " +
                 "severe=${severeFlags.size}[${severeFlags.joinToString(",")}] · " +
                 "mild=${mildFlags.size} · " +
                 "hrv=${hrvAbs?.let { "%.1f".format(it) } ?: "—"}ms · " +

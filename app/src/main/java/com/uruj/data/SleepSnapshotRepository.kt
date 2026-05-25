@@ -207,6 +207,15 @@ class SleepSnapshotRepository(context: Context) {
  *
  * Hours, session window, source. No stages — those belong to Samsung
  * Health per the v0.4.0 cut decision.
+ *
+ * v0.9.48 — REVERSED the v0.4.0 stages decision for INTERNAL math use.
+ * Rationale: v0.4.0 cut stages from the user-facing wellness dashboard
+ * (where they'd just mirror Samsung's display). v0.9.48 brings stages
+ * back for HRV stage-aware computation — different purpose entirely.
+ * Stages drive stage-filtered RMSSD; they survive HC's 30d retention by
+ * being persisted here. Per
+ * [[reference_snapshot_persistence_architecture]] every metric layer
+ * driving trend chart math must persist at compute time.
  */
 @Serializable
 data class SleepSnapshot(
@@ -224,4 +233,63 @@ data class SleepSnapshot(
     val source: String,
     val methodologyVersion: String,
     val computedAtMs: Long,
+    /**
+     * v0.9.48 — stage breakdown for the night. Default empty list keeps
+     * backward compat with pre-v0.9.48 snapshots. When populated, enables
+     * stage-aware HRV computation in [com.uruj.power.HrvCalculator] —
+     * AWAKE windows get excluded, per-stage RMSSD computed for transparency.
+     *
+     * Persisted forever on URUJ disk so historical re-aggregation
+     * survives Samsung HC's ~30 day SleepSessionRecord retention.
+     */
+    val stages: List<SleepStageSegment> = emptyList(),
+    /**
+     * v0.9.48 — true asleep hours = sessionEndMs - sessionStartMs minus
+     * total awake duration within the session. Null when stages aren't
+     * available (pre-v0.9.48 snapshots, or sessions without HC stage data).
+     * "hoursTotal" remains the Samsung-display semantic; "asleepHours" is
+     * the lab-grade signal.
+     */
+    val asleepHours: Float? = null,
 )
+
+/**
+ * v0.9.48 — one sleep-stage segment within a night.
+ *
+ * Stage types (matches Health Connect SleepSessionRecord.Stage constants
+ * abstracted to strings for disk-schema stability across HC versions):
+ *
+ *   "deep"        — slow-wave sleep, max parasympathetic dominance
+ *   "rem"         — paradoxical sleep, autonomic dynamics
+ *   "light"       — N1/N2, most consistent across nights
+ *   "asleep"      — generic asleep without specific stage classification
+ *                   (HC STAGE_TYPE_SLEEPING). Include for HRV.
+ *   "awake"       — AWAKE, AWAKE_IN_BED, OUT_OF_BED — EXCLUDE from HRV
+ *   "unknown"     — STAGE_TYPE_UNKNOWN — include conservatively
+ *
+ * HRV math uses stage labels to filter RR intervals. Per-stage RMSSD
+ * also computed when sufficient samples exist (min 15 min per Plews
+ * convention for statistical validity).
+ */
+@Serializable
+data class SleepStageSegment(
+    val stageType: String,
+    val startMs: Long,
+    val endMs: Long,
+) {
+    /** Duration in minutes. */
+    val durationMinutes: Float
+        get() = (endMs - startMs) / 60_000f
+
+    /** True for stages that count toward "asleep" — used by HRV stage filter. */
+    val isAsleep: Boolean
+        get() = stageType in ASLEEP_STAGES
+
+    companion object {
+        /** Stage labels that count toward "asleep" for HRV computation. */
+        val ASLEEP_STAGES = setOf("deep", "rem", "light", "asleep", "unknown")
+
+        /** Stage labels excluded from HRV (awake during sleep window). */
+        val AWAKE_STAGES = setOf("awake")
+    }
+}

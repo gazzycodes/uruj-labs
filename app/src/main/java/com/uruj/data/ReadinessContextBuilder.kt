@@ -125,7 +125,7 @@ class ReadinessContextBuilder(context: Context) {
         val hrvStats = hrvStatsCalc.compute(hrvNightlyForStats)
         Log.d(
             TAG,
-            "[v0.9.46.B] HRV stats: n=${hrvStats.samplesUsed} · " +
+            "[v0.9.48] HRV stats: n=${hrvStats.samplesUsed} · " +
                 "7d median=${hrvStats.recent7dMedianMs?.let { "%.1f".format(it) } ?: "—"} ms · " +
                 "CV=${hrvStats.cvPercent?.let { "%.1f%%".format(it) } ?: "—"} · " +
                 "trend slope=${hrvStats.trendSlopeMsPerDay?.let { "%+.2f".format(it) } ?: "—"} ms/day " +

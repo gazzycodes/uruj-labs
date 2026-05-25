@@ -75,6 +75,14 @@ class HrvCalculator {
         /** Number of 5-min windows aggregated into this result. 1 for short-window
          *  mode. ≥3 for windowed mode (otherwise null returned). */
         val windowCount: Int = 1,
+        /**
+         * v0.9.48 — per-stage RMSSD breakdown when [computeWindowed] is
+         * called with `perStageBreakdown = true`. Stage labels: "deep" /
+         * "rem" / "light" / "asleep" / "unknown". Only stages with ≥3
+         * valid windows (~15 min, Plews convention) appear. Empty when
+         * stage filtering wasn't requested.
+         */
+        val perStageRmssdMs: Map<String, Float> = emptyMap(),
     )
 
     /**
@@ -118,44 +126,115 @@ class HrvCalculator {
      * and aggregates by median across valid windows.
      *
      * Windows are rejected if they have fewer than [minDiffsPerWindow]
-     * consecutive-pair diffs (default 60). If fewer than [minValidWindows]
-     * (default 3) windows pass, returns null.
+     * consecutive-pair diffs (default 30). If fewer than [minValidWindows]
+     * (default 2) windows pass, returns null.
      *
      * Median aggregation is robust to outlier windows (e.g. windows during
      * sleep-stage transitions, brief sleep apnea events, BLE micro-glitches).
+     *
+     * v0.9.48 — three behavioral upgrades:
+     *
+     * 1. **Sliding-window mode**: pass `slidingOverlap = 0.5f` to enable
+     *    50% overlap (5-min windows starting every 2.5 min). Coverage of
+     *    the night goes from ~10% (non-overlap, 5 cherry-picked windows)
+     *    to 80%+ (overlapping windows sweep the entire duration). Lower
+     *    `minDiffsPerWindow` to 25 in this mode since 50% overlap doubles
+     *    window count and median washes noisy ones.
+     *
+     * 2. **Stage filter**: pass `stageFilter` to restrict computation to
+     *    beats falling within specific sleep-stage segments. Standard
+     *    lab-grade filter: include deep/rem/light/asleep/unknown,
+     *    EXCLUDE awake. Today's 9.7 ms was likely dragged down by awake
+     *    transitions within the sleep window.
+     *
+     * 3. **Per-stage breakdown**: pass `perStageBreakdown = true` to
+     *    return per-stage RMSSD in [TimeDomainHrv.perStageRmssdMs] map.
+     *    Each window labeled by its dominant stage (>60% time-share).
+     *    Stages with insufficient data (<15 min Plews convention) drop
+     *    from the per-stage map.
      */
     fun computeWindowed(
         beats: List<Beat>,
         windowMs: Long = DEFAULT_WINDOW_MS,
         minDiffsPerWindow: Int = MIN_DIFFS,
         minValidWindows: Int = MIN_WINDOWS,
+        slidingOverlap: Float = 0f,
+        stageFilter: StageFilter? = null,
+        perStageBreakdown: Boolean = false,
     ): TimeDomainHrv? {
         val filtered = beats
             .filter { it.rrMs in PHYSIOLOGICAL_MIN..PHYSIOLOGICAL_MAX }
+            .filter { stageFilter?.shouldInclude(it.timestampMs) ?: true }
             .sortedBy { it.timestampMs }
         if (filtered.isEmpty()) return null
 
+        // v0.9.48 — sliding-window mode emits overlapping windows at
+        // (1 - slidingOverlap) × windowMs step size. slidingOverlap = 0
+        // preserves the legacy non-overlapping behavior.
+        val step = (windowMs * (1f - slidingOverlap.coerceIn(0f, 0.9f))).toLong().coerceAtLeast(1L)
         val firstTs = filtered.first().timestampMs
-        val perWindow = mutableMapOf<Long, MutableList<Beat>>()
-        for (b in filtered) {
-            val idx = (b.timestampMs - firstTs) / windowMs
-            perWindow.getOrPut(idx) { mutableListOf() }.add(b)
+        val lastTs = filtered.last().timestampMs
+        val windows = mutableListOf<Pair<Long, Long>>()  // (windowStart, windowEnd)
+        var winStart = firstTs
+        while (winStart < lastTs) {
+            windows += winStart to (winStart + windowMs)
+            winStart += step
         }
-
-        val windowResults = perWindow.values.mapNotNull { winBeats ->
+        // Assign beats to each window (a beat may belong to multiple
+        // overlapping windows). Linear scan — windows sorted, beats sorted.
+        val perWindowBeats: List<MutableList<Beat>> = List(windows.size) { mutableListOf() }
+        var beatIdx = 0
+        for ((wIdx, w) in windows.withIndex()) {
+            // Walk beats from beatIdx forward while they overlap this window
+            for (i in beatIdx until filtered.size) {
+                val b = filtered[i]
+                if (b.timestampMs < w.first) {
+                    beatIdx = i + 1
+                    continue
+                }
+                if (b.timestampMs >= w.second) break
+                perWindowBeats[wIdx].add(b)
+            }
+        }
+        // Now compute per-window HRV
+        data class WindowResult(
+            val hrv: TimeDomainHrv,
+            val dominantStage: String?,
+        )
+        val results = perWindowBeats.mapIndexedNotNull { idx, winBeats ->
+            if (winBeats.size < 2) return@mapIndexedNotNull null
             val diffs = consecutiveDiffsMs(winBeats)
-            if (diffs.size < minDiffsPerWindow) return@mapNotNull null
-            buildHrv(winBeats, diffs, windowCount = 1)
+            if (diffs.size < minDiffsPerWindow) return@mapIndexedNotNull null
+            val hrv = buildHrv(winBeats, diffs, windowCount = 1)
+            val dominant = if (perStageBreakdown && stageFilter != null) {
+                stageFilter.dominantStage(windows[idx].first, windows[idx].second)
+            } else null
+            WindowResult(hrv, dominant)
         }
-        if (windowResults.size < minValidWindows) return null
+        if (results.size < minValidWindows) return null
 
-        // Median aggregation across windows
-        val rmssdMedian = median(windowResults.map { it.rmssdMs })
-        val sdnnMedian = median(windowResults.map { it.sdnnMs })
-        val pnn50Median = median(windowResults.map { it.pnn50Percent })
-        val pnn20Median = median(windowResults.map { it.pnn20Percent })
-        val meanRrMedian = median(windowResults.map { it.meanRrMs })
-        val totalSamples = windowResults.sumOf { it.sampleCount }
+        // Median aggregation across all valid windows
+        val rmssdMedian = median(results.map { it.hrv.rmssdMs })
+        val sdnnMedian = median(results.map { it.hrv.sdnnMs })
+        val pnn50Median = median(results.map { it.hrv.pnn50Percent })
+        val pnn20Median = median(results.map { it.hrv.pnn20Percent })
+        val meanRrMedian = median(results.map { it.hrv.meanRrMs })
+        val totalSamples = results.sumOf { it.hrv.sampleCount }
+
+        // Per-stage breakdown — median RMSSD per dominant-stage bucket
+        val perStageMap = if (perStageBreakdown) {
+            results
+                .filter { it.dominantStage != null }
+                .groupBy { it.dominantStage!! }
+                .mapNotNull { (stage, list) ->
+                    // Plews convention: need ≥3 windows (~15 min) for valid
+                    // per-stage stat. Skip stages with insufficient samples.
+                    if (list.size < 3) null
+                    else stage to median(list.map { it.hrv.rmssdMs })
+                }
+                .toMap()
+        } else emptyMap()
+
         return TimeDomainHrv(
             rmssdMs = rmssdMedian,
             sdnnMs = sdnnMedian,
@@ -164,8 +243,57 @@ class HrvCalculator {
             sampleCount = totalSamples,
             meanRrMs = meanRrMedian,
             meanHrBpm = if (meanRrMedian > 0f) 60_000f / meanRrMedian else 0f,
-            windowCount = windowResults.size,
+            windowCount = results.size,
+            perStageRmssdMs = perStageMap,
         )
+    }
+
+    /**
+     * v0.9.48 — stage filter for HRV computation. Maps timestamps to
+     * stage labels and decides whether a given beat should be included.
+     * Default policy: include asleep stages (deep/rem/light/asleep/
+     * unknown), exclude awake. Per [com.uruj.data.SleepStageSegment]
+     * convention.
+     *
+     * Built from the [com.uruj.data.SleepStageSegment] list persisted
+     * via [com.uruj.data.SleepSnapshot] or freshly read from HC.
+     */
+    class StageFilter(
+        private val segments: List<com.uruj.data.SleepStageSegment>,
+    ) {
+        /** Returns true if the timestamp falls in an asleep stage (or no
+         *  stage segment covers it — defensive: include rather than drop). */
+        fun shouldInclude(timestampMs: Long): Boolean {
+            val seg = segmentAt(timestampMs) ?: return true
+            return seg.isAsleep
+        }
+
+        /** Returns the dominant stage label across a [windowStartMs,
+         *  windowEndMs) range — i.e. the stage occupying >60% of the
+         *  window. Returns null when no stage occupies >60% (mixed
+         *  window). */
+        fun dominantStage(windowStartMs: Long, windowEndMs: Long): String? {
+            val windowDuration = windowEndMs - windowStartMs
+            if (windowDuration <= 0) return null
+            val coverage = mutableMapOf<String, Long>()
+            for (seg in segments) {
+                val overlap = minOf(seg.endMs, windowEndMs) - maxOf(seg.startMs, windowStartMs)
+                if (overlap > 0) {
+                    coverage[seg.stageType] = (coverage[seg.stageType] ?: 0L) + overlap
+                }
+            }
+            val (topStage, topCoverage) = coverage.maxByOrNull { it.value } ?: return null
+            return if (topCoverage.toFloat() / windowDuration > 0.60f) topStage else null
+        }
+
+        private fun segmentAt(timestampMs: Long): com.uruj.data.SleepStageSegment? {
+            // Binary-search optimization possible; linear is fine here
+            // since segments per night is small (typically <50).
+            for (seg in segments) {
+                if (timestampMs in seg.startMs until seg.endMs) return seg
+            }
+            return null
+        }
     }
 
     /**

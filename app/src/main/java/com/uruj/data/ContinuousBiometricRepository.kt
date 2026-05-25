@@ -121,11 +121,43 @@ class ContinuousBiometricRepository(context: Context) {
      *
      * v0.7.0 follow-up: now uses WINDOWED 5-min RMSSD with median aggregation
      * (research standard). Returns null if fewer than 3 valid windows.
+     *
+     * v0.9.48 — stage-aware + sliding-window upgrade. When [stages] is
+     * non-empty, AWAKE periods within the sleep window are EXCLUDED from
+     * computation (the biggest pre-v0.9.48 bias — awake transitions
+     * within the sleep window pulled RMSSD down). 50% window overlap +
+     * lowered min-diffs threshold sweeps ~80% of night vs the previous
+     * ~10% sampling. Per-stage RMSSD breakdown returned for transparency.
+     *
+     * Falls back gracefully to pre-v0.9.48 method when stages list is
+     * empty (HC version without detailed staging, permission missing,
+     * historical compute pre-stages persistence). Snapshot methodology
+     * version field tagged accordingly so the audit trail is honest.
      */
-    fun computeHrvForWindow(start: Instant, end: Instant): HrvCalculator.TimeDomainHrv? {
+    fun computeHrvForWindow(
+        start: Instant,
+        end: Instant,
+        stages: List<com.uruj.data.SleepStageSegment> = emptyList(),
+    ): HrvCalculator.TimeDomainHrv? {
         val samples = samplesForWindow(start, end)
         val beats = samplesToBeats(samples)
-        val result = hrvCalc.computeWindowed(beats)
+        val stageFilter = if (stages.isNotEmpty()) HrvCalculator.StageFilter(stages) else null
+        // v0.9.48 lab-grade defaults: sliding 50% overlap, min 25 diffs/window
+        // (down from 30 — sliding mode has more windows so median tolerates
+        // looser per-window threshold), per-stage breakdown enabled when
+        // stage filter present.
+        val result = if (stageFilter != null) {
+            hrvCalc.computeWindowed(
+                beats = beats,
+                minDiffsPerWindow = 25,
+                slidingOverlap = 0.5f,
+                stageFilter = stageFilter,
+                perStageBreakdown = true,
+            )
+        } else {
+            // Pre-v0.9.48 method when no stages available
+            hrvCalc.computeWindowed(beats)
+        }
         if (result == null) {
             // Fallback: try a more lenient flat-list compute. Better to surface
             // a less-precise number than to show "no data" when we have 40k+
@@ -134,14 +166,21 @@ class ContinuousBiometricRepository(context: Context) {
             Log.d(
                 TAG,
                 "[hrv] window $start..$end → ${samples.size} samples, ${beats.size} beats — " +
-                    "windowed=null, flatFallback=${flat?.rmssdMs?.let { "%.1f".format(it) } ?: "null"}",
+                    "windowed=null, flatFallback=${flat?.rmssdMs?.let { "%.1f".format(it) } ?: "null"}, " +
+                    "stages=${stages.size}",
             )
             return flat
         }
+        val stageInfo = if (result.perStageRmssdMs.isNotEmpty()) {
+            " · per-stage=" + result.perStageRmssdMs.entries.joinToString(",") {
+                "${it.key}=${"%.1f".format(it.value)}ms"
+            }
+        } else ""
         Log.d(
             TAG,
-            "[hrv] window $start..$end → ${samples.size} samples, ${beats.size} beats, " +
-                "windows=${result.windowCount}, rmssd=${"%.1f".format(result.rmssdMs)} ms",
+            "[hrv v0.9.48] window $start..$end → ${samples.size} samples, ${beats.size} beats, " +
+                "stages=${stages.size}, windows=${result.windowCount}, " +
+                "rmssd=${"%.1f".format(result.rmssdMs)} ms$stageInfo",
         )
         return result
     }

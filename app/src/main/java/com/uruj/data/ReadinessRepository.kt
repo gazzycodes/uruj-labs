@@ -576,6 +576,17 @@ class ReadinessRepository(context: Context) {
         //      blocks. Two questions, two reads.
         val sleepAggregated = lastSleepReader.readAggregated(client, granted)
         val sleep = sleepAggregated?.hours
+        // v0.9.48 — also read stages so the sleep snapshot persists them
+        // for stage-aware HRV math + future re-aggregation. Empty when
+        // unavailable (graceful).
+        val sleepStages: List<SleepStageSegment> = if (sleepAggregated != null) {
+            lastSleepReader.readStagesForResult(client, granted, sleepAggregated)
+        } else emptyList()
+        val sleepAwakeMin = sleepStages
+            .filter { !it.isAsleep }
+            .sumOf { (it.endMs - it.startMs) / 60_000L }
+            .toInt()
+        val sleepAsleepHours = sleepAggregated?.let { it.hours - (sleepAwakeMin / 60f) }
         if (sleepAggregated != null) {
             runCatching {
                 val sleepDate = LocalDate.now(ZoneId.systemDefault())
@@ -588,6 +599,8 @@ class ReadinessRepository(context: Context) {
                         source = "samsung-hc",
                         methodologyVersion = SleepSnapshotRepository.METHODOLOGY_VERSION,
                         computedAtMs = System.currentTimeMillis(),
+                        stages = sleepStages,
+                        asleepHours = sleepAsleepHours,
                     ),
                     date = sleepDate,
                 )
@@ -677,7 +690,10 @@ class ReadinessRepository(context: Context) {
             // duration typical for trained adults).
             val sleepWindowResult = lastSleepReader.read(client, granted)
             val (start, end) = effectiveHrvWindow(sleepWindowResult, now)
-            val computedHrv = continuousBiometric.computeHrvForWindow(start, end)
+            // v0.9.48 — reuse stages we already pulled for snapshot. Saves
+            // a second HC read. Empty list = graceful fallback to pre-v0.9.48
+            // whole-window method in computeHrvForWindow.
+            val computedHrv = continuousBiometric.computeHrvForWindow(start, end, sleepStages)
             if (computedHrv != null) {
                 hrvToday = computedHrv.rmssdMs
                 hrvSource = "ble_strap"

@@ -61,6 +61,20 @@ data class HrvSnapshot(
     val sd2Ms: Float? = null,
     val dfaAlpha1: Float? = null,
     val sampleEntropy: Float? = null,
+    // ── Per-stage breakdown (v0.9.48+)
+    /** RMSSD computed only on windows dominated by deep sleep (SWS). Null
+     *  when <15 min of deep sleep available (Plews convention). */
+    val deepRmssdMs: Float? = null,
+    /** RMSSD on REM-dominant windows. Null when insufficient. */
+    val remRmssdMs: Float? = null,
+    /** RMSSD on light-sleep-dominant windows. Null when insufficient. */
+    val lightRmssdMs: Float? = null,
+    /** Was AWAKE-period filtering applied? Tags whether this is a Tier 1
+     *  lab-grade reading (true) or pre-v0.9.48 whole-window fallback. */
+    val stageFiltered: Boolean = false,
+    /** Total awake minutes excluded from HRV math. Helps the user see
+     *  why the new number differs from the pre-v0.9.48 value. */
+    val awakeMinutesExcluded: Int? = null,
     // ── Provenance
     val computedAtMs: Long,
     val methodologyVersion: String,
@@ -135,6 +149,16 @@ class HrvSnapshotRepository(context: Context) {
 
     companion object {
         private const val TAG = "URUJ-HrvSnap"
-        const val METHODOLOGY_VERSION = "v0.9.28-lomb-scargle"
+        /**
+         * v0.9.48 — stage-aware + sliding-window methodology.
+         * - Lomb-Scargle for freq-domain (v0.9.28 baseline)
+         * - Stage filter excludes AWAKE periods (Task Force 1996 standard)
+         * - 5-min windows with 50% sliding overlap (Plews et al. 2013)
+         * - Per-stage RMSSD when ≥3 windows per stage
+         * - Methodology version tagged on every snapshot for audit trail
+         */
+        const val METHODOLOGY_VERSION = "v0.9.48-stage-aware-sliding"
+        /** Pre-v0.9.48 fallback when stages aren't available. */
+        const val METHODOLOGY_VERSION_FALLBACK = "v0.9.28-lomb-scargle-no-stages"
     }
 }
