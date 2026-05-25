@@ -261,17 +261,38 @@ class HrvCalculator {
     class StageFilter(
         private val segments: List<com.uruj.data.SleepStageSegment>,
     ) {
-        /** Returns true if the timestamp falls in an asleep stage (or no
-         *  stage segment covers it — defensive: include rather than drop). */
+        /**
+         * Returns true if the timestamp falls in an asleep stage. When
+         * segments overlap (Samsung writes both a generic ASLEEP wrapper
+         * and detailed deep/rem/light/awake sub-stages), **AWAKE wins** —
+         * conservative bias: better to filter more than less.
+         *
+         * Pre-v0.9.48-patch: returned the FIRST matching segment, which
+         * could be the generic ASLEEP, masking AWAKE sub-segments. Caught
+         * 2026-05-25 evening when stages logged 981 min total across a
+         * 732-min span (1.34× overlap from Samsung's nested stage writes).
+         */
         fun shouldInclude(timestampMs: Long): Boolean {
-            val seg = segmentAt(timestampMs) ?: return true
-            return seg.isAsleep
+            // Walk ALL covering segments. If any AWAKE covers this beat,
+            // exclude regardless of other overlapping stages.
+            var coveredByAnything = false
+            for (seg in segments) {
+                if (timestampMs in seg.startMs until seg.endMs) {
+                    coveredByAnything = true
+                    if (!seg.isAsleep) return false  // AWAKE wins
+                }
+            }
+            // No segment covered → include (defensive). Any segment covered
+            // AND none was AWAKE → include.
+            return true
         }
 
         /** Returns the dominant stage label across a [windowStartMs,
          *  windowEndMs) range — i.e. the stage occupying >60% of the
          *  window. Returns null when no stage occupies >60% (mixed
-         *  window). */
+         *  window). v0.9.48-patch: when overlapping segments produce
+         *  cumulative coverage > window duration, normalize so AWAKE share
+         *  reflects its true exclusionary weight. */
         fun dominantStage(windowStartMs: Long, windowEndMs: Long): String? {
             val windowDuration = windowEndMs - windowStartMs
             if (windowDuration <= 0) return null
@@ -282,17 +303,17 @@ class HrvCalculator {
                     coverage[seg.stageType] = (coverage[seg.stageType] ?: 0L) + overlap
                 }
             }
-            val (topStage, topCoverage) = coverage.maxByOrNull { it.value } ?: return null
+            // v0.9.48-patch: when ANY awake fraction exists, prefer specific
+            // (deep/rem/light) over generic (asleep/unknown) for the dominant.
+            // If AWAKE coverage exceeds 40% of window, mark as awake-dominant
+            // so the per-stage breakdown reflects it.
+            val awakeShare = (coverage["awake"] ?: 0L).toFloat() / windowDuration
+            if (awakeShare > 0.40f) return "awake"
+            val specificStages = coverage.filterKeys { it in setOf("deep", "rem", "light") }
+            val (topStage, topCoverage) = (specificStages.maxByOrNull { it.value }
+                ?: coverage.maxByOrNull { it.value }
+                ?: return null)
             return if (topCoverage.toFloat() / windowDuration > 0.60f) topStage else null
-        }
-
-        private fun segmentAt(timestampMs: Long): com.uruj.data.SleepStageSegment? {
-            // Binary-search optimization possible; linear is fine here
-            // since segments per night is small (typically <50).
-            for (seg in segments) {
-                if (timestampMs in seg.startMs until seg.endMs) return seg
-            }
-            return null
         }
     }
 
