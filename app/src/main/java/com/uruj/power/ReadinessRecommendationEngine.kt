@@ -176,11 +176,30 @@ class RuleBasedReasoner : ReadinessReasoner {
         val tier = pickMoreConservative(baseTier, absoluteCeiling)
         // endregion
 
+        // v0.9.49 — TREND + CAR positive-signal booleans for narrative.
+        // The engine math (tier selection above) is unchanged. These flags
+        // only soften the WORDING when the body is responding to rest:
+        //   - HRV trending stable or rising (not still crashing)
+        //   - CAR today shows healthy/robust morning activation
+        // When both true + rider is multi-day in red, copy shifts from
+        // "Extended stand-down · investigate lifestyle" (alarming) to
+        // "Day N · body responding · continue rest" (truthful + encouraging).
+        // Per [[reference_lab_grade_architecture_rules]] Rule 5 — narrative
+        // must reflect TREND DIRECTION, not just absolute thresholds (#217).
+        val hrvTrendStableOrRising = trends.hrv?.let { t ->
+            t.direction == TrendDirection.RISING ||
+                (t.direction == TrendDirection.FLAT && t.sampleCount >= 5)
+        } ?: false
+        val carHealthyToday = carIsRecent &&
+            (carTier == CarTier.NORMAL || carTier == CarTier.ROBUST)
+
         // region Headline + duration — rotating taglines keyed off day-of-year
         val (headline, duration) = pickHeadline(
             tier = tier,
             dayKey = LocalDate.now().dayOfYear,
             consecutiveRestDays = patterns.consecutiveRestDays,
+            hrvTrendStableOrRising = hrvTrendStableOrRising,
+            carHealthyToday = carHealthyToday,
         )
         // endregion
 
@@ -200,6 +219,8 @@ class RuleBasedReasoner : ReadinessReasoner {
             subjEnergy = subjEnergy,
             subjSoreness = subjSoreness,
             subjSleepQuality = subjSleepQuality,
+            // v0.9.49 — trend qualifier for HRV-suppressed copy
+            hrvTrend = trends.hrv,
         )
         // endregion
 
@@ -460,11 +481,20 @@ class RuleBasedReasoner : ReadinessReasoner {
      * Headline + duration pool per tier, rotated by day-of-year for variety.
      * Multi-day rest streak escalates the FullRest copy so the rider knows
      * we noticed the pattern.
+     *
+     * v0.9.49 — TREND-AWARE copy (#207 + #217). When the rider is multi-day
+     * in red BUT the trend is stable/rising AND today's CAR is healthy, the
+     * copy softens from alarming ("Extended stand-down · investigate") to
+     * truthful + encouraging ("Day N · body responding · continue rest").
+     * The TIER itself is unchanged — only the WORDS reflect that recovery
+     * is in progress vs deteriorating.
      */
     private fun pickHeadline(
         tier: ReadinessTier,
         dayKey: Int,
         consecutiveRestDays: Int,
+        hrvTrendStableOrRising: Boolean = false,
+        carHealthyToday: Boolean = false,
     ): Pair<String, String?> {
         // v0.9.4 — multi-day rest enforcement. Escalate copy when the
         // rider's been resting multiple days; chronic state needs lifestyle
@@ -478,14 +508,38 @@ class RuleBasedReasoner : ReadinessReasoner {
         // Pre-v0.9.5 conditions (>= 2 / >= 4) were off by one — would have
         // required 3 / 5 total days before firing. Plus the "two days
         // running" text was static — wrong for day 3+. Now dynamic.
+        //
+        // v0.9.49 — bodyResponding flag determines whether multi-day-rest
+        // copy is "investigate lifestyle" (no recovery signals yet) or
+        // "body responding, continue rest" (signals improving).
         val totalDays = consecutiveRestDays + 1
+        val bodyResponding = hrvTrendStableOrRising && carHealthyToday
+
         if (tier == ReadinessTier.FullRest && consecutiveRestDays >= 3) {
-            return "Extended stand-down" to
-                "$totalDays days of rest — investigate lifestyle (sleep, stress, fuel, illness)"
+            return if (bodyResponding) {
+                "Day $totalDays · body responding" to
+                    "rest holding · HRV stabilizing · CAR healthy — continue full rest"
+            } else {
+                "Extended stand-down" to
+                    "$totalDays days of rest — investigate lifestyle (sleep, stress, fuel, illness)"
+            }
         }
         if (tier == ReadinessTier.FullRest && consecutiveRestDays >= 1) {
-            return "Day $totalDays in red" to
-                "$totalDays days running — eat more, sleep more, check chronic load"
+            return if (bodyResponding) {
+                "Day $totalDays · early recovery" to
+                    "signals stabilizing — continue rest, body responding"
+            } else {
+                "Day $totalDays in red" to
+                    "$totalDays days running — eat more, sleep more, check chronic load"
+            }
+        }
+        // v0.9.49 — ActiveRecovery + 3+ days resting + body responding =
+        // graded re-entry phase. Acknowledge the streak (not silent).
+        if (tier == ReadinessTier.ActiveRecovery &&
+            consecutiveRestDays >= 3 && bodyResponding
+        ) {
+            return "Day $totalDays · graded recovery" to
+                "Z1 spin ≤ 30 min · body healing · honor the trajectory"
         }
 
         val pool: List<Pair<String, String?>> = when (tier) {
@@ -527,6 +581,12 @@ class RuleBasedReasoner : ReadinessReasoner {
      * Rationale — lists concerning drivers in plain language. CAR-aware in
      * v0.9.4 (exaggerated +49 bpm shows up in the rationale, no more
      * silent ignore).
+     *
+     * v0.9.49 — HRV-suppressed drivers now include a trend qualifier
+     * (rising / stable / falling) so the rider sees direction at a glance.
+     * "HRV 13 ms (suppressed)" → "HRV 13 ms (suppressed · stable, recovering)".
+     * Per [[reference_lab_grade_architecture_rules]] Rule 5 — narrative
+     * must reflect trend direction, not just absolute thresholds (#217).
      */
     private fun buildRationale(
         tier: ReadinessTier,
@@ -543,7 +603,22 @@ class RuleBasedReasoner : ReadinessReasoner {
         subjEnergy: Float? = null,
         subjSoreness: Float? = null,
         subjSleepQuality: Float? = null,
+        // v0.9.49 — trend qualifier for HRV-suppressed copy
+        hrvTrend: com.uruj.domain.TrendSeries? = null,
     ): String {
+        // v0.9.49 — single qualifier string appended to HRV-suppressed
+        // driver. Empty when trend is unknown / not significant. Honest
+        // about the data we have: only call something "stable" when we
+        // have ≥5 days of trend; only call "recovering" / "falling" when
+        // direction is set by the trend computation.
+        val hrvTrendQualifier: String = hrvTrend?.let { t ->
+            when (t.direction) {
+                TrendDirection.RISING -> " · recovering"
+                TrendDirection.FALLING -> " · still falling"
+                TrendDirection.FLAT -> if (t.sampleCount >= 5) " · stable" else ""
+                TrendDirection.INSUFFICIENT_DATA -> ""
+            }
+        } ?: ""
         val drivers = mutableListOf<String>()
         when {
             tsbValue != null && tsbValue <= -25f -> drivers += "TSB ${tsbValue.roundToInt()} (over-trained)"
@@ -556,17 +631,17 @@ class RuleBasedReasoner : ReadinessReasoner {
         when {
             hrvRatio != null && hrvRatio < 0.70f -> {
                 val pct = ((hrvRatio - 1f) * 100).roundToInt()
-                drivers += "HRV $pct% vs baseline (crashed)"
+                drivers += "HRV $pct% vs baseline (crashed$hrvTrendQualifier)"
             }
             hrvRatio != null && hrvRatio < 0.85f -> {
                 val pct = ((hrvRatio - 1f) * 100).roundToInt()
-                drivers += "HRV $pct% vs baseline (suppressed)"
+                drivers += "HRV $pct% vs baseline (suppressed$hrvTrendQualifier)"
             }
             hrvRatio == null && hrvAbs != null && hrvAbs < 12f -> {
-                drivers += "HRV ${"%.0f".format(hrvAbs)} ms (below athletic)"
+                drivers += "HRV ${"%.0f".format(hrvAbs)} ms (below athletic$hrvTrendQualifier)"
             }
             hrvRatio == null && hrvAbs != null && hrvAbs < 18f -> {
-                drivers += "HRV ${"%.0f".format(hrvAbs)} ms (suppressed)"
+                drivers += "HRV ${"%.0f".format(hrvAbs)} ms (suppressed$hrvTrendQualifier)"
             }
         }
         when {
