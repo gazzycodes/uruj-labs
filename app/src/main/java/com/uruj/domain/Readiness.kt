@@ -84,6 +84,17 @@ enum class ReadinessGrade(val label: String) {
     /** Score computed from <50% of inputs — show it but mark it as low-confidence. */
     LimitedData("LIMITED DATA"),
     Rest("REST"),
+    /**
+     * v0.9.49.2 — new tier slot that matches the recommendation engine's
+     * `ReadinessTier.ActiveRecovery`. Pre-v0.9.49.2 the badge was derived
+     * purely from raw composite score, so a score=74 + HRV-absolute ceiling
+     * showed "MODERATE" (yellow) while the prescription said "graded
+     * recovery / Z1 only" (orange-red). The contradiction is now resolved —
+     * the badge follows the engine's final tier (which already honors all
+     * the absolute-floor + subjective ceilings) instead of just the raw
+     * score band.
+     */
+    Recovery("ACTIVE RECOVERY"),
     Easy("EASY"),
     Moderate("MODERATE"),
     GoHard("GO HARD"),

@@ -11,6 +11,7 @@ import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import com.uruj.domain.ReadinessGrade
 import com.uruj.domain.ReadinessInputs
 import com.uruj.domain.ReadinessResult
 import com.uruj.domain.RecommendationSnapshot
@@ -393,6 +394,20 @@ class ReadinessRepository(context: Context) {
                 Log.w("URUJ-Readiness", "recommendation snapshot save failed", it)
             }
 
+            // v0.9.49.2 — tier-aligned grade. Pre-v0.9.49.2 the badge was
+            // derived purely from raw score (74 → "MODERATE") while the
+            // headline came from the engine tier (ActiveRecovery → "graded
+            // recovery"). When the absolute biomarker ceiling fired,
+            // these contradicted each other on screen. Now the badge
+            // follows the engine's final tier, so a chronic-baseline rider
+            // sees a single consistent answer.
+            val tierAlignedGrade = when (rec.tier) {
+                com.uruj.domain.ReadinessTier.FullRest -> ReadinessGrade.Rest
+                com.uruj.domain.ReadinessTier.ActiveRecovery -> ReadinessGrade.Recovery
+                com.uruj.domain.ReadinessTier.EasyAerobic -> ReadinessGrade.Easy
+                com.uruj.domain.ReadinessTier.ModerateEndurance -> ReadinessGrade.Moderate
+                com.uruj.domain.ReadinessTier.HardGreenLight -> ReadinessGrade.GoHard
+            }
             // v0.9.21 — surface TSB breakdown so Readiness card's TRAINING
             // LOAD ⓘ can render the same personalized ATL:CTL ratio + Build-
             // CTL prescription as the Bio Lab Training State ⓘ. Same numbers
@@ -401,7 +416,7 @@ class ReadinessRepository(context: Context) {
             // disk read.
             ReadinessResult(
                 score = scored.score,
-                grade = scored.grade,
+                grade = tierAlignedGrade,
                 components = scored.components,
                 recommendation = rec.headline,
                 dataConfidence = scored.dataConfidence,
