@@ -50,6 +50,7 @@ import com.uruj.ui.theme.UrujText
 import com.uruj.ui.theme.UrujZone1
 import com.uruj.ui.theme.UrujZone2
 import com.uruj.ui.theme.UrujZone3
+import com.uruj.ui.theme.UrujZone4
 import com.uruj.ui.theme.UrujZone5
 
 @Composable
@@ -696,6 +697,11 @@ private fun ReadinessGrade.color(): Color = when (this) {
     ReadinessGrade.GoHard -> UrujZone2
     ReadinessGrade.Moderate -> UrujZone3
     ReadinessGrade.Easy -> UrujZone3
+    // v0.9.49.2 — Recovery sits between Rest and Easy. UrujZone4 (orange)
+    // is the right visual cue: not red-alarming like Rest, but a clear
+    // step down from Easy yellow. Tells the rider "active recovery only,
+    // not endurance" at-a-glance, matching the engine tier.
+    ReadinessGrade.Recovery -> UrujZone4
     ReadinessGrade.Rest -> UrujZone5
     ReadinessGrade.LimitedData -> UrujZone1
     ReadinessGrade.Unknown -> UrujMuted
