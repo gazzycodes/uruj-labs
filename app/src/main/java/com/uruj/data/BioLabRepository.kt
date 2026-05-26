@@ -709,6 +709,8 @@ class BioLabRepository(context: Context) {
             autonomicWindowLabel = autonomicWindowLabel,
             autonomicWindowCount = autonomicWindowCount,
             autonomicDaysOfData = autonomicDaysOfData,
+            // v0.9.50 — per-stage RMSSD for Bio Lab Autonomic card breakdown
+            autonomicPerStageRmssdMs = autonomicHrv?.perStageRmssdMs ?: emptyMap(),
 
             // v0.9.31 — postprandial HRV response (latest snapshot if any)
             latestPostprandial = latestPostprandial,
@@ -991,6 +993,19 @@ data class BioLabSnapshot(
     /** Days of overnight HRV captured in last 7 days. Drives baseline-building
      *  UX: <7 days → show "baseline building" notice on the Autonomic card. */
     val autonomicDaysOfData: Int = 0,
+
+    /**
+     * v0.9.50 — per-stage RMSSD breakdown from sleep-stage-aware windowing.
+     * Keys: "deep" / "rem" / "light" / "awake" / "asleep" / "unknown".
+     * Empty when stage segments unavailable or <3 valid windows per stage
+     * (Plews convention). Surfaced on the Bio Lab Autonomic card so the
+     * rider sees which stages drive the overnight aggregate.
+     *
+     * Physiologically: healthy adult shows DEEP > REM > LIGHT in RMSSD.
+     * Inversion (REM > DEEP, common in chronic-overreach) is a meaningful
+     * signal that the rider can read directly.
+     */
+    val autonomicPerStageRmssdMs: Map<String, Float> = emptyMap(),
 
     /**
      * v0.9.25 — frequency-domain + non-linear HRV measures (VLF/LF/HF, LF/HF
