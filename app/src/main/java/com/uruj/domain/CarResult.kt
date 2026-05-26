@@ -50,6 +50,21 @@ data class CarResult(
     val rmssdDropPercent: Float,
     val sampleCountInWindow: Int,
     val cleanBeatsInWindow: Int,
+    // v0.9.48.8 — rigorous quiet-window CAR per Pruessner/Clow/Stalder.
+    // 5-min bin MEANS within 0-30 min post-wake. Filters out post-wake
+    // activity (walking, kitchen, etc.) that the wide-window peak-HR
+    // approach incorrectly captures as HPA-axis surge.
+    // The PRIMARY interpretation now uses quietWindowAmplitudeBpm; the
+    // wide-window amplitudeBpm is retained as informational ("HR rose to X
+    // within 45 min, including any post-wake activity").
+    val quietWindowAmplitudeBpm: Float? = null,
+    val quietWindowPeakMeanBpm: Float? = null,
+    val quietWindowPeakBinMinutes: Int? = null,
+    // Default "legacy" so old cache files (which don't serialize this field
+    // because of encodeDefaults=false) deserialize as "legacy" and trigger
+    // cache invalidation. CarDetector.compute() explicitly sets the current
+    // methodology when producing fresh results.
+    val methodologyVersion: String = "legacy",
 )
 
 /** Tier classification of the CAR signal. */

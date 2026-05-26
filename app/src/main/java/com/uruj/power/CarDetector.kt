@@ -44,6 +44,15 @@ class CarDetector(
     private val minSamplesPerWindow = 60
     /** Per-bin width for RMSSD trajectory inside the post-wake window. */
     private val rmssdBinMinutes = 5
+    /**
+     * v0.9.48.8 — Rigorous CAR window per Pruessner/Clow/Stalder.
+     * Salivary cortisol peaks 20-40 min post-wake. HR proxy uses same
+     * window but requires MEAN HR per 5-min bin (not instant peak) to
+     * filter out post-wake activity (walking, kitchen, etc.) that
+     * incorrectly inflated the wide-window peakHr.
+     */
+    private val quietWindowMinutes = 30
+    private val quietBinMinutes = 5
 
     /**
      * Compute the CAR for one wake event.
@@ -102,6 +111,27 @@ class CarDetector(
 
         val cleanBeats = sortedPost.sumOf { it.rrIntervalsMs.count { rr -> rr > 0 } }
 
+        // --- v0.9.48.8 Quiet-window mean-of-bins amplitude (rigorous CAR) ---
+        // Filters post-wake activity by binning 0-30 min post-wake into 5-min
+        // bins, taking the MAX of bin MEANS (not instant peak). Matches
+        // salivary cortisol's smooth biochemical signal more honestly than
+        // raw peak HR within a 45-min window.
+        val quietBinMs = quietBinMinutes * 60L * 1000L
+        val quietEndMs = sleepEndMs + quietWindowMinutes * 60L * 1000L
+        val quietBins = mutableMapOf<Int, MutableList<Float>>()
+        for (s in sortedPost) {
+            if (s.timestampMs > quietEndMs) break
+            val bpm = s.bpm.toFloat()
+            if (bpm <= 0f) continue
+            val idx = ((s.timestampMs - sleepEndMs) / quietBinMs).toInt()
+            quietBins.getOrPut(idx) { mutableListOf() }.add(bpm)
+        }
+        val quietBinMeans = quietBins.mapValues { (_, vals) -> vals.average().toFloat() }
+        val quietPeakEntry = quietBinMeans.maxByOrNull { it.value }
+        val quietPeakMean = quietPeakEntry?.value
+        val quietPeakBin = quietPeakEntry?.key
+        val quietAmplitude = quietPeakMean?.let { it - baselineHr }
+
         return CarResult(
             sessionId = UUID.randomUUID().toString().take(8),
             computedAtMs = System.currentTimeMillis(),
@@ -116,6 +146,12 @@ class CarDetector(
             rmssdDropPercent = rmssdDropPct,
             sampleCountInWindow = sortedPost.size,
             cleanBeatsInWindow = cleanBeats,
+            quietWindowAmplitudeBpm = quietAmplitude,
+            quietWindowPeakMeanBpm = quietPeakMean,
+            quietWindowPeakBinMinutes = quietPeakBin?.let { it * quietBinMinutes },
+            // Explicitly tag fresh results with current methodology so the
+            // repository cache can invalidate older stored snapshots.
+            methodologyVersion = "v0.9.48.8",
         )
     }
 
@@ -123,13 +159,18 @@ class CarDetector(
      * Tier classification + plain-English interpretation. Healthy CAR =
      * 10-20 bpm amplitude, 20-40 min latency. Blunted CAR (<5 bpm, late
      * latency) is the chronic-stress marker we want to flag.
+     *
+     * v0.9.48.8 — uses rigorous quiet-window amplitude (5-min bin MEANS in
+     * 0-30 min post-wake per Pruessner/Clow/Stalder) when available.
+     * Falls back to wide-window peak amplitude only for legacy results.
      */
     fun interpret(r: CarResult): CarInterpretation {
+        val primaryAmplitude = r.quietWindowAmplitudeBpm ?: r.amplitudeBpm
         val amplitudeTier = when {
-            r.amplitudeBpm < 5f -> CarTier.BLUNTED
-            r.amplitudeBpm < 10f -> CarTier.SUPPRESSED
-            r.amplitudeBpm < 20f -> CarTier.NORMAL
-            r.amplitudeBpm < 30f -> CarTier.ROBUST
+            primaryAmplitude < 5f -> CarTier.BLUNTED
+            primaryAmplitude < 10f -> CarTier.SUPPRESSED
+            primaryAmplitude < 20f -> CarTier.NORMAL
+            primaryAmplitude < 30f -> CarTier.ROBUST
             else -> CarTier.EXAGGERATED
         }
         // Latency tier: typical healthy CAR peaks 20-40 min post-wake.

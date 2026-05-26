@@ -39,13 +39,21 @@ fun CarTrendScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) {
         loading = true
+        // v0.9.48.8 — make sure any legacy snapshots are recomputed with the
+        // rigorous quiet-window methodology BEFORE we render the chart, so
+        // user never sees mixed methodology values mid-load.
+        repo.ensureBackfilled()
         history = withContext(Dispatchers.IO) { repo.listAll() }
         loading = false
     }
 
     val samples = history ?: emptyList()
+    // v0.9.48.8 — chart rigorous quiet-window amplitude when available,
+    // fall back to legacy wide-window for older snapshots saved before
+    // the methodology fix.
     val points = samples.sortedBy { it.sleepEndMs }.map {
-        TrendPoint(labelMs = it.sleepEndMs, y = it.amplitudeBpm)
+        val y = it.quietWindowAmplitudeBpm ?: it.amplitudeBpm
+        TrendPoint(labelMs = it.sleepEndMs, y = y)
     }
     val yMax = (points.maxOfOrNull { it.y } ?: 30f).coerceAtLeast(30f) + 5f
 
@@ -80,12 +88,15 @@ fun CarTrendScreen(onBack: () -> Unit) {
                 "using 24/7 NDJSON + Samsung's sleep-end timestamp. The Bio Lab " +
                 "CAR card will appear when the first reading completes. Each " +
                 "morning adds one dot to this trend.",
-            methodologyFootnote = "Amplitude = peak post-wake HR − last-10-min-of-sleep " +
-                "baseline HR. Tier thresholds adapted from Pruessner 1997, Clow 2010, " +
-                "Stalder 2016 consensus (cortisol amplitude → HR-response amplitude " +
-                "proxy). URUJ measures the HR/HRV signature of the cortisol surge, " +
-                "not cortisol itself — strong correlation in research, but salivary " +
-                "measurement is the lab-gold standard.",
+            methodologyFootnote = "v0.9.48.8: amplitude = max(5-min bin MEAN HR in " +
+                "0-30 min post-wake) − last-10-min-of-sleep baseline HR. Mean-based " +
+                "binning matches salivary cortisol's smooth biochemical signal more " +
+                "honestly than instant peak HR (which captures post-wake activity like " +
+                "walking around). Tier thresholds adapted from Pruessner 1997, Clow " +
+                "2010, Stalder 2016 consensus. URUJ measures the HR/HRV signature of " +
+                "the cortisol surge, not cortisol itself — strong correlation in " +
+                "research, but salivary measurement is the lab-gold standard. Older " +
+                "readings (before v0.9.48.8) use legacy wide-window peak.",
             loading = loading,
         ),
         onBack = onBack,
