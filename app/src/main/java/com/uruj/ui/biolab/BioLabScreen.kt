@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -1551,9 +1552,11 @@ private fun PerStageBreakdown(perStage: Map<String, Float>) {
 
 /**
  * v0.9.50.1 — ELI10 explanation dialog for per-stage RMSSD breakdown.
- * Follows the same dialog pattern as every other Bio Lab ⓘ — explain
- * what each stage means physiologically + what the rider's specific
- * pattern tells them right now.
+ * Matches the app-wide ⓘ pattern: UrujAccent section headers (green),
+ * UrujText body, 13.sp / 18.sp lineHeight, UrujSurface container,
+ * "FOR YOU TONIGHT" boxed in UrujSurfaceHigh, "GOT IT" button in
+ * UrujAccent with letter-spacing. See ReadinessCard.InfoDialog +
+ * ReadinessCard.YouSection for the canonical reference implementation.
  */
 @Composable
 private fun PerStageInfoDialog(
@@ -1567,111 +1570,163 @@ private fun PerStageInfoDialog(
     val awake = perStage["awake"]
     AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("GOT IT", color = UrujAccent, fontWeight = FontWeight.Black)
-            }
-        },
         title = {
             Text(
-                "Per-stage RMSSD — what your sleep stages reveal",
+                "PER-STAGE RMSSD",
                 color = UrujText,
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp,
+                fontWeight = FontWeight.Black,
+                fontSize = 18.sp,
+                letterSpacing = 2.sp,
             )
         },
         text = {
-            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    "Your strap captured RR intervals all night. URUJ already split " +
-                        "those intervals by Samsung's sleep-stage labels (DEEP / REM / " +
-                        "LIGHT / AWAKE) and computed RMSSD separately for each stage.",
-                    color = UrujText, fontSize = 13.sp,
-                )
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "WHAT EACH STAGE MEANS",
-                    color = UrujMuted, fontWeight = FontWeight.Black,
-                    fontSize = 9.sp, letterSpacing = 1.5.sp,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "• DEEP sleep (slow-wave): the body's main repair window. " +
-                        "Parasympathetic nervous system at PEAK tone. RMSSD should be " +
-                        "HIGHEST here in healthy adults.\n\n" +
-                        "• REM sleep: dreaming phase. Sympathetic activity surges and " +
-                        "calms cyclically — RMSSD usually a step below DEEP.\n\n" +
-                        "• LIGHT sleep: transitional. RMSSD lowest of the three sleep " +
-                        "stages (still high vs. waking).\n\n" +
-                        "• AWAKE: brief arousals during the night. Excluded from URUJ's " +
-                        "primary overnight RMSSD (would inflate it falsely).",
-                    color = UrujText, fontSize = 12.sp, lineHeight = 18.sp,
-                )
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "WHAT URUJ EXPECTS (HEALTHY)",
-                    color = UrujMuted, fontWeight = FontWeight.Black,
-                    fontSize = 9.sp, letterSpacing = 1.5.sp,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "DEEP > REM > LIGHT in RMSSD magnitude. This is the canonical " +
-                        "parasympathetic-dominance signature of restorative sleep " +
-                        "(Stein 1997, Brandenberger 2001, Plews 2013).",
-                    color = UrujText, fontSize = 12.sp, lineHeight = 18.sp,
-                )
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "FOR YOU TONIGHT",
-                    color = UrujMuted, fontWeight = FontWeight.Black,
-                    fontSize = 9.sp, letterSpacing = 1.5.sp,
-                )
-                Spacer(Modifier.height(4.dp))
-                val youText = buildString {
-                    append("Deep: ${deep?.let { "%.1f ms".format(it) } ?: "—"}\n")
-                    append("REM: ${rem?.let { "%.1f ms".format(it) } ?: "—"}\n")
-                    append("Light: ${light?.let { "%.1f ms".format(it) } ?: "—"}\n")
-                    append("Awake: ${awake?.let { "%.1f ms (excluded)".format(it) } ?: "—"}\n\n")
-                    if (inverted && deep != null && rem != null) {
-                        append("Your REM (${"%.1f".format(rem)}) is HIGHER than your DEEP ")
-                        append("(${"%.1f".format(deep)}) — the inversion pattern. ")
-                        append("Translation: your slow-wave sleep isn't doing its job ")
-                        append("of restoring vagal tone. This shows up under chronic ")
-                        append("overreach, accumulated fatigue, or under-recovery. The ")
-                        append("first sign your recovery is taking is when this flips ")
-                        append("back to DEEP > REM. Usually leads HRV mean climbing by " )
-                        append("3-7 days. Track this week-over-week.")
-                    } else if (deep != null && rem != null) {
-                        append("DEEP > REM (healthy ordering). Your slow-wave sleep is ")
-                        append("doing its job — parasympathetic tone peaks during deep, ")
-                        append("steps down through REM and LIGHT. Keep stacking nights.")
-                    } else {
-                        append("Not enough stage coverage tonight to compare ")
-                        append("(need ≥3 valid 5-min windows per stage, ~15 min). ")
-                        append("Tomorrow night's reading will likely fill in.")
-                    }
+            Box(
+                modifier = Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Column {
+                    PerStageInfoSection(
+                        "What it is",
+                        "Your strap captured RR intervals all night. URUJ split " +
+                            "those by Samsung's sleep-stage labels (DEEP / REM / " +
+                            "LIGHT / AWAKE) and computed RMSSD separately for each " +
+                            "stage — so you can see which stages drive your overnight " +
+                            "aggregate, not just the headline number.",
+                    )
+                    PerStageInfoSection(
+                        "What each stage means",
+                        "• DEEP (slow-wave) — body's main repair window. " +
+                            "Parasympathetic nervous system at PEAK tone. RMSSD " +
+                            "should be HIGHEST here in healthy adults.\n\n" +
+                            "• REM — dreaming phase. Sympathetic surges + calms " +
+                            "cyclically. RMSSD usually a step below DEEP.\n\n" +
+                            "• LIGHT — transitional. Lowest of the three sleep " +
+                            "stages (still high vs. waking).\n\n" +
+                            "• AWAKE — brief arousals. Excluded from URUJ's primary " +
+                            "overnight RMSSD (would falsely inflate it).",
+                    )
+                    PerStageInfoSection(
+                        "What URUJ expects (healthy)",
+                        "DEEP > REM > LIGHT in RMSSD magnitude. The canonical " +
+                            "parasympathetic-dominance signature of restorative " +
+                            "sleep (Stein 1997, Brandenberger 2001, Plews 2013). " +
+                            "Inversion — REM > DEEP — is a published chronic-" +
+                            "overreach / under-recovery marker.",
+                    )
+                    PerStageInfoSection(
+                        "Why it matters",
+                        "Overnight RMSSD alone tells you parasympathetic tone " +
+                            "averaged across the night. Per-stage tells you WHICH " +
+                            "stages are doing the work. If your headline number is " +
+                            "low because DEEP is suppressed (and REM is fine), " +
+                            "that's specifically a slow-wave-sleep problem — " +
+                            "different prescription than across-the-board " +
+                            "suppression.",
+                    )
+                    PerStageYouSection(
+                        deep = deep,
+                        rem = rem,
+                        light = light,
+                        awake = awake,
+                        inverted = inverted,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    PerStageInfoSection(
+                        "Methodology",
+                        "5-min sliding windows across the full sleep period. Each " +
+                            "window labeled by its dominant Samsung Health sleep " +
+                            "stage (majority-of-seconds wins, AWAKE wins ties as " +
+                            "a safety bias). RMSSD computed per window via Task " +
+                            "Force 1996 spec, median-aggregated WITHIN each stage. " +
+                            "A stage needs ≥3 windows (~15 min) to surface — " +
+                            "Plews 2013 reliability convention.",
+                    )
                 }
-                Text(youText, color = UrujText, fontSize = 12.sp, lineHeight = 18.sp)
-                Spacer(Modifier.height(10.dp))
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
                 Text(
-                    "METHODOLOGY",
-                    color = UrujMuted, fontWeight = FontWeight.Black,
-                    fontSize = 9.sp, letterSpacing = 1.5.sp,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "5-min sliding windows across the full sleep period. Each " +
-                        "window labeled by its dominant Samsung Health sleep stage " +
-                        "(majority of seconds wins, AWAKE wins ties as a safety bias). " +
-                        "RMSSD computed per window via Task Force 1996 spec, then " +
-                        "median-aggregated WITHIN each stage. A stage needs ≥3 windows " +
-                        "(~15 min) to surface here — Plews 2013 reliability convention.",
-                    color = UrujMuted, fontSize = 11.sp, lineHeight = 16.sp,
+                    "GOT IT",
+                    color = UrujAccent,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 2.sp,
                 )
             }
         },
-        containerColor = UrujSurfaceHigh,
+        containerColor = UrujSurface,
     )
+}
+
+@Composable
+private fun PerStageInfoSection(heading: String, body: String) {
+    Text(
+        heading.uppercase(),
+        color = UrujAccent,
+        fontWeight = FontWeight.Black,
+        fontSize = 10.sp,
+        letterSpacing = 1.5.sp,
+    )
+    Spacer(Modifier.height(4.dp))
+    Text(body, color = UrujText, fontSize = 13.sp, lineHeight = 18.sp)
+    Spacer(Modifier.height(12.dp))
+}
+
+@Composable
+private fun PerStageYouSection(
+    deep: Float?,
+    rem: Float?,
+    light: Float?,
+    awake: Float?,
+    inverted: Boolean,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(UrujSurfaceHigh.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+            .padding(10.dp),
+    ) {
+        Column {
+            Text(
+                "FOR YOU TONIGHT",
+                color = UrujAccent,
+                fontWeight = FontWeight.Black,
+                fontSize = 9.sp,
+                letterSpacing = 1.5.sp,
+            )
+            Spacer(Modifier.height(6.dp))
+            val deepStr = deep?.let { "%.1f ms".format(it) } ?: "—"
+            val remStr = rem?.let { "%.1f ms".format(it) } ?: "—"
+            val lightStr = light?.let { "%.1f ms".format(it) } ?: "—"
+            val awakeStr = awake?.let { "%.1f ms (excluded)".format(it) } ?: "—"
+            Text("Deep:  $deepStr", color = UrujText, fontSize = 13.sp)
+            Text("REM:   $remStr", color = UrujText, fontSize = 13.sp)
+            Text("Light: $lightStr", color = UrujText, fontSize = 13.sp)
+            Text("Awake: $awakeStr", color = UrujMuted, fontSize = 13.sp)
+            Spacer(Modifier.height(8.dp))
+            val interpretation = when {
+                inverted && deep != null && rem != null ->
+                    "Your REM (${"%.1f".format(rem)}) is HIGHER than your DEEP " +
+                        "(${"%.1f".format(deep)}) — the inversion pattern. " +
+                        "Translation: slow-wave sleep isn't restoring vagal tone. " +
+                        "This shows up in chronic overreach, accumulated fatigue, " +
+                        "or under-recovery.\n\n" +
+                        "The first sign your recovery is taking is when this flips " +
+                        "back to DEEP > REM. That usually leads HRV mean climbing " +
+                        "by 3-7 days. Track week-over-week."
+                deep != null && rem != null ->
+                    "DEEP > REM (healthy ordering). Your slow-wave sleep is doing " +
+                        "its job — parasympathetic tone peaks during deep, steps " +
+                        "down through REM and LIGHT. Keep stacking nights like this."
+                else ->
+                    "Not enough stage coverage tonight to compare (need ≥3 valid " +
+                        "5-min windows per stage, ~15 min). Tomorrow night's reading " +
+                        "will likely fill in."
+            }
+            Text(interpretation, color = UrujText, fontSize = 13.sp, lineHeight = 18.sp)
+        }
+    }
 }
 
 /**
