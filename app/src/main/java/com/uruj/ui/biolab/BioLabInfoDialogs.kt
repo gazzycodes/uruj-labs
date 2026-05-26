@@ -745,8 +745,17 @@ fun CarInfoDialog(
                 "Healthy morning activation. Body is responding to wake as it should."
             else -> ""
         }
+        // v0.9.48.8 — show rigorous quiet-window primary, wide-window
+        // secondary. Older readings without the new field show just the
+        // legacy single number.
+        val primary = car.quietWindowAmplitudeBpm ?: car.amplitudeBpm
+        val secondaryLine = if (car.quietWindowAmplitudeBpm != null) {
+            "Wide-window peak: ${"%.0f".format(car.amplitudeBpm)} bpm " +
+                "(includes any post-wake activity)\n"
+        } else ""
         YouSection(
-            "Amplitude: ${"%.0f".format(car.amplitudeBpm)} bpm rise (tier ${interpretation.amplitudeTier})\n" +
+            "Quiet-window amplitude: ${"%.0f".format(primary)} bpm rise (tier ${interpretation.amplitudeTier})\n" +
+                secondaryLine +
                 "Latency: ${"%.0f".format(car.latencyMinutes)} min to peak (tier ${interpretation.latencyTier})\n" +
                 "RMSSD trough: ${"%.0f".format(car.rmssdDropPercent)}% drop\n" +
                 "Overall: ${interpretation.summary}\n\n$action"

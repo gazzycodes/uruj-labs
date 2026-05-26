@@ -247,7 +247,10 @@ class ReadinessContextBuilder(context: Context) {
                 val ageHours = (nowMs - car.sleepEndMs) / 3_600_000f
                 CarToday(
                     tier = interp.overallTier,
-                    amplitudeBpm = car.amplitudeBpm,
+                    // v0.9.48.8 — feed rigorous quiet-window amplitude into the
+                    // Readiness signal pack (engine + UI). Falls back to legacy
+                    // wide-window for snapshots saved before v0.9.48.8.
+                    amplitudeBpm = car.quietWindowAmplitudeBpm ?: car.amplitudeBpm,
                     latencyMinutes = car.latencyMinutes,
                     rmssdDropPercent = car.rmssdDropPercent,
                     ageHours = ageHours,

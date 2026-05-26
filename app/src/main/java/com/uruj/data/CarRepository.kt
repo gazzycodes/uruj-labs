@@ -74,6 +74,9 @@ class CarRepository(context: Context) {
         if (Duration.between(sleepEnd, now).toMinutes() < 45) return@withContext null
 
         // Check cache first — same day same wake = same result.
+        // v0.9.48.8: invalidate cache when methodology version doesn't match
+        // the current detector. Old caches without the quiet-window field
+        // (methodologyVersion < v0.9.48.8) are recomputed once per day.
         val dateKey = sleepEnd.atZone(ZoneId.systemDefault())
             .format(FILE_DATE_FORMAT)
         val cacheFile = File(baseDir, "$dateKey.json")
@@ -81,10 +84,9 @@ class CarRepository(context: Context) {
             val cached = runCatching {
                 json.decodeFromString(CarResult.serializer(), cacheFile.readText())
             }.getOrNull()
-            // Use cache only if it corresponds to this wake event (sleepEnd
-            // matches within a minute).
             if (cached != null &&
-                kotlin.math.abs(cached.sleepEndMs - sleepEnd.toEpochMilli()) < 60_000L
+                kotlin.math.abs(cached.sleepEndMs - sleepEnd.toEpochMilli()) < 60_000L &&
+                cached.methodologyVersion == CURRENT_METHODOLOGY
             ) {
                 return@withContext cached
             }
@@ -143,6 +145,9 @@ class CarRepository(context: Context) {
 
     companion object {
         private const val TAG = "URUJ-CAR-Repo"
+        // v0.9.48.8 — must match CarResult.methodologyVersion default.
+        // Bump when CarDetector math changes to invalidate stale caches.
+        private const val CURRENT_METHODOLOGY = "v0.9.48.8"
         private val FILE_DATE_FORMAT: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyy-MM-dd")
     }

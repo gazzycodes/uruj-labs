@@ -2188,6 +2188,11 @@ private fun CarCard(
     // v0.9.7 — use BioCard's standard infoOnClick (consistent with all other
     // Bio Lab cards) instead of the v0.7.2 inline TextButton. Removes ⓘ
     // duplication; unifies the tooltip pattern across the screen.
+    // v0.9.48.8 — primary amplitude = rigorous quiet-window mean-of-bins
+    // (Pruessner/Clow/Stalder). Falls back to legacy wide-window peak for
+    // older results saved before v0.9.48.8.
+    val primaryAmp = car.quietWindowAmplitudeBpm ?: car.amplitudeBpm
+    val hasRigorous = car.quietWindowAmplitudeBpm != null
     BioCard(
         "CAR — cortisol awakening response",
         accentColor = accent,
@@ -2197,16 +2202,17 @@ private fun CarCard(
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
-                "+${"%.0f".format(car.amplitudeBpm)}",
+                "+${"%.0f".format(primaryAmp)}",
                 color = UrujText,
                 fontWeight = FontWeight.Black,
                 fontSize = 44.sp,
             )
             Spacer(Modifier.width(6.dp))
             Column(modifier = Modifier.padding(bottom = 10.dp)) {
-                Text("bpm amplitude", color = UrujMuted, fontSize = 10.sp)
+                Text("bpm quiet-window CAR", color = UrujMuted, fontSize = 10.sp)
                 Text(
-                    "peak ${"%.0f".format(car.latencyMinutes)} min after wake",
+                    if (hasRigorous) "5-min bin means · 0-30 min post-wake"
+                    else "legacy wide-window peak",
                     color = UrujMuted, fontSize = 10.sp,
                 )
             }
@@ -2231,10 +2237,23 @@ private fun CarCard(
                     "${"%.1f".format(car.baselineRmssdMs)} ms RMSSD",
                 color = UrujText, fontSize = 11.sp,
             )
-            Text(
-                "Peak post-wake: ${"%.0f".format(car.peakHrBpm)} bpm",
-                color = UrujText, fontSize = 11.sp,
-            )
+            if (hasRigorous) {
+                Text(
+                    "Quiet-window peak: ${"%.0f".format(car.quietWindowPeakMeanBpm ?: 0f)} bpm " +
+                        "(${car.quietWindowPeakBinMinutes ?: 0}-${(car.quietWindowPeakBinMinutes ?: 0) + 5} min)",
+                    color = UrujText, fontSize = 11.sp,
+                )
+                Text(
+                    "Wide-window raw peak: ${"%.0f".format(car.peakHrBpm)} bpm " +
+                        "(includes post-wake activity)",
+                    color = UrujMuted, fontSize = 10.sp,
+                )
+            } else {
+                Text(
+                    "Peak post-wake: ${"%.0f".format(car.peakHrBpm)} bpm",
+                    color = UrujText, fontSize = 11.sp,
+                )
+            }
             Text(
                 "RMSSD drop on activation: ${"%.0f".format(car.rmssdDropPercent)}% " +
                     "(trough ${"%.1f".format(car.troughRmssdMs)} ms)",
@@ -2247,13 +2266,16 @@ private fun CarCard(
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            "CAR = HR + HRV inflection in first 30-45 min after waking, proxy " +
+            "CAR = HR + HRV inflection in first 30 min after waking, proxy " +
                 "for cortisol surge (Pruessner 1997, Clow 2010, Stalder 2016). " +
+                "v0.9.48.8: primary amplitude uses 5-min bin MEANS to filter " +
+                "out post-wake activity (walking, kitchen, etc.) that " +
+                "incorrectly inflated wide-window peak HR. " +
                 "Healthy adult range: 10-20 bpm rise, peak 20-40 min post-wake. " +
-                "Blunted CAR (<5 bpm) is a published marker of chronic stress, " +
-                "burnout, overtraining, depression. Robust CAR (20+ bpm) = " +
-                "strong HPA-axis activation. Computed from BLE chest strap RR + " +
-                "HC sleep window — NOT salivary cortisol (the lab-gold standard).",
+                "Blunted CAR (<5 bpm) = chronic stress / burnout. " +
+                "Robust CAR (20-30 bpm) = strong HPA-axis activation. " +
+                "Computed from BLE chest strap RR + HC sleep window — " +
+                "NOT salivary cortisol (the lab-gold standard).",
             color = UrujMuted, fontSize = 10.sp,
         )
         Spacer(Modifier.height(10.dp))
