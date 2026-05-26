@@ -142,6 +142,8 @@ data class PostprandialSnapshot(
     val source: String,
     /** Wall-clock epoch ms when this snapshot was computed. */
     val computedAtMs: Long,
-    /** Methodology version for forward-traceability. */
-    val methodologyVersion: String,
+    // v0.9.49.1 — default "legacy" per [[reference_lab_grade_architecture_rules]]
+    // Rule 2 so pre-versioning snapshots deserialize gracefully + future
+    // methodology bumps invalidate via mismatch instead of accidental match.
+    val methodologyVersion: String = "legacy",
 )

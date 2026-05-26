@@ -168,6 +168,9 @@ class ReadinessContextBuilder(context: Context) {
         val sorenessTodayList = runCatching {
             trackerRepo.listForToday(com.uruj.domain.TrackerType.SORENESS.key)
         }.rethrowCancellation().getOrNull().orEmpty()
+        // v0.9.49.1 — opportunistically migrate any legacy orthostatic snapshots
+        // before reading. Idempotent + cheap after first call per process.
+        runCatching { orthostaticRepo.ensureBackfilled() }.rethrowCancellation()
         val carResult = runCatching { carRepo.cachedLatest() }.rethrowCancellation().getOrNull()
         val orthostaticResult = runCatching { orthostaticRepo.latest() }.rethrowCancellation().getOrNull()
 
