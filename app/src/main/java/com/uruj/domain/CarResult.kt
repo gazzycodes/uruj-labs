@@ -60,7 +60,11 @@ data class CarResult(
     val quietWindowAmplitudeBpm: Float? = null,
     val quietWindowPeakMeanBpm: Float? = null,
     val quietWindowPeakBinMinutes: Int? = null,
-    val methodologyVersion: String = "v0.9.48.8",
+    // Default "legacy" so old cache files (which don't serialize this field
+    // because of encodeDefaults=false) deserialize as "legacy" and trigger
+    // cache invalidation. CarDetector.compute() explicitly sets the current
+    // methodology when producing fresh results.
+    val methodologyVersion: String = "legacy",
 )
 
 /** Tier classification of the CAR signal. */

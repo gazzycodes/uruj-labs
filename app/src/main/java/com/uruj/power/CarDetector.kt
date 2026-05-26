@@ -149,6 +149,9 @@ class CarDetector(
             quietWindowAmplitudeBpm = quietAmplitude,
             quietWindowPeakMeanBpm = quietPeakMean,
             quietWindowPeakBinMinutes = quietPeakBin?.let { it * quietBinMinutes },
+            // Explicitly tag fresh results with current methodology so the
+            // repository cache can invalidate older stored snapshots.
+            methodologyVersion = "v0.9.48.8",
         )
     }
 
