@@ -39,6 +39,10 @@ fun CarTrendScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) {
         loading = true
+        // v0.9.48.8 — make sure any legacy snapshots are recomputed with the
+        // rigorous quiet-window methodology BEFORE we render the chart, so
+        // user never sees mixed methodology values mid-load.
+        repo.ensureBackfilled()
         history = withContext(Dispatchers.IO) { repo.listAll() }
         loading = false
     }

@@ -9,6 +9,7 @@ import com.uruj.domain.CarResult
 import com.uruj.power.CarDetector
 import com.uruj.util.rethrowCancellation
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -43,6 +44,13 @@ class CarRepository(context: Context) {
     private val continuousRepo = ContinuousBiometricRepository(appContext)
     private val lastSleepReader = LastSleepReader()
     private val detector = CarDetector()
+    // v0.9.48.8 — guard for ensureBackfilled() so we run the historical
+    // migration at most once per process. Per-file failures (missing NDJSON)
+    // simply leave the legacy file untouched — next process restart will
+    // retry. Concurrent callers (BioLab + CarTrend opening simultaneously)
+    // serialize on backfillMutex so we don't double-write the same files.
+    @Volatile private var backfillCompleted = false
+    private val backfillMutex = kotlinx.coroutines.sync.Mutex()
 
     /**
      * Compute CAR for the most-recent completed sleep window, OR return the
@@ -54,6 +62,10 @@ class CarRepository(context: Context) {
      *   - Not enough 24/7 samples in baseline or post-wake window
      */
     suspend fun computeForLastWake(): CarResult? = withContext(Dispatchers.IO) {
+        // v0.9.48.8 — opportunistically backfill historical legacy snapshots
+        // the first time we run after a methodology bump. Idempotent + cheap
+        // after the first pass.
+        ensureBackfilled()
         val sdkOk = HealthConnectClient.getSdkStatus(appContext) ==
             HealthConnectClient.SDK_AVAILABLE
         if (!sdkOk) return@withContext null
@@ -115,6 +127,153 @@ class CarRepository(context: Context) {
         result
     }
 
+    /**
+     * v0.9.48.8 — One-shot historical migration of legacy CAR snapshots to
+     * the rigorous quiet-window methodology (Pruessner/Clow/Stalder).
+     *
+     * For each cached CAR file whose [CarResult.methodologyVersion] is NOT
+     * the current methodology:
+     *   1. Slice the same pre-wake (10 min) + post-wake (45 min) windows
+     *      from 24/7 NDJSON via [ContinuousBiometricRepository].
+     *   2. Re-run [CarDetector.compute] with the new logic (5-min bin
+     *      means in 0-30 min post-wake → quiet-window amplitude).
+     *   3. Preserve the ORIGINAL sessionId + computedAtMs for traceability
+     *      (the recompute is migrating math, not creating a new event).
+     *   4. Overwrite the cache file with the migrated result.
+     *
+     * Failure handling:
+     *   - Corrupted JSON file → skip, log warn, leave untouched.
+     *   - NDJSON missing / too few samples → skip, log warn. Next process
+     *     restart will retry once. NDJSON has been purged from disk for
+     *     days >10 days old, so old snapshots can be permanently legacy.
+     *   - Compute returns null → skip, leave untouched.
+     *   - File-write failure → counted as failed, leave previous file
+     *     intact (no half-written state because [File.writeText] is atomic
+     *     within Android's app-private storage at this size).
+     *
+     * Idempotency: a snapshot already at [CURRENT_METHODOLOGY] is skipped
+     * cheaply. The [backfillCompleted] flag ensures we attempt the full
+     * pass at most once per process — subsequent calls return immediately.
+     *
+     * Concurrency: guarded by [backfillMutex]. If BioLab.refresh and
+     * CarTrendScreen.LaunchedEffect both hit this on app open, the second
+     * call awaits the first and then short-circuits via the completion flag.
+     */
+    suspend fun ensureBackfilled() {
+        if (backfillCompleted) return
+        backfillMutex.withLock {
+            if (backfillCompleted) return@withLock
+            try {
+                val result = backfillHistorical()
+                Log.d(
+                    TAG,
+                    "[backfill] complete: ${result.recomputed} recomputed, " +
+                        "${result.alreadyRigorous} already-rigorous, " +
+                        "${result.skipped} skipped (no NDJSON or insufficient samples), " +
+                        "${result.failed} failed",
+                )
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                Log.w(TAG, "[backfill] aborted by exception", t)
+            } finally {
+                backfillCompleted = true
+            }
+        }
+    }
+
+    /** Result counters for the backfill pass (exposed for tests + logging). */
+    data class BackfillResult(
+        val recomputed: Int,
+        val alreadyRigorous: Int,
+        val skipped: Int,
+        val failed: Int,
+    )
+
+    private suspend fun backfillHistorical(): BackfillResult = withContext(Dispatchers.IO) {
+        val files = baseDir.listFiles { f -> f.name.endsWith(".json") }
+            ?: return@withContext BackfillResult(0, 0, 0, 0)
+        var recomputed = 0
+        var alreadyRigorous = 0
+        var skipped = 0
+        var failed = 0
+
+        for (file in files) {
+            val cached = runCatching {
+                json.decodeFromString(CarResult.serializer(), file.readText())
+            }.getOrNull()
+            if (cached == null) {
+                Log.w(TAG, "[backfill] ${file.name} corrupt or unreadable — leaving untouched")
+                failed++
+                continue
+            }
+            if (cached.methodologyVersion == CURRENT_METHODOLOGY) {
+                alreadyRigorous++
+                continue
+            }
+
+            // Re-slice the same windows from NDJSON.
+            val sleepEnd = Instant.ofEpochMilli(cached.sleepEndMs)
+            val preWakeStart = sleepEnd.minus(Duration.ofMinutes(10))
+            val postWakeEnd = sleepEnd.plus(Duration.ofMinutes(45))
+
+            val preWake = runCatching { continuousRepo.samplesForWindow(preWakeStart, sleepEnd) }
+                .rethrowCancellation()
+                .getOrDefault(emptyList())
+            val postWake = runCatching { continuousRepo.samplesForWindow(sleepEnd, postWakeEnd) }
+                .rethrowCancellation()
+                .getOrDefault(emptyList())
+
+            if (preWake.size < MIN_SAMPLES_FOR_BACKFILL ||
+                postWake.size < MIN_SAMPLES_FOR_BACKFILL
+            ) {
+                Log.w(
+                    TAG,
+                    "[backfill] ${file.name} insufficient NDJSON " +
+                        "(pre=${preWake.size}, post=${postWake.size}) — leaving legacy untouched",
+                )
+                skipped++
+                continue
+            }
+
+            val fresh = detector.compute(
+                sleepEndMs = cached.sleepEndMs,
+                preWakeSamples = preWake,
+                postWakeSamples = postWake,
+            )
+            if (fresh == null) {
+                Log.w(TAG, "[backfill] ${file.name} compute returned null — leaving legacy untouched")
+                skipped++
+                continue
+            }
+
+            // Preserve original session identifiers — this is a math migration
+            // of an existing reading, not a new event.
+            val migrated = fresh.copy(
+                sessionId = cached.sessionId,
+                computedAtMs = cached.computedAtMs,
+            )
+
+            val writeOk = runCatching {
+                file.writeText(json.encodeToString(CarResult.serializer(), migrated))
+            }.isSuccess
+            if (!writeOk) {
+                Log.w(TAG, "[backfill] ${file.name} write failed — leaving legacy untouched")
+                failed++
+                continue
+            }
+
+            val oldAmp = "%.1f".format(cached.amplitudeBpm)
+            val newAmp = migrated.quietWindowAmplitudeBpm?.let { "%.1f".format(it) } ?: "n/a"
+            Log.d(
+                TAG,
+                "[backfill] ${file.name}: legacy wide-window=$oldAmp bpm → " +
+                    "rigorous quiet-window=$newAmp bpm",
+            )
+            recomputed++
+        }
+        BackfillResult(recomputed, alreadyRigorous, skipped, failed)
+    }
+
     /** Latest cached result on disk (for fast Bio Lab render before refresh). */
     fun cachedLatest(): CarResult? {
         if (!baseDir.exists()) return null
@@ -145,9 +304,14 @@ class CarRepository(context: Context) {
 
     companion object {
         private const val TAG = "URUJ-CAR-Repo"
-        // v0.9.48.8 — must match CarResult.methodologyVersion default.
-        // Bump when CarDetector math changes to invalidate stale caches.
+        // v0.9.48.8 — must match CarResult that fresh computes write.
+        // Bump when CarDetector math changes to invalidate stale caches
+        // and trigger backfill on next ensureBackfilled() call.
         private const val CURRENT_METHODOLOGY = "v0.9.48.8"
+        // Sanity floor — same as CarDetector.minSamplesPerWindow. Backfill
+        // skips windows under this threshold so we don't write low-quality
+        // results that could mislead the trend chart.
+        private const val MIN_SAMPLES_FOR_BACKFILL = 60
         private val FILE_DATE_FORMAT: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyy-MM-dd")
     }

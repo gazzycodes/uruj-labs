@@ -16,7 +16,7 @@ android {
         applicationId = "com.uruj"
         minSdk = 26
         targetSdk = 36
-        versionCode = 129
+        versionCode = 130
         versionName = "0.9.48.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
