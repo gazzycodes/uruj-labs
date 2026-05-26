@@ -1359,6 +1359,17 @@ private fun AutonomicHealthCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) 
                 color = UrujMuted, fontSize = 11.sp,
             )
         }
+        // v0.9.50 — per-stage RMSSD breakdown (#210). Surfaces the existing
+        // stage-aware math in the UI so the rider sees which sleep stages
+        // drive the overnight aggregate. Healthy adult shows DEEP > REM >
+        // LIGHT. Inversion (REM > DEEP) is a chronic-overreach marker that's
+        // physiologically interesting and otherwise hidden in logcat.
+        // Only render when stage breakdown is present (≥3 valid windows
+        // per stage, ~15 min — Plews convention).
+        if (s.autonomicPerStageRmssdMs.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            PerStageBreakdown(perStage = s.autonomicPerStageRmssdMs)
+        }
         // Baseline-building notice — only shows during the first 7 days of
         // continuous monitoring when we don't yet have a stable personal
         // baseline to compare against. Surfaces honestly that today's number
@@ -1416,6 +1427,83 @@ private fun AutonomicHealthCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) 
                 fontWeight = FontWeight.Black,
                 fontSize = 12.sp,
                 letterSpacing = 1.5.sp,
+            )
+        }
+    }
+}
+
+/**
+ * v0.9.50 — Per-stage RMSSD breakdown surfaced on the Bio Lab Autonomic
+ * card. Reads `BioLabSnapshot.autonomicPerStageRmssdMs` (already computed
+ * by HrvCalculator stage-aware windowing) and renders one row per stage
+ * with the value + a short interpretation when ordering is anomalous.
+ *
+ * Healthy adult pattern: DEEP > REM > LIGHT (highest parasympathetic
+ * tone during slow-wave sleep). Inversion — especially REM > DEEP —
+ * is a meaningful chronic-overreach / autonomic-suppression signal
+ * that's otherwise hidden in logcat. Surfacing makes the rider's
+ * physiology readable at a glance.
+ *
+ * Order: DEEP, REM, LIGHT, AWAKE (excluded from primary aggregate),
+ * then any "asleep"/"unknown" leftovers.
+ */
+@Composable
+private fun PerStageBreakdown(perStage: Map<String, Float>) {
+    val order = listOf("deep", "rem", "light", "awake", "asleep", "unknown")
+    val ordered = order.mapNotNull { key -> perStage[key]?.let { key to it } }
+    val deep = perStage["deep"]
+    val rem = perStage["rem"]
+    val light = perStage["light"]
+    val inverted = deep != null && rem != null && rem > deep
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(UrujSurfaceHigh.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+            .padding(10.dp),
+    ) {
+        Text(
+            "PER-STAGE RMSSD",
+            color = UrujMuted,
+            fontWeight = FontWeight.Black,
+            fontSize = 9.sp,
+            letterSpacing = 1.5.sp,
+        )
+        Spacer(Modifier.height(4.dp))
+        for ((key, value) in ordered) {
+            val label = when (key) {
+                "deep" -> "Deep sleep"
+                "rem" -> "REM"
+                "light" -> "Light sleep"
+                "awake" -> "Awake (excluded)"
+                "asleep" -> "Asleep (unstaged)"
+                else -> "Unknown"
+            }
+            val accent = when (key) {
+                "deep" -> UrujZone2  // green — should be highest
+                "rem" -> UrujAccent
+                "light" -> UrujText
+                "awake" -> UrujMuted
+                else -> UrujMuted
+            }
+            Text(
+                "$label: ${"%.1f".format(value)} ms",
+                color = accent, fontSize = 11.sp,
+            )
+        }
+        if (inverted) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "⚠ REM (${"%.1f".format(rem)}) > DEEP (${"%.1f".format(deep)}) — " +
+                    "deep sleep isn't restoring vagal tone like it should. " +
+                    "Chronic-overreach or under-recovery marker; expect this " +
+                    "to flip back to DEEP > REM as recovery progresses.",
+                color = UrujMuted, fontSize = 10.sp,
+            )
+        } else if (deep != null && rem != null && light != null) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "DEEP > REM = healthy parasympathetic dominance during slow-wave sleep.",
+                color = UrujMuted, fontSize = 10.sp,
             )
         }
     }
