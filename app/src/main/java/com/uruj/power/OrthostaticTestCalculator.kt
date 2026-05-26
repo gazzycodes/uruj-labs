@@ -72,7 +72,21 @@ class OrthostaticTestCalculator(
             standingSampleCount = standingHrv.sampleCount,
             hrDeltaBpm = hrDelta,
             rmssdRatio = rmssdRatio,
+            // v0.9.49.1 — explicit methodology tag for cache invalidation per
+            // [[reference_lab_grade_architecture_rules]] Rule 2.
+            methodologyVersion = CURRENT_METHODOLOGY,
         )
+    }
+
+    companion object {
+        /**
+         * Current orthostatic methodology — mean HR per 2-min window for
+         * seated + standing, RMSSD ratio derived from windowed flat-RR
+         * (Bonjer 2006 / Plews 2013 protocol). Bump when math changes
+         * (e.g. excluding first-30s standing settling period would warrant
+         * v0.9.50-bonjer-mean-skip30s).
+         */
+        const val CURRENT_METHODOLOGY = "v0.9.49.1-bonjer-mean"
     }
 
     /** Tier classification + plain-English interpretation. */

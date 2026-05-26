@@ -48,6 +48,9 @@ fun OrthostaticTrendScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) {
         loading = true
+        // v0.9.49.1 — migrate legacy snapshots to current methodology before
+        // rendering so the chart never silently mixes versions.
+        repo.ensureBackfilled()
         history = withContext(Dispatchers.IO) { repo.listAll() }
         loading = false
     }

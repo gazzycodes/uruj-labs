@@ -193,6 +193,9 @@ data class Vo2Snapshot(
     val samsungMlKgMin: Float? = null,
     /** Cooper classification: "Elite (top 5%)", "Excellent", etc. */
     val classification: String,
-    val methodologyVersion: String,
+    // v0.9.49.1 — default "legacy" per [[reference_lab_grade_architecture_rules]]
+    // Rule 2 so pre-versioning snapshots deserialize gracefully + future
+    // methodology bumps invalidate via mismatch instead of accidental match.
+    val methodologyVersion: String = "legacy",
     val computedAtMs: Long,
 )

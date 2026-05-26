@@ -263,7 +263,10 @@ data class RhrSnapshot(
     val mostRecentNightSource: String,
     /** Number of nights that contributed to today's median. */
     val nightsContributing: Int,
-    val methodologyVersion: String,
+    // v0.9.49.1 — default "legacy" per [[reference_lab_grade_architecture_rules]]
+    // Rule 2 so pre-versioning snapshots deserialize gracefully + future
+    // methodology bumps invalidate via mismatch instead of accidental match.
+    val methodologyVersion: String = "legacy",
     val computedAtMs: Long,
 ) {
     val mostRecentNightSourceEnum: SensorSource

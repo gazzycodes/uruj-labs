@@ -160,8 +160,17 @@ data class HrrSnapshot(
     val classification: String,
     /** Which sensor produced this reading, persisted as SensorSource enum NAME. */
     val source: String,
-    /** Methodology version tag — see `HrrSnapshotRepository.METHODOLOGY_VERSION`. */
-    val methodologyVersion: String,
+    /**
+     * Methodology version tag — see `HrrSnapshotRepository.METHODOLOGY_VERSION`.
+     *
+     * v0.9.49.1 — default "legacy" per
+     * [[reference_lab_grade_architecture_rules]] Rule 2 so pre-v0.7.7
+     * snapshots (which don't carry this field) deserialize gracefully
+     * instead of failing as "corrupt." When HRR1 math changes in a future
+     * PR, bump [HrrSnapshotRepository.METHODOLOGY_VERSION] + add an
+     * `ensureBackfilled()` to migrate snapshots (NDJSON+HC permitting).
+     */
+    val methodologyVersion: String = "legacy",
     /** When this snapshot was written to disk. */
     val computedAtMs: Long,
 ) {

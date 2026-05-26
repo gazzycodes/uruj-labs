@@ -48,6 +48,13 @@ data class OrthostaticTestResult(
     val standingSampleCount: Int,
     val hrDeltaBpm: Float,
     val rmssdRatio: Float,
+    // v0.9.49.1 — methodology versioning per
+    // [[reference_lab_grade_architecture_rules]] Rule 2.
+    // Default "legacy" so pre-v0.9.49.1 serialized files (missing this field)
+    // deserialize as "legacy" and trigger cache invalidation on next read.
+    // OrthostaticTestCalculator explicitly tags fresh results with the
+    // current methodology constant from OrthostaticTestRepository.
+    val methodologyVersion: String = "legacy",
 )
 
 /** Tier labels derived from a result. Used for UI color-coding + interpretation. */
