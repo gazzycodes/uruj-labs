@@ -97,9 +97,13 @@ class ReadinessRepository(context: Context) {
     // v0.9.1 — daily TSB snapshots so the 6-month fitness curve survives
     // beyond HC's 30-day retention window. Same architecture as HRR1/RHR/VO2.
     private val tsbSnapshots = TsbSnapshotRepository(appContext)
-    // v0.9.52 — disk-first HRV historical reads (replaces the 14s/refresh
-    // recompute-storm via ContinuousBiometricRepository.dailyOvernightHrv...).
-    private val hrvSnapshots = HrvSnapshotRepository(appContext)
+    // v0.9.52.1 — disk-first HRV historical reads REVERTED. Reading stored
+    // snapshots that were saved with pre-v0.9.48 methodology causes median
+    // drift (this morning's logcat showed 7d median 13.7 → 11.3 ms after the
+    // v0.9.52 change took effect — a data correctness regression). The
+    // disk-first path is restored in v0.9.56 once v0.9.55's
+    // HrvSnapshotRepository.ensureBackfilled() migrates legacy-methodology
+    // snapshots to current. See [[reference_perf_architecture_findings_2026_05_27]].
     // v0.9.4 — unified signal pack assembler + reasoner + recommendation
     // history. See [[reference_readiness_context_architecture]] for the law.
     private val contextBuilder = ReadinessContextBuilder(appContext)
@@ -723,34 +727,39 @@ class ReadinessRepository(context: Context) {
             if (computedHrv != null) {
                 hrvToday = computedHrv.rmssdMs
                 hrvSource = "ble_strap"
-                // v0.9.52 — DISK-FIRST historical reads. Replaced the
-                // ContinuousBiometricRepository.dailyOvernightHrvHistoryFromSessions
-                // call that was re-running the full HrvCalculator pipeline on raw
-                // NDJSON for 7 nights (~14s wasted per Readiness compute). Now
-                // we read snapshots from HrvSnapshotRepository (architecture
-                // rule: past = disk read only, [[reference_snapshot_persistence_architecture]]).
-                // Today's freshly-computed value is included via computedHrv.
-                val today = LocalDate.now(ZoneId.systemDefault())
-                val historicalSnapshots = runCatching {
-                    hrvSnapshots.listLastNDays(7)
-                }.rethrowCancellation().getOrDefault(emptyList())
-                // Dedup: if today's snapshot already on disk (from prior open),
-                // skip the disk copy — fresh compute is the source of truth.
-                val historicalRmssd = historicalSnapshots
-                    .filter { it.dateIsoLocal != today.toString() }
-                    .mapNotNull { it.rmssdMs }
-                // Include today's fresh value at the front (newest first).
-                val nightly = listOf(computedHrv.rmssdMs) + historicalRmssd
-                hrvDaysOfDataIn7d = nightly.size
-                if (nightly.size >= 2) {
-                    val sorted = nightly.sorted()
+                // Count days of overnight HRV data — drives scoring mode.
+                // v0.7.4: use Samsung sleep windows (same source as Bio Lab
+                // Autonomic card + the trend chart) so day count + baseline
+                // agree across surfaces.
+                //
+                // v0.9.52.1: REVERTED v0.9.52's disk-first read. Reading
+                // stored HrvSnapshot values directly bypasses methodology
+                // versioning — pre-v0.9.48 snapshots have older RMSSD math
+                // that drifts the 7d median (this morning's logcat showed
+                // the 13.7 → 11.3 regression). Returns to recomputing from
+                // NDJSON for the historical 7 nights. Slower (~14s), but
+                // values match current methodology across all surfaces. The
+                // disk-first path is restored in v0.9.56 once v0.9.55's
+                // ensureBackfilled() migrates legacy snapshots. See
+                // [[reference_perf_architecture_findings_2026_05_27]].
+                val recentSleeps = lastSleepReader.listLastNDays(client, granted, 7)
+                val recentNights = continuousBiometric
+                    .dailyOvernightHrvHistoryFromSessions(recentSleeps)
+                hrvDaysOfDataIn7d = recentNights.size
+                if (recentNights.size >= 2) {
+                    val sorted = recentNights.map { it.hrv.rmssdMs }.sorted()
                     hrvBaseline = sorted[sorted.size / 2]
                 }
                 // v0.9.4 — preserve per-night RMSSD list (newest first) for
                 // the ReadinessContextBuilder to compute trend direction.
-                hrvNightlyRmssdMs = nightly
-                // Note: when nightly.size < 2 we leave hrvBaseline = null.
-                // ReadinessCalculator will use absolute-tier scoring instead.
+                // Without this, the reasoner can only see today's absolute
+                // and misses the trajectory (e.g. rider's 12.2 → 8.7 ms
+                // 2026-05-19 morning was a sharp DOWN that today's absolute
+                // alone wouldn't flag as a trend signal).
+                hrvNightlyRmssdMs = recentNights.map { it.hrv.rmssdMs }
+                // Note: when recentNights.size < 2 we leave hrvBaseline = null.
+                // ReadinessCalculator will use absolute-tier scoring instead of
+                // computing a meaningless "+0% vs same value" ratio.
             }
         }
 
