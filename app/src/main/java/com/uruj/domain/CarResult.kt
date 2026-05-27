@@ -73,6 +73,16 @@ data class CarInterpretation(
     val latencyTier: CarTier,
     val overallTier: CarTier,
     val summary: String,
+    // v0.9.51 — Arousal-artifact detection.
+    // TRUE when the post-wake HR spike has the WRONG shape for true HPA-axis
+    // activation: very early peak (< 10 min latency) combined with insufficient
+    // vagal withdrawal (< 15% RMSSD drop). Real CAR has BOTH magnitude AND
+    // smooth vagal-withdrawal signature peaking 20-40 min post-wake (Clow 2010).
+    // When TRUE, the overall tier is forced to NORMAL so the engine doesn't
+    // treat the reading as a severe flag, and the UI surfaces a disclaimer.
+    // See [[reference_car_methodology_audit_2026_05_26]] for the methodology
+    // arc; today's flag was discovered when CAR jumped to +34/0.5min/5% drop.
+    val isArousalArtifact: Boolean = false,
 )
 
 enum class CarTier {

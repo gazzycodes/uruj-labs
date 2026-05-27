@@ -2572,6 +2572,37 @@ private fun CarCard(
                 color = UrujMuted, fontSize = 10.sp,
             )
         }
+        // v0.9.51 — Arousal-artifact disclaimer. When the reading's shape
+        // signals "movement at wake, not HPA-axis surge," surface it BEFORE
+        // the methodology paragraph so the rider doesn't misinterpret the
+        // numbers above as real stress signal.
+        if (interp.isArousalArtifact) {
+            Spacer(Modifier.height(8.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(UrujSurfaceHigh.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                    .padding(10.dp),
+            ) {
+                Text(
+                    "⚠ AROUSAL ARTIFACT — NOT HPA-AXIS",
+                    color = UrujZone3,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 9.sp,
+                    letterSpacing = 1.5.sp,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Peak at ${"%.1f".format(car.latencyMinutes)} min (real CAR " +
+                        "peaks 20-40 min) AND only " +
+                        "${car.rmssdDropPercent.toInt()}% RMSSD drop (real CAR is " +
+                        "30-60%). Likely a brief movement / sit-up / Samsung-wake " +
+                        "edge — the HR jumped but parasympathetic withdrawal " +
+                        "didn't follow. Discounted from severity rating.",
+                    color = UrujText, fontSize = 11.sp, lineHeight = 15.sp,
+                )
+            }
+        }
         Spacer(Modifier.height(8.dp))
         Text(
             "CAR = HR + HRV inflection in first 30 min after waking, proxy " +
@@ -2579,6 +2610,9 @@ private fun CarCard(
                 "v0.9.48.8: primary amplitude uses 5-min bin MEANS to filter " +
                 "out post-wake activity (walking, kitchen, etc.) that " +
                 "incorrectly inflated wide-window peak HR. " +
+                "v0.9.51: arousal-artifact detection — when peak is too early " +
+                "AND RMSSD drop is too small for the magnitude, the reading is " +
+                "downgraded from severity ratings (it's a startle, not stress). " +
                 "Healthy adult range: 10-20 bpm rise, peak 20-40 min post-wake. " +
                 "Blunted CAR (<5 bpm) = chronic stress / burnout. " +
                 "Robust CAR (20-30 bpm) = strong HPA-axis activation. " +
