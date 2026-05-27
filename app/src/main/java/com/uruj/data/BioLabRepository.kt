@@ -457,9 +457,16 @@ class BioLabRepository(context: Context) {
         // v0.7.4: use Samsung sleep windows (same as Bio Lab Autonomic card)
         // instead of the old 22:00-09:00 heuristic so the day count agrees
         // with what the trend chart shows.
-        val recentSleeps7d = lastSleepReader.listLastNDays(client, granted, 7)
-        val autonomicDaysOfData = continuousBiometric
-            .dailyOvernightHrvHistoryFromSessions(recentSleeps7d).size
+        // v0.9.52 — DISK-FIRST count. Previously called
+        // `continuousBiometric.dailyOvernightHrvHistoryFromSessions(...).size`
+        // which recomputed HRV from raw NDJSON for 7 nights just to count
+        // them (~14s wasted per refresh). Per
+        // [[reference_snapshot_persistence_architecture]] Rule 1, past values
+        // = disk read only. Use HrvSnapshotRepository.countInLastNDays(7)
+        // which reads cached snapshot files in ~10ms.
+        val autonomicDaysOfData = runCatching {
+            hrvSnapshots.countInLastNDays(7)
+        }.rethrowCancellation().getOrDefault(0)
 
         // v0.9.27 — persist today's HRV snapshot to disk for trend chart
         // history. Today-mutable, past-immutable. Per [[reference_snapshot_
