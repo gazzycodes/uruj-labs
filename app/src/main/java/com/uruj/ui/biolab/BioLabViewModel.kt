@@ -69,6 +69,33 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
      */
     fun refresh(force: Boolean = false) {
         viewModelScope.launch {
+            // v0.9.54 — tab-open debounce. If the cached snapshot is fresh
+            // (<60s old) AND this is not a manual SYNC (force=false), skip
+            // the whole compute path. The user JUST loaded Bio Lab seconds
+            // ago — re-running the full snapshot() (HC reads + NDJSON walk
+            // + HRR1 evaluation + HRV today + FreqDomain + CAR backfill =
+            // ~18s cold) on a tab re-open is wasted work the user can't
+            // distinguish from cached data anyway.
+            //
+            // Mirror of ChecklistViewModel.READINESS_REFRESH_DEBOUNCE_MS
+            // pattern from v0.8.4 — same architectural rule applied to
+            // Bio Lab. Manual SYNC button (force=true) always bypasses;
+            // the rider explicitly asked for fresh data at that point.
+            //
+            // Per [[reference_perf_architecture_findings_2026_05_27]] this
+            // is the missing piece — pre-v0.9.54 BioLab fired snapshot()
+            // on EVERY observer tick, including rapid tab-switches. The
+            // v0.8.5 sticky-cache only protected against degraded
+            // overwrite; it did not skip the expensive work itself.
+            val current = _snapshot.value
+            val ageMs = current?.let { System.currentTimeMillis() - it.computedAtMs } ?: Long.MAX_VALUE
+            if (!force && current != null && ageMs < BIOLAB_REFRESH_DEBOUNCE_MS) {
+                Log.d(
+                    TAG,
+                    "[v0.9.54] debounced — cached snapshot is ${ageMs / 1000}s old (<${BIOLAB_REFRESH_DEBOUNCE_MS / 1000}s threshold)",
+                )
+                return@launch
+            }
             _isLoading.value = true
             try {
                 // v0.8.5 — during the post-ride quiet window, serve cache
@@ -263,5 +290,22 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
          * stops syncing for hours).
          */
         private const val STALENESS_FLOOR_MS = 10L * 60L * 1000L
+
+        /**
+         * v0.9.54 — tab-open debounce window. When refresh() is called with
+         * force=false (programmatic / observer / tab re-open) AND the cached
+         * snapshot is younger than this, skip the entire compute path.
+         *
+         * 60s is the same threshold used by
+         * [com.uruj.ui.checklist.ChecklistViewModel.READINESS_REFRESH_DEBOUNCE_MS]
+         * — rationale documented there: anything fresher than 60s doesn't
+         * meaningfully change between rapid tab switches. Samsung's HC sync
+         * is ~15-min cadence anyway, so 60s of staleness is invisible.
+         *
+         * Manual SYNC (force=true) always bypasses this debounce — the
+         * rider explicitly wants fresh data at that moment, even if HC is
+         * burst-hot.
+         */
+        private const val BIOLAB_REFRESH_DEBOUNCE_MS = 60L * 1000L
     }
 }
