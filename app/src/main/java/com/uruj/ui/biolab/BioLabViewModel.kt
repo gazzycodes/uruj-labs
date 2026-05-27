@@ -14,7 +14,6 @@ import com.uruj.data.TrackerRepository
 import com.uruj.domain.MealMark
 import com.uruj.domain.TrackerEntry
 import com.uruj.domain.TrackerType
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -113,50 +112,39 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
                     return@launch
                 }
                 HcReadGuard.recordRead("biolab.snapshot")
-                // v0.9.54.1 — parallelize TSB pre-refresh + Bio Lab snapshot.
+                // v0.9.54.2 — REVERTED v0.9.54.1 parallelization. The concurrent
+                // launch caused OutOfMemoryError on cold launch: TSB pre-refresh
+                // calls ReadinessRepository.readBaselineRhrOnly() which calls
+                // ContinuousBiometricRepository.hrSamplesForWindow(30d) returning
+                // ~1.8M Pair<Instant, Int>. Bio Lab snapshot ALSO calls
+                // hrSamplesForWindow(30d) for the same data. Concurrent ~3.6M
+                // allocations blew the 400MB heap.
                 //
-                // Pre-v0.9.54.1 (sequential, cold launch ~42s):
-                //   1. refreshTsbSnapshotForToday() — ~22s (HC ExerciseSessionRecord
-                //      42d + HC HeartRateRecord per non-cycling session + TSB math)
-                //   2. THEN repo.snapshot() — ~20s (HC + NDJSON 30d aggregations)
+                // The TSB pre-refresh CRASHED → stale TSB on disk would be
+                // displayed → data correctness regression.
                 //
-                // v0.9.54.1 (concurrent, cold launch ~22s):
-                //   - TSB job launches as child coroutine, runs concurrently
-                //   - snapshot() runs on this coroutine — both progress in parallel
-                //   - join TSB before publishing so Training Load card sees
-                //     fresh TSB on first render (the v0.9.7 invariant preserved)
-                //
-                // Math + data correctness:
-                //   - TSB writes to disk via tsbSnapshots.save — atomic File.writeText
-                //   - Bio Lab snapshot does NOT directly read TSB inside snapshot();
-                //     Training Load card reads tsbSnapshots disk file separately
-                //     at render time. Order TSB-then-snapshot vs snapshot-then-TSB
-                //     doesn't change snapshot's contents.
-                //   - Identical methodology, identical inputs, identical math.
-                //     Pure execution-order optimization.
-                //
-                // Edge cases:
-                //   - TSB throws → caught by runCatching, snapshot continues, UI
-                //     surfaces with stale TSB (auto-update on next refresh)
-                //   - snapshot throws → propagates out of coroutineScope, TSB
-                //     cancelled by structured concurrency, finally{} cleans up
-                //   - Both throw → both surfaces handle gracefully via existing
-                //     fallback paths
-                //   - Cancellation → coroutineScope cancels children together
-                //     per [[reference_coroutine_cancellation_rule]] (v0.9.20)
-                val fresh = coroutineScope {
-                    val tsbJob = launch {
-                        runCatching {
-                            readinessRepo.refreshTsbSnapshotForToday()
-                        }.onFailure { Log.w(TAG, "[v0.9.7] TSB pre-refresh failed", it) }
-                    }
-                    // v0.9.53 — pass `force` to the repo so manual SYNC taps
-                    // bypass the 30d aggregations cache. Background / tab-open
-                    // refreshes (force=false) use the cache when fresh.
-                    val snapshot = repo.snapshot(forceRefresh = force)
-                    tsbJob.join()  // wait for TSB write so Training Load reads fresh
-                    snapshot
-                }
+                // Returning to sequential. The cold-launch fix needs a different
+                // approach — either (a) share the 30d HR sample list between
+                // TSB + snapshot (single allocation), (b) move TSB compute to
+                // use the existing BioLab30dCache hrTimed30d output, or (c)
+                // bound the input window to sleep-only (cuts 30d × 24h →
+                // 30d × 8h). All require careful design — not another fast
+                // parallelization shortcut.
+                // v0.9.7 — refresh today's TSB snapshot BEFORE building the
+                // Bio Lab snapshot. Training Load card reads disk; without
+                // this refresh the card would show the stale morning value
+                // while the live Readiness recompute (on Checklist) shows
+                // a slightly different value (Samsung HC sync drift).
+                // Wrapped in runCatching — Bio Lab open shouldn't fail if
+                // TSB refresh blips (HC throttle, missing rhr baseline, etc.)
+                runCatching {
+                    readinessRepo.refreshTsbSnapshotForToday()
+                }.onFailure { Log.w(TAG, "[v0.9.7] TSB pre-refresh failed", it) }
+
+                // v0.9.53 — pass `force` to the repo so manual SYNC taps
+                // bypass the 30d aggregations cache. Background / tab-open
+                // refreshes (force=false) use the cache when fresh.
+                val fresh = repo.snapshot(forceRefresh = force)
                 val shouldUpdate = force ||
                     cached == null ||
                     fresh.dataConfidence >= cached.dataConfidence ||
