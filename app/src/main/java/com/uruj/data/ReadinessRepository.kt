@@ -115,6 +115,14 @@ class ReadinessRepository(context: Context) {
     // retention. Sleep is a primary Readiness input; pre-v0.9.8 it lived
     // only in HC. [[reference_snapshot_persistence_architecture]] rule.
     private val sleepSnapshots = SleepSnapshotRepository(appContext)
+    // v0.9.55 — disk-first rhrBaseline for TSB pre-refresh path.
+    // RhrSnapshotRepository already persists daily athletic RHR (medianBpm)
+    // via BioLab.snapshot() since v0.9.1. The TSB hrTSS conversion needs
+    // exactly that scalar — no reason to re-derive from raw 30d HR samples
+    // on every cold launch. See readBaselineRhrOnly() for the disk-first
+    // chain. Also closes the OOM hazard from v0.9.54.1 — the bypassed
+    // hrSamplesForWindow(7d) call was the same allocation site.
+    private val rhrSnapshots = RhrSnapshotRepository(appContext)
 
     // v0.9.8 — TSB refresh cooldown. Last refresh epoch-ms. 0L = never.
     @Volatile private var lastTsbRefreshMs: Long = 0L
@@ -318,20 +326,78 @@ class ReadinessRepository(context: Context) {
     }
 
     /**
-     * Lightweight RHR lookup for TSB compute only. Tries direct
-     * RestingHeartRateRecord first (cheap), falls back to sleep-derived
-     * (heavier but still cheaper than full Readiness compute).
+     * Lightweight RHR lookup for TSB compute only.
+     *
+     * v0.9.55 — DISK-FIRST chain. RhrSnapshotRepository persists today's
+     * athletic RHR via BioLab.snapshot() (v0.9.1). For TSB hrTSS conversion
+     * we only need the rhrBaseline scalar — no reason to re-derive from raw
+     * HC HR + sleep windows + 7d NDJSON walk on every cold launch.
+     *
+     * Chain (first non-null wins):
+     *   1. Today's RhrSnapshot on disk (microseconds, zero allocation)
+     *   2. Most recent past RhrSnapshot within 7d (zero allocation)
+     *   3. HC RestingHeartRateRecord direct (one HC read, ~50ms)
+     *   4. Sleep-derived recompute (~10-15s + 420K Pair allocations)
+     *      — this is the OOM hazard site from v0.9.54.1.
+     *
+     * Math correctness invariant:
+     *   - Step 1 returns the exact value BioLab.snapshot() just saved last
+     *     time it ran. Same sleepingRhrCalc, same inputs, same number.
+     *   - Step 2 returns yesterday's (or older) medianBpm. Athletic RHR
+     *     drifts 1-2 bpm day-to-day; for hrTSS conversion this is well
+     *     within HC sync noise. TSB EWMA smooths daily shifts further.
+     *   - Steps 3-4 unchanged from pre-v0.9.55 (existing behavior).
+     *
+     * OOM safety: the 7d NDJSON walk at step 4 was the OOM site in
+     * v0.9.54.1 (concurrent with BioLab.snapshot's 30d walk = ~3.6M
+     * Pair objects). Sequential post-v0.9.54.2 is safe, but step 4 is
+     * still expensive — disk-first skips it entirely once any RhrSnapshot
+     * exists.
      */
     private suspend fun readBaselineRhrOnly(
         client: HealthConnectClient?,
         granted: Set<String>,
     ): Int? {
+        // Step 1: today's RhrSnapshot. Saved by BioLab.snapshot() at the
+        // end of its compute path; ~1KB JSON file; load is microseconds.
+        val today = LocalDate.now(ZoneId.systemDefault())
+        val todaySnap = runCatching { rhrSnapshots.load(today) }
+            .rethrowCancellation()
+            .getOrNull()
+        if (todaySnap != null && todaySnap.medianBpm in 30..120) {
+            Log.d(
+                "URUJ-TSB",
+                "[v0.9.55] rhrBaseline from today's RhrSnapshot: ${todaySnap.medianBpm} bpm",
+            )
+            return todaySnap.medianBpm
+        }
+        // Step 2: most recent past RhrSnapshot (last 7 days). Athletic RHR
+        // changes slowly — a day-old reading is fine for hrTSS conversion.
+        for (i in 1..7) {
+            val date = today.minusDays(i.toLong())
+            val past = runCatching { rhrSnapshots.load(date) }
+                .rethrowCancellation()
+                .getOrNull()
+            if (past != null && past.medianBpm in 30..120) {
+                Log.d(
+                    "URUJ-TSB",
+                    "[v0.9.55] rhrBaseline from past RhrSnapshot ($date): ${past.medianBpm} bpm (${i}d old)",
+                )
+                return past.medianBpm
+            }
+        }
+        // Step 3-4: existing fallback chain (HC direct → sleep-derived).
         if (client == null) return null
         if (HealthPermission.getReadPermission(RestingHeartRateRecord::class) in granted) {
             val (_, baseline) = readRhrTodayAndBaseline(client, Instant.now())
-            if (baseline != null) return baseline
+            if (baseline != null) {
+                Log.d("URUJ-TSB", "[v0.9.55] rhrBaseline from HC RestingHeartRateRecord: $baseline bpm")
+                return baseline
+            }
         }
-        // Fallback: sleep-derived RHR (one HC HR + sleep window read)
+        // Fallback: sleep-derived RHR (one HC HR + sleep window read + 7d NDJSON walk).
+        // Heavy. Only fires when no RhrSnapshot exists AND HC RestingHR direct
+        // returned null. Typical case: fresh install on first BioLab open.
         val hrPerm = HealthPermission.getReadPermission(HeartRateRecord::class) in granted
         val sleepPerm = HealthPermission.getReadPermission(SleepSessionRecord::class) in granted
         if (!hrPerm || !sleepPerm) return null
@@ -343,6 +409,9 @@ class ReadinessRepository(context: Context) {
             sleepWindows = sleepingData.second,
             strapSamples = strapSamples,
         )
+        sleepingResult?.medianBpm?.let {
+            Log.d("URUJ-TSB", "[v0.9.55] rhrBaseline from sleep-derived compute: $it bpm")
+        }
         return sleepingResult?.medianBpm
     }
 
