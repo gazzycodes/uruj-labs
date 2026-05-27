@@ -76,7 +76,15 @@ class BioLabRepository(context: Context) {
     private val postprandialSnapshots = PostprandialSnapshotRepository(appContext)
     private val postprandialCalc = com.uruj.power.PostprandialCalculator()
 
-    suspend fun snapshot(): BioLabSnapshot = withContext(Dispatchers.IO) {
+    /**
+     * Build the Bio Lab snapshot.
+     *
+     * @param forceRefresh when true, bypasses the v0.9.53 30d aggregation
+     *   cache (manual SYNC button intent). Default false — debounce + cache
+     *   serve recent data, manual SYNC is the user's "I want fresh now"
+     *   signal that always hits HC + NDJSON.
+     */
+    suspend fun snapshot(forceRefresh: Boolean = false): BioLabSnapshot = withContext(Dispatchers.IO) {
         val profile = profileStore.current()
         val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
         if (!sdkOk) {
@@ -103,20 +111,61 @@ class BioLabRepository(context: Context) {
         val now = Instant.now()
         val monthAgo = now.minus(Duration.ofDays(30))
 
+        // v0.9.53 — 30d aggregations cache. Holds the SIX most-expensive
+        // read outputs (HC HR samples · sleep windows · exercise sessions ·
+        // VO2 · weight · strap NDJSON walk) for 5 minutes. Tab re-open
+        // within the TTL serves the cached snapshot inputs without any
+        // HC reads or NDJSON walk — sub-second response. After TTL or on
+        // manual SYNC (forceRefresh=true), fresh reads + cache repopulates.
+        //
+        // Math correctness invariant: this caches READ RESULTS only — the
+        // downstream sleepingRhrCalc / hrAnalyzer / Karvonen / VO2 calc /
+        // postprandial / HRR1 still run on whatever data they receive.
+        // Identical inputs → identical outputs. Per
+        // [[reference_perf_architecture_findings_2026_05_27]] the lab-grade
+        // rule is preserved: cache is a pure perf optimization, never
+        // alters values, methodology, or provenance.
+        if (forceRefresh) {
+            BioLab30dCache.invalidate()
+            Log.d(TAG, "[v0.9.53] cache invalidated by forceRefresh=true (manual SYNC)")
+        }
+        val cachedAgg = BioLab30dCache.get()
+        val agg = if (cachedAgg != null) {
+            Log.d(
+                TAG,
+                "[v0.9.53] using cached 30d aggregations (age ${BioLab30dCache.ageMs() / 1000}s)",
+            )
+            cachedAgg
+        } else {
+            Log.d(TAG, "[v0.9.53] 30d aggregations cache miss — fresh reads")
+            // Fresh pull. Order preserved from pre-v0.9.53 to match
+            // logcat-trace expectations during diagnosis.
+            val fresh = BioLab30dCache.Aggregations(
+                hrTimed30d = readHrSamplesTimestamped(client, granted, monthAgo, now),
+                sleepWindows30d = readSleepWindows(client, granted, monthAgo, now),
+                // v0.7.7 — pull strap NDJSON for the FULL 30d window.
+                // Calculator picks strap vs HC per-night based on coverage.
+                // Now cache-accelerated via NdjsonDayCache.
+                strapHrSamples30d = continuousBiometric.hrSamplesForWindow(monthAgo, now),
+                exerciseSessionEnds30d = readExerciseSessionEnds(client, granted, monthAgo, now),
+                samsungVo2Max = readLatestVo2Max(client, granted, monthAgo, now),
+                latestWeight = readLatestWeight(client, granted, monthAgo, now),
+            )
+            BioLab30dCache.put(fresh)
+            fresh
+        }
+
         // 30d HR samples power: (a) max HR auto-detect from hardest tracked effort,
         // (b) sleeping-RHR computation, (c) HRR1 recovery readings.
-        val hrTimed30d = readHrSamplesTimestamped(client, granted, monthAgo, now)
+        val hrTimed30d = agg.hrTimed30d
         val hrSamples30d = hrTimed30d.map { it.second }
         val hrAnalysis30d = hrAnalyzer.analyze(hrSamples30d)
 
         // Athletic RHR — sleep-window median. The legitimate true RHR signal.
         // Powers Karvonen zones + VO2 max formula even if not displayed in
         // its own card.
-        val sleepWindows30d = readSleepWindows(client, granted, monthAgo, now)
-        // v0.7.7 — pull strap NDJSON for the FULL 30d window. Calculator picks
-        // strap vs HC per-night based on coverage. STRAP wins where 24/7
-        // service was capturing; BAND fills in nights where it wasn't.
-        val strapHrSamples30d = continuousBiometric.hrSamplesForWindow(monthAgo, now)
+        val sleepWindows30d = agg.sleepWindows30d
+        val strapHrSamples30d = agg.strapHrSamples30d
         val sleepingRhr = sleepingRhrCalc.compute(
             hcSamples = hrTimed30d,
             sleepWindows = sleepWindows30d,
@@ -129,13 +178,13 @@ class BioLabRepository(context: Context) {
 
         // Samsung's own VO2 max if HC has it — shown side-by-side with ours in
         // the reframed VO2 card per the v0.4.0 transparency moat.
-        val samsungVo2Max = readLatestVo2Max(client, granted, monthAgo, now)
-        val latestWeight = readLatestWeight(client, granted, monthAgo, now)
+        val samsungVo2Max = agg.samsungVo2Max
+        val latestWeight = agg.latestWeight
 
         // Exercise session end times for HRR1. URUJ-recorded rides also feed in
         // — closes the gap where the rider records with URUJ but doesn't start
         // a band workout (Samsung blind to the session). Dedupe within ±60s.
-        val exerciseSessionEnds30d = readExerciseSessionEnds(client, granted, monthAgo, now)
+        val exerciseSessionEnds30d = agg.exerciseSessionEnds30d
         val urujRideEnds30d = rideHistory.listAll()
             .map { Instant.ofEpochMilli(it.endedAtMs) }
             .filter { !it.isBefore(monthAgo) && !it.isAfter(now) }
@@ -930,6 +979,113 @@ class BioLabRepository(context: Context) {
     companion object {
         private const val TAG = "URUJ-BioLab"
     }
+}
+
+/**
+ * v0.9.53 — process-scoped 30-day aggregations cache for [BioLabRepository].
+ *
+ * Why this exists
+ * ===============
+ * `BioLabRepository.snapshot()` previously made six expensive 30-day reads
+ * on every refresh: HC HeartRateRecord (~25s), HC SleepSessionRecord, HC
+ * ExerciseSessionRecord, HC Vo2MaxRecord, HC WeightRecord, and a 30-day
+ * NDJSON walk via [ContinuousBiometricRepository.hrSamplesForWindow]
+ * (~20s of disk I/O + JSON parse). Total ~45s of wasted work on every
+ * tab open, even though the underlying data (Samsung syncs every ~15
+ * min) hadn't changed.
+ *
+ * Cache design
+ * ============
+ * - **Holds READ RESULTS only**, not downstream computed values. The
+ *   sleepingRhrCalc / hrAnalyzer / VO2 calc / HRR1 disk-first / per-stage
+ *   RMSSD math all still run on every snapshot — only the inputs are
+ *   cached. Math is identical to pre-v0.9.53, byte for byte.
+ *
+ * - **5-minute TTL**. Samsung Health syncs HC at ~15-min cadence, so 5
+ *   min of staleness is invisible to the rider. Tighter TTL would burn
+ *   the savings; looser would risk showing post-ride stale data > 5
+ *   minutes after Samsung pushes it.
+ *
+ * - **All-or-nothing**: the six aggregations move together. Either we
+ *   have a fresh batch (`get()` returns the wrapper) or we have nothing
+ *   (`get()` returns null and the caller does a full refresh). Keeps
+ *   internal consistency — we never serve hrTimed30d from cache while
+ *   the matching sleepWindows30d came from a different refresh.
+ *
+ * - **Process-scoped static**: shared across [BioLabRepository] instances
+ *   in the same process. Survives ViewModel re-creation (rotation,
+ *   navigation), invalidated on process death (Android memory pressure /
+ *   force-stop / reboot).
+ *
+ * - **Manual SYNC bypasses**: `BioLabViewModel.refresh(force=true)`
+ *   passes `forceRefresh` through to `snapshot()` which calls
+ *   [invalidate] before reading. Matches the user's intent — they tapped
+ *   SYNC because they want fresh data NOW, even if HC is burst-hot.
+ *
+ * Edge cases handled
+ * ==================
+ * - Cancellation mid-read → existing rethrowCancellation chain
+ *   propagates through; cache stays in last-good state, caller throws
+ * - HC throttle returns empty → cache populated with empty lists; UI
+ *   degrades to "no data" gracefully on next refresh sticky-cache
+ *   (BioLabViewModel.STALENESS_FLOOR_MS = 10min) kicks in
+ * - Two coroutines hit cache simultaneously on first refresh → both
+ *   compute (~25s × 2), one wins the `put`, both return correct values.
+ *   Wasted CPU but no correctness issue
+ * - TTL boundary (call lands exactly 5min later) → strict less-than
+ *   comparison; matches Kotlin convention
+ *
+ * Lab-grade compliance
+ * ====================
+ * This cache is invisible to the user-facing data layer:
+ *   - All snapshot files on disk remain authoritative
+ *   - Every metric still tagged with source / methodology / timestamp
+ *   - Trend charts read disk, unaffected
+ *   - HRV recompute path (ReadinessRepository post-v0.9.52.1) still
+ *     hits the new [NdjsonDayCache] for today's sleep window — also
+ *     accelerates the historical 7-night recompute in
+ *     [ContinuousBiometricRepository.dailyOvernightHrvHistoryFromSessions]
+ */
+private object BioLab30dCache {
+
+    private const val TTL_MS = 5L * 60L * 1000L
+
+    data class Aggregations(
+        val hrTimed30d: List<Pair<Instant, Int>>,
+        val sleepWindows30d: List<Pair<Instant, Instant>>,
+        val strapHrSamples30d: List<Pair<Instant, Int>>,
+        val exerciseSessionEnds30d: List<Instant>,
+        val samsungVo2Max: Float?,
+        val latestWeight: Float?,
+    )
+
+    @Volatile private var cached: Aggregations? = null
+    @Volatile private var cachedAtMs: Long = 0L
+
+    fun get(): Aggregations? {
+        val payload = cached ?: return null
+        if (System.currentTimeMillis() - cachedAtMs >= TTL_MS) return null
+        return payload
+    }
+
+    fun put(payload: Aggregations) {
+        cached = payload
+        cachedAtMs = System.currentTimeMillis()
+    }
+
+    fun invalidate() {
+        cached = null
+        cachedAtMs = 0L
+    }
+
+    fun ageMs(): Long {
+        if (cachedAtMs == 0L) return 0L
+        return System.currentTimeMillis() - cachedAtMs
+    }
+
+    /** Test-only — reset cache state. */
+    @Suppress("unused")
+    internal fun resetForTesting() = invalidate()
 }
 
 /**

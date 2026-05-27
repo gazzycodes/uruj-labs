@@ -39,6 +39,18 @@ class ContinuousBiometricRepository(context: Context) {
     /**
      * Returns all continuous samples that fall within the time window.
      * Walks only the daily files that overlap; skips others.
+     *
+     * v0.9.53 — per-day parsed-samples cache via [NdjsonDayCache]. Past
+     * days are immutable on disk (the file stopped being appended at
+     * midnight), so once parsed they stay cached for the process
+     * lifetime (LRU-capped). Today's file grows as the strap streams new
+     * samples; we detect growth via `file.lastModified()` and re-parse
+     * on mtime advance. Net effect: a 30-day query parses each day at
+     * most once per process session.
+     *
+     * Math + filter logic unchanged. Same per-line decode, same time-
+     * window inclusion check. Identical output to pre-v0.9.53 path —
+     * cache is a pure perf optimization, never affects values.
      */
     fun samplesForWindow(start: Instant, end: Instant): List<ContinuousSample> {
         if (!baseDir.exists()) return emptyList()
@@ -50,22 +62,38 @@ class ContinuousBiometricRepository(context: Context) {
         for (day in days) {
             val file = File(baseDir, "$day.ndjson")
             if (!file.exists()) continue
-            runCatching {
-                file.useLines { lines ->
-                    for (line in lines) {
-                        if (line.isBlank()) continue
-                        val sample = runCatching {
-                            json.decodeFromString(ContinuousSample.serializer(), line)
-                        }.getOrNull() ?: continue
-                        val t = Instant.ofEpochMilli(sample.timestampMs)
-                        if (!t.isBefore(start) && !t.isAfter(end)) {
-                            results += sample
-                        }
-                    }
+            val daySamples = NdjsonDayCache.get(day, file)
+                ?: parseDayFile(day, file).also { NdjsonDayCache.put(day, file, it) }
+            for (sample in daySamples) {
+                val t = Instant.ofEpochMilli(sample.timestampMs)
+                if (!t.isBefore(start) && !t.isAfter(end)) {
+                    results += sample
                 }
-            }.onFailure { Log.w(TAG, "[24/7] read failed for $day", it) }
+            }
         }
         return results
+    }
+
+    /**
+     * v0.9.53 — parse a single NDJSON day file into the full sample list.
+     * Same logic as the pre-v0.9.53 inline loop, extracted so the
+     * cache-miss path stays tidy. Errors are logged + the day returns
+     * empty (matching the prior runCatching+onFailure semantic).
+     */
+    private fun parseDayFile(day: LocalDate, file: File): List<ContinuousSample> {
+        val samples = mutableListOf<ContinuousSample>()
+        runCatching {
+            file.useLines { lines ->
+                for (line in lines) {
+                    if (line.isBlank()) continue
+                    val sample = runCatching {
+                        json.decodeFromString(ContinuousSample.serializer(), line)
+                    }.getOrNull() ?: continue
+                    samples += sample
+                }
+            }
+        }.onFailure { Log.w(TAG, "[24/7] read failed for $day", it) }
+        return samples
     }
 
     /**
@@ -279,5 +307,104 @@ class ContinuousBiometricRepository(context: Context) {
 
     companion object {
         private const val TAG = "URUJ-Continuous-Repo"
+    }
+}
+
+/**
+ * v0.9.53 — process-scoped per-day NDJSON sample cache.
+ *
+ * Why this exists
+ * ===============
+ * Pre-v0.9.53, every BioLab refresh + every Readiness compute called
+ * [ContinuousBiometricRepository.samplesForWindow] which iterated the
+ * relevant daily `.ndjson` files and re-parsed every line. For 30-day
+ * queries that's 30 × ~8MB = ~240MB of disk I/O + JSON deserialization
+ * on every single refresh. Verified bottleneck in the 2026-05-27 perf
+ * audit ([[reference_perf_architecture_findings_2026_05_27]]).
+ *
+ * Cache design
+ * ============
+ * - **Keyed by [LocalDate]**: matches the file naming convention
+ *   (`YYYY-MM-DD.ndjson`). Each entry holds the FULL parsed sample list
+ *   for that day plus the file's `lastModified` snapshot at parse time.
+ *
+ * - **Past days are immutable**: the strap appends samples to the
+ *   "today" file; at midnight a new file is opened. So any file whose
+ *   date is strictly before `LocalDate.now()` is read-only forever from
+ *   the cache's perspective. We skip the mtime check for these and
+ *   return cached samples directly.
+ *
+ * - **Today's file uses mtime invalidation**: as the strap streams new
+ *   samples, the file's `lastModified` advances. The cache compares the
+ *   stored mtime against the file's current mtime; on advance, the
+ *   entry is treated as stale and the caller re-parses + re-caches.
+ *   This guarantees today's NDJSON-derived computes always see freshly-
+ *   appended samples without forcing past-day re-parses.
+ *
+ * - **LRU eviction cap**: [MAX_DAYS] entries. When putting a new key
+ *   into a full cache, the oldest [LocalDate] is evicted. 10 days at
+ *   ~8MB each = ~80MB max in process memory. Worst-case 30d query
+ *   parses 30 files cold, caches the last 10, then subsequent 30d
+ *   queries fetch 10 from cache + parse 20 from disk. Still a major
+ *   win over the previous "always parse 30".
+ *
+ * - **Thread safety**: backed by [ConcurrentHashMap]. Two concurrent
+ *   coroutines that miss for the same date will both parse and one
+ *   will win the `put`; the worker that loses its parse is wasted but
+ *   the result is identical (same bytes on disk).
+ *
+ * Math correctness
+ * ================
+ * The cache holds raw [ContinuousSample] objects — exactly the
+ * deserialized form of NDJSON lines. Every downstream consumer
+ * (`hrSamplesForWindow`, `samplesToBeats`, `computeHrvForWindow`,
+ * `computeFrequencyDomainForWindow`, `dailyOvernightHrvHistoryFromSessions`)
+ * receives identical data to the pre-cache path. **Lab-grade rule
+ * preserved**: cache is a pure perf optimization; values, methodology,
+ * and provenance are never altered.
+ *
+ * Lifecycle
+ * =========
+ * Statics live for the process lifetime. On process death (Android
+ * memory pressure, force-stop, reboot) the cache is gone and the next
+ * read re-parses from disk. NDJSON files themselves are the durable
+ * source of truth; cache is purely an in-memory accelerator.
+ */
+private object NdjsonDayCache {
+
+    private const val MAX_DAYS = 10
+
+    private data class CachedDay(
+        val samples: List<com.uruj.data.ContinuousSample>,
+        val fileLastModified: Long,
+    )
+
+    private val data = java.util.concurrent.ConcurrentHashMap<LocalDate, CachedDay>()
+
+    fun get(date: LocalDate, file: java.io.File): List<com.uruj.data.ContinuousSample>? {
+        val entry = data[date] ?: return null
+        // Past-day files are immutable. The strap stopped writing to
+        // them at the midnight boundary; no possible drift.
+        if (date.isBefore(LocalDate.now(java.time.ZoneId.systemDefault()))) {
+            return entry.samples
+        }
+        // Today's file grows as samples arrive. Compare mtime — if the
+        // file has advanced since we cached, the entry is stale.
+        return if (file.lastModified() == entry.fileLastModified) entry.samples else null
+    }
+
+    fun put(date: LocalDate, file: java.io.File, samples: List<com.uruj.data.ContinuousSample>) {
+        // LRU evict the oldest entry when at capacity AND we're inserting
+        // a new key (re-writing an existing key is free — same slot).
+        if (data.size >= MAX_DAYS && !data.containsKey(date)) {
+            data.keys.minOrNull()?.let { data.remove(it) }
+        }
+        data[date] = CachedDay(samples, file.lastModified())
+    }
+
+    /** Test-only — clear the cache. */
+    @Suppress("unused")
+    internal fun resetForTesting() {
+        data.clear()
     }
 }
