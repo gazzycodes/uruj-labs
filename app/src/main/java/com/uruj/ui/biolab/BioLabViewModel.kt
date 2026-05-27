@@ -96,7 +96,10 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
                     readinessRepo.refreshTsbSnapshotForToday()
                 }.onFailure { Log.w(TAG, "[v0.9.7] TSB pre-refresh failed", it) }
 
-                val fresh = repo.snapshot()
+                // v0.9.53 — pass `force` to the repo so manual SYNC taps
+                // bypass the 30d aggregations cache. Background / tab-open
+                // refreshes (force=false) use the cache when fresh.
+                val fresh = repo.snapshot(forceRefresh = force)
                 val shouldUpdate = force ||
                     cached == null ||
                     fresh.dataConfidence >= cached.dataConfidence ||
