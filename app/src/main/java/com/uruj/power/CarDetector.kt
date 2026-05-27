@@ -182,11 +182,31 @@ class CarDetector(
             r.latencyMinutes < 60f -> CarTier.SUPPRESSED
             else -> CarTier.BLUNTED
         }
+
+        // v0.9.51 — Arousal-artifact detection. A true CAR signal has BOTH
+        // magnitude AND a smooth vagal-withdrawal signature (Clow 2010,
+        // Stalder 2016). When the HR spike happens within minutes of wake
+        // AND the RMSSD drop is too small to indicate real cortisol-driven
+        // sympathetic activation, the reading is almost certainly capturing
+        // a brief movement / position-change / startle / Samsung-wake-edge
+        // artifact rather than HPA-axis activity. Examples:
+        //   - 0.5-min peak + 5% RMSSD drop → ARTIFACT (today's reading)
+        //   - 25-min peak + 49% RMSSD drop → REAL CAR (yesterday's reading)
+        // When artifact: force overall tier to NORMAL so engine doesn't
+        // treat it as a severe flag, and surface a disclaimer in UI.
+        val isArousalArtifact = r.latencyMinutes < 10f && r.rmssdDropPercent < 15f
+
         // Overall = worst-case of the two. Treat BLUNTED and EXAGGERATED
         // as equivalent "atypical" severity (both reflect HPA dysregulation),
         // map by distance from NORMAL.
-        val overall = pickWorse(amplitudeTier, latencyTier)
-        val summary = when (overall) {
+        val rawOverall = pickWorse(amplitudeTier, latencyTier)
+        val overall = if (isArousalArtifact) CarTier.NORMAL else rawOverall
+        val summary = if (isArousalArtifact) {
+            "Arousal artifact — HR spike at wake but only " +
+                "${r.rmssdDropPercent.toInt()}% RMSSD drop " +
+                "(true CAR is 30-60%). Brief movement / position-change / " +
+                "Samsung-wake-edge, NOT HPA-axis activation. Discounted."
+        } else when (overall) {
             CarTier.BLUNTED ->
                 "Blunted CAR — chronic-stress / burnout pattern"
             CarTier.SUPPRESSED ->
@@ -203,6 +223,7 @@ class CarDetector(
             latencyTier = latencyTier,
             overallTier = overall,
             summary = summary,
+            isArousalArtifact = isArousalArtifact,
         )
     }
 
