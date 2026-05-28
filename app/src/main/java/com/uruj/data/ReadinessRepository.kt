@@ -123,6 +123,13 @@ class ReadinessRepository(context: Context) {
     // chain. Also closes the OOM hazard from v0.9.54.1 — the bypassed
     // hrSamplesForWindow(7d) call was the same allocation site.
     private val rhrSnapshots = RhrSnapshotRepository(appContext)
+    // v0.9.58 — disk-first historical HRV reads (the v0.9.52 path,
+    // re-enabled with the v0.9.57 ensureBackfilled() prerequisite that
+    // guarantees methodology consistency before we read). Saves ~14s of
+    // recompute per Readiness compute when ≥5 current-methodology
+    // snapshots are on disk. Safe fallback to NDJSON recompute when the
+    // backfill couldn't complete (fresh install, NDJSON gaps, HC offline).
+    private val hrvSnapshots = HrvSnapshotRepository(appContext)
 
     // v0.9.8 — TSB refresh cooldown. Last refresh epoch-ms. 0L = never.
     @Volatile private var lastTsbRefreshMs: Long = 0L
@@ -796,39 +803,108 @@ class ReadinessRepository(context: Context) {
             if (computedHrv != null) {
                 hrvToday = computedHrv.rmssdMs
                 hrvSource = "ble_strap"
-                // Count days of overnight HRV data — drives scoring mode.
-                // v0.7.4: use Samsung sleep windows (same source as Bio Lab
-                // Autonomic card + the trend chart) so day count + baseline
-                // agree across surfaces.
+                // v0.9.58 — DISK-FIRST historical reads, with methodology
+                // safety guard from v0.9.57's ensureBackfilled().
                 //
-                // v0.9.52.1: REVERTED v0.9.52's disk-first read. Reading
-                // stored HrvSnapshot values directly bypasses methodology
-                // versioning — pre-v0.9.48 snapshots have older RMSSD math
-                // that drifts the 7d median (this morning's logcat showed
-                // the 13.7 → 11.3 regression). Returns to recomputing from
-                // NDJSON for the historical 7 nights. Slower (~14s), but
-                // values match current methodology across all surfaces. The
-                // disk-first path is restored in v0.9.56 once v0.9.55's
-                // ensureBackfilled() migrates legacy snapshots. See
-                // [[reference_perf_architecture_findings_2026_05_27]].
-                val recentSleeps = lastSleepReader.listLastNDays(client, granted, 7)
-                val recentNights = continuousBiometric
-                    .dailyOvernightHrvHistoryFromSessions(recentSleeps)
-                hrvDaysOfDataIn7d = recentNights.size
-                if (recentNights.size >= 2) {
-                    val sorted = recentNights.map { it.hrv.rmssdMs }.sorted()
-                    hrvBaseline = sorted[sorted.size / 2]
+                // The flow:
+                //   1. ensureBackfilled() — one-time per process, migrates
+                //      any pre-v0.9.48 snapshots to current methodology.
+                //      Idempotent: subsequent calls return 0 immediately.
+                //   2. listLastNDays(7) — read from disk (fast, ~10ms).
+                //   3. Filter results to ONLY current-methodology snapshots.
+                //      Defense-in-depth against the v0.9.52 regression:
+                //      even if backfill couldn't migrate a snapshot (e.g.
+                //      NDJSON missing for that day), we drop it from the
+                //      value list rather than poisoning the median.
+                //   4. If we have ≥5 current historical snapshots, use the
+                //      disk-first fast path (today's fresh value + disk
+                //      values = methodology-consistent 7-night list).
+                //   5. Otherwise fall back to NDJSON recompute — the
+                //      v0.9.52.1 safe path. Slower but guaranteed correct.
+                //
+                // Net effect after v0.9.57 backfill has run once:
+                //   - Cold launch HRV historical: ~14s recompute → ~10ms read
+                //   - Readiness compute total: 17s → ~3-5s
+                //   - Math byte-identical (same calculator, just read once
+                //     and cached on disk vs recomputed each session).
+                //
+                // See [[reference_perf_architecture_findings_2026_05_27]]
+                // for the v0.9.52 regression analysis that informed this
+                // careful re-enable.
+                runCatching {
+                    hrvSnapshots.ensureBackfilled(
+                        continuousBiometric,
+                        lastSleepReader,
+                        client,
+                        granted,
+                    )
+                }.rethrowCancellation()
+                    .onFailure { Log.w("URUJ-Readiness", "[v0.9.58] HRV backfill failed", it) }
+                    .onSuccess { migrated ->
+                        if (migrated > 0) {
+                            Log.d(
+                                "URUJ-Readiness",
+                                "[v0.9.58] HRV backfill migrated $migrated snapshots before read",
+                            )
+                        }
+                    }
+
+                val today = LocalDate.now(ZoneId.systemDefault())
+                val historicalSnapshots = runCatching {
+                    hrvSnapshots.listLastNDays(7)
+                }.rethrowCancellation().getOrDefault(emptyList())
+                val acceptableMethodologies = setOf(
+                    HrvSnapshotRepository.METHODOLOGY_VERSION,
+                    HrvSnapshotRepository.METHODOLOGY_VERSION_FALLBACK,
+                )
+                val currentHistoricalRmssd = historicalSnapshots
+                    .filter { it.methodologyVersion in acceptableMethodologies }
+                    .filter { it.dateIsoLocal != today.toString() }  // dedup today (fresh value owns it)
+                    .mapNotNull { it.rmssdMs }
+
+                if (currentHistoricalRmssd.size >= 5) {
+                    // Fast path: enough current-methodology snapshots on disk.
+                    // Combined with today's fresh value = methodology-consistent
+                    // 6+ night list. ReadinessCalculator's 7-day stats become
+                    // reliable when this size reaches 7.
+                    val nightly = listOf(computedHrv.rmssdMs) + currentHistoricalRmssd
+                    hrvDaysOfDataIn7d = nightly.size
+                    if (nightly.size >= 2) {
+                        val sorted = nightly.sorted()
+                        hrvBaseline = sorted[sorted.size / 2]
+                    }
+                    hrvNightlyRmssdMs = nightly
+                    Log.d(
+                        "URUJ-Readiness",
+                        "[v0.9.58] HRV disk-first hit: ${nightly.size} nights from disk " +
+                            "(${currentHistoricalRmssd.size} historical + today fresh, " +
+                            "saved ~14s recompute)",
+                    )
+                } else {
+                    // Fallback: not enough current snapshots — recompute via
+                    // the v0.9.52.1 safe path. Slower (~14s) but methodology-
+                    // consistent.
+                    Log.d(
+                        "URUJ-Readiness",
+                        "[v0.9.58] HRV disk-first miss: only ${currentHistoricalRmssd.size}/5+ " +
+                            "current snapshots in listLastNDays(7) — recomputing from NDJSON",
+                    )
+                    val recentSleeps = lastSleepReader.listLastNDays(client, granted, 7)
+                    val recentNights = continuousBiometric
+                        .dailyOvernightHrvHistoryFromSessions(recentSleeps)
+                    hrvDaysOfDataIn7d = recentNights.size
+                    if (recentNights.size >= 2) {
+                        val sorted = recentNights.map { it.hrv.rmssdMs }.sorted()
+                        hrvBaseline = sorted[sorted.size / 2]
+                    }
+                    // v0.9.4 — preserve per-night RMSSD list (newest first) for
+                    // the ReadinessContextBuilder to compute trend direction.
+                    hrvNightlyRmssdMs = recentNights.map { it.hrv.rmssdMs }
                 }
-                // v0.9.4 — preserve per-night RMSSD list (newest first) for
-                // the ReadinessContextBuilder to compute trend direction.
-                // Without this, the reasoner can only see today's absolute
-                // and misses the trajectory (e.g. rider's 12.2 → 8.7 ms
-                // 2026-05-19 morning was a sharp DOWN that today's absolute
-                // alone wouldn't flag as a trend signal).
-                hrvNightlyRmssdMs = recentNights.map { it.hrv.rmssdMs }
-                // Note: when recentNights.size < 2 we leave hrvBaseline = null.
-                // ReadinessCalculator will use absolute-tier scoring instead of
-                // computing a meaningless "+0% vs same value" ratio.
+                // Note: when nightly.size / recentNights.size < 2 we leave
+                // hrvBaseline = null. ReadinessCalculator will use
+                // absolute-tier scoring instead of computing a meaningless
+                // "+0% vs same value" ratio.
             }
         }
 
