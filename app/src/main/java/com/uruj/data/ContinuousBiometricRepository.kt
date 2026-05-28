@@ -372,7 +372,14 @@ class ContinuousBiometricRepository(context: Context) {
  */
 private object NdjsonDayCache {
 
-    private const val MAX_DAYS = 10
+    // v0.9.59 — reduced from 10 → 5. The first Crashlytics-captured OOM
+    // (2026-05-28 15:51:14) was at the 384 MB heap ceiling. 10 cached days
+    // at ~8 MB each = up to ~80 MB heap residency. 5 days = ~40 MB ceiling.
+    // Last 5 days still cover the typical tab-switch + Readiness 7-night
+    // read path (today + 4 past days from cache, plus today's fresh
+    // computation) — anything older falls through to disk parse, same
+    // wallclock cost as before. Net: 40 MB heap headroom restored.
+    private const val MAX_DAYS = 5
 
     private data class CachedDay(
         val samples: List<com.uruj.data.ContinuousSample>,

@@ -22,8 +22,8 @@ android {
         applicationId = "com.uruj"
         minSdk = 26
         targetSdk = 36
-        versionCode = 147
-        versionName = "0.9.58"
+        versionCode = 148
+        versionName = "0.9.59"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -83,9 +83,19 @@ dependencies {
     // local crash-logger fallback on top so even if Firebase upload fails
     // (offline, throttled, etc.) we still have an on-device record at
     // `/files/crash-logs/YYYY-MM-DD_HHmmss.txt`.
+    //
+    // v0.9.59 — firebase-analytics REMOVED. The first Crashlytics-captured
+    // OOM (2026-05-28 15:51:14) showed the process at the 384 MB heap
+    // ceiling with 5+ Firebase background threads alive (ScionFrontendApi,
+    // Measurement Worker, ProcessStablePhenotypeFlag, etc). Crashlytics
+    // does NOT require Analytics — Analytics is "recommended but optional"
+    // per Firebase docs for session telemetry. Removing it gives back
+    // ~10-20 MB heap state + 3-5 background threads without losing the
+    // crash-capture functionality we actually need. See
+    // [[reference_perf_architecture_findings_2026_05_27]] for the
+    // ultrathink analysis behind this memory-diet decision.
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.crashlytics)
-    implementation(libs.firebase.analytics)
 
     // Unit tests
     testImplementation(libs.junit)
