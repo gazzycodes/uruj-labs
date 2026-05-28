@@ -905,6 +905,78 @@ class ReadinessRepository(context: Context) {
                 // hrvBaseline = null. ReadinessCalculator will use
                 // absolute-tier scoring instead of computing a meaningless
                 // "+0% vs same value" ratio.
+
+                // v0.9.61 — persist today's HRV snapshot to disk so the
+                // statistical layer (ReadinessContextBuilder.hrvNightsFromDisk
+                // via hrvSnapshots.listAll()) and the trend chart see today's
+                // value without requiring Bio Lab to open first. Closes #211.
+                //
+                // Pre-v0.9.61 ONLY BioLabRepository.snapshot() wrote today's
+                // HRV snapshot. Result: on first morning open before Bio Lab
+                // is touched, ReadinessContextBuilder line 120 prefers
+                // hrvNightsFromDisk (which excludes today) over the live 7d
+                // list (which includes today's inline-computed value) because
+                // disk has more nights than the 7d window. The displayed
+                // 7d median, CV%, trend slope, and WoW% all lagged by one day.
+                //
+                // The score itself was NEVER affected — the disk-first read
+                // at lines 853-863 above explicitly EXCLUDES today
+                // (`dedup today (fresh value owns it)`) and always uses the
+                // inline-computed `computedHrv.rmssdMs`. This fix only closes
+                // the statistical-display gap.
+                //
+                // Time-domain only — frequency-domain compute (LF/HF/VLF +
+                // DFA α1 + sample entropy) is intentionally kept exclusive to
+                // Bio Lab where it already runs because (a) the Readiness
+                // score doesn't consume it, (b) it's the expensive part of
+                // the HRV pipeline (~3s of Lomb-Scargle FFT × 100 windows),
+                // and (c) today-mutable rule allows Bio Lab to overwrite this
+                // snapshot with the full time+freq+stage record when the user
+                // opens that tab. No data loss, no compute doubling — only
+                // the cheap RMSSD/SDNN/pNN math is duplicated and that
+                // duplication already existed pre-v0.9.61.
+                //
+                // Per-stage breakdown IS included when sleep stages were
+                // passed (matches BioLab's logic) so the stage-aware
+                // methodology version is honored even on the Readiness-first
+                // path. awakeMinutesExcluded is left null — that field is
+                // populated by BioLab where it's already tracked; Readiness
+                // doesn't currently compute it and adding the math here would
+                // duplicate Bio Lab's work for no benefit (the field is
+                // informational, not consumed by any signal-pack downstream).
+                runCatching {
+                    val todayDate = LocalDate.now(ZoneId.systemDefault())
+                    hrvSnapshots.save(
+                        HrvSnapshot(
+                            dateIsoLocal = todayDate.toString(),
+                            rmssdMs = computedHrv.rmssdMs,
+                            sdnnMs = computedHrv.sdnnMs,
+                            pnn50Percent = computedHrv.pnn50Percent,
+                            pnn20Percent = computedHrv.pnn20Percent,
+                            meanHrBpm = computedHrv.meanHrBpm,
+                            sampleCount = computedHrv.sampleCount,
+                            windowCount = computedHrv.windowCount,
+                            source = "strap",
+                            // Frequency-domain + non-linear left null —
+                            // populated when Bio Lab opens (today-mutable).
+                            deepRmssdMs = computedHrv.perStageRmssdMs?.get("deep"),
+                            remRmssdMs = computedHrv.perStageRmssdMs?.get("rem"),
+                            lightRmssdMs = computedHrv.perStageRmssdMs?.get("light"),
+                            stageFiltered = sleepStages.isNotEmpty(),
+                            awakeMinutesExcluded = null,
+                            computedAtMs = System.currentTimeMillis(),
+                            methodologyVersion = if (sleepStages.isNotEmpty()) {
+                                HrvSnapshotRepository.METHODOLOGY_VERSION
+                            } else {
+                                HrvSnapshotRepository.METHODOLOGY_VERSION_FALLBACK
+                            },
+                        ),
+                        date = todayDate,
+                    )
+                }.rethrowCancellation()
+                    .onFailure {
+                        Log.w("URUJ-Readiness", "[v0.9.61] HRV snapshot save failed", it)
+                    }
             }
         }
 
