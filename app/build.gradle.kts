@@ -2,6 +2,12 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
+    // v0.9.56 — Firebase Crashlytics. Order matters: google-services must come
+    // BEFORE crashlytics so the Firebase config is registered before the
+    // crashlytics plugin attaches itself. See:
+    // https://firebase.google.com/docs/crashlytics/get-started?platform=android
+    alias(libs.plugins.google.services)
+    alias(libs.plugins.firebase.crashlytics)
 }
 
 android {
@@ -16,8 +22,8 @@ android {
         applicationId = "com.uruj"
         minSdk = 26
         targetSdk = 36
-        versionCode = 144
-        versionName = "0.9.55"
+        versionCode = 145
+        versionName = "0.9.56"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -69,6 +75,17 @@ dependencies {
 
     // Route map (v0.3.0) — OpenStreetMap tiles, free, no API key
     implementation(libs.osmdroid.android)
+
+    // v0.9.56 — Firebase Crashlytics for automatic crash capture. BoM pins all
+    // Firebase library versions in lockstep so the SDK + plugin stay aligned.
+    // Crashlytics auto-initializes via FirebaseInitProvider — no manual
+    // `Firebase.initialize(...)` call needed. UrujApplication.kt installs a
+    // local crash-logger fallback on top so even if Firebase upload fails
+    // (offline, throttled, etc.) we still have an on-device record at
+    // `/files/crash-logs/YYYY-MM-DD_HHmmss.txt`.
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.crashlytics)
+    implementation(libs.firebase.analytics)
 
     // Unit tests
     testImplementation(libs.junit)
