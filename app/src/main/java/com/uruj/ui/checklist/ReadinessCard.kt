@@ -367,14 +367,30 @@ private fun DiagnosticsLine(snapshot: ReadinessSnapshot) {
             else -> "${diag.rhrRecords7d} RHR(HC direct)"
         }
         // v0.9.3 — HRV(strap) gets the URUJ NDJSON nights count so the rider
-        // sees the actual baseline-building progress ("HRV(strap · 2n) ✓" =
-        // 2 of 7 nights captured). HC's RmssdRecord count is meaningless when
-        // URUJ owns the HRV path (Magene H613 doesn't write to HC).
+        // sees the actual baseline-building progress. HC's RmssdRecord count
+        // is meaningless when URUJ owns the HRV path (Magene H613 doesn't
+        // write to HC).
+        //
+        // v0.9.62 — clarify semantics. Pre-v0.9.62 the label read "HRV(strap
+        // · 7n) ✓" once the 7-night rolling baseline window was fully built,
+        // which sounded like "we only have 7 nights of data captured" to a
+        // user who actually has 8+ nights on disk. The "7" was always the
+        // baseline-window CAP, not a total count. Rewritten to be transparent:
+        //   - 0 nights: "HRV(strap) ✓" (just-installed state)
+        //   - 1-6 nights: "HRV(strap · N/7 nights)" (baseline still building)
+        //   - 7+ nights: "HRV(strap · 7d baseline ✓)" (baseline complete; the
+        //     7-day window is the published Plews 2013 / Shaffer 2017 rolling
+        //     standard, NOT a data-availability cap — all historical nights
+        //     are on disk and used by the HRV stats layer)
         val hrvLabel = when (diag.hrvSourceLabel) {
             "direct" -> "${diag.hrvRecords7d} HRV(direct)"
             "ble_strap" -> {
-                if (diag.urujHrvNights7d > 0) "HRV(strap · ${diag.urujHrvNights7d}n) ✓"
-                else "HRV(strap) ✓"
+                val n = diag.urujHrvNights7d
+                when {
+                    n >= 7 -> "HRV(strap · 7d baseline ✓)"
+                    n > 0 -> "HRV(strap · $n/7 nights)"
+                    else -> "HRV(strap) ✓"
+                }
             }
             "sleep" -> "HRV(sleep) ✓"
             "proxy" -> "HRV(HR-proxy)"
