@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.uruj.util.rethrowCancellation
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -105,11 +106,23 @@ class HrvSnapshotRepository(context: Context) {
     /**
      * Save a snapshot for the given date. Today-mutable, past-immutable.
      * Returns true if written, false if a past-date overwrite was blocked.
+     *
+     * @param overrideHistorical v0.9.57 — bypass the past-immutable guard.
+     *   Default false preserves the historical contract for normal compute
+     *   paths (BioLab snapshot, Readiness compute) — those must NEVER
+     *   overwrite locked-in historical readings. Migration paths
+     *   ([ensureBackfilled]) pass true to upgrade legacy-methodology
+     *   snapshots to current methodology in-place. The default-false
+     *   discipline means a misuse can't accidentally rewrite history.
      */
-    suspend fun save(snapshot: HrvSnapshot, date: LocalDate): Boolean = withContext(Dispatchers.IO) {
+    suspend fun save(
+        snapshot: HrvSnapshot,
+        date: LocalDate,
+        overrideHistorical: Boolean = false,
+    ): Boolean = withContext(Dispatchers.IO) {
         val today = LocalDate.now(ZoneId.systemDefault())
         val file = File(baseDir, "${snapshot.dateIsoLocal}.json")
-        if (date != today && file.exists()) {
+        if (!overrideHistorical && date != today && file.exists()) {
             Log.d(TAG, "skipping save: ${snapshot.dateIsoLocal} is historical (immutable)")
             return@withContext false
         }
@@ -119,9 +132,10 @@ class HrvSnapshotRepository(context: Context) {
             // freshest value without a disk round-trip. ConcurrentHashMap
             // is thread-safe for this concurrent mutation.
             cache[snapshot.dateIsoLocal] = snapshot
+            val migrationTag = if (overrideHistorical) " · MIGRATION" else ""
             Log.d(
                 TAG,
-                "saved HRV snapshot ${snapshot.dateIsoLocal}: " +
+                "saved HRV snapshot ${snapshot.dateIsoLocal}$migrationTag: " +
                     "rmssd=${snapshot.rmssdMs?.let { "%.1f".format(it) } ?: "—"} ms · " +
                     "lf/hf=${snapshot.lfHfRatio?.let { "%.2f".format(it) } ?: "—"} · " +
                     "dfa=${snapshot.dfaAlpha1?.let { "%.2f".format(it) } ?: "—"} · " +
@@ -230,6 +244,261 @@ class HrvSnapshotRepository(context: Context) {
         // Side-effect: ensures cache warm. The count is derived from the
         // filtered cache values to stay consistent with listLastNDays().
         listLastNDays(days).size
+    }
+
+    // v0.9.57 — process-scoped guard for the one-time methodology migration.
+    // AtomicBoolean compareAndSet semantics: only the first caller per
+    // process slips through; concurrent callers see the flag flipped and
+    // skip. On process death the flag resets, so a failed migration retries
+    // next session — safer than persisting "we tried once" across restarts.
+    private val backfillAttempted = java.util.concurrent.atomic.AtomicBoolean(false)
+    // Coroutine mutex around the actual migration so two concurrent callers
+    // that race the atomic flag still serialize on the work itself.
+    private val backfillMutex = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * v0.9.57 — One-time methodology migration for stored [HrvSnapshot]
+     * files. Walks all current snapshots and recomputes any whose
+     * [HrvSnapshot.methodologyVersion] differs from the current
+     * [METHODOLOGY_VERSION] (or [METHODOLOGY_VERSION_FALLBACK] when stages
+     * aren't available for that night).
+     *
+     * ## Why this exists
+     *
+     * v0.9.52 attempted disk-first historical HRV reads in
+     * [com.uruj.data.ReadinessRepository] — but the stored snapshots had a
+     * mixture of methodology versions (legacy / v0.9.27-lomb-scargle / pre-
+     * stage-aware), so reading them gave the engine values from inconsistent
+     * math. The 7d median drifted 13.7 → 11.3 ms in the user's data — a
+     * silent regression. v0.9.52.1 reverted that path.
+     *
+     * v0.9.57 fixes the foundation so v0.9.58 can safely re-enable
+     * disk-first reads: every stored snapshot becomes byte-equivalent to
+     * what current [com.uruj.power.HrvCalculator] + Lomb-Scargle freq-domain
+     * would produce TODAY. After migration, reading from disk is
+     * indistinguishable from recomputing — except 14s faster.
+     *
+     * ## Past-date override discipline
+     *
+     * Normally [save] blocks past-date overwrites via the past-immutable
+     * rule from [[reference_snapshot_persistence_architecture]]. Migration
+     * is the explicit, intentional exception: we're not editing history
+     * with NEW math, we're propagating CURRENT math to old records so
+     * surfaces don't display inconsistent values. The `overrideHistorical=true`
+     * is documented in commit history + methodology version tag.
+     *
+     * ## Idempotency + concurrency
+     *
+     * - [backfillAttempted] AtomicBoolean — flag flips on entry; subsequent
+     *   callers in the same process see it true and return 0 immediately.
+     * - [backfillMutex] — serializes concurrent callers that race the flag
+     *   so only one actual migration runs (defense-in-depth).
+     * - Re-run on process restart — flag is process-local, so a failed
+     *   migration retries next session.
+     *
+     * ## What can't be migrated
+     *
+     * - Snapshots older than ~30 days: Health Connect retains sleep
+     *   sessions ~30d. Without the sleep window we can't recompute the
+     *   HRV calculation. Skipped with a log line; snapshot stays legacy.
+     * - Snapshots whose NDJSON file has been pruned: the raw RR intervals
+     *   needed to recompute aren't on disk anymore. Skipped.
+     * - Snapshots where recompute returns null (insufficient samples):
+     *   the original snapshot must have been from a different data state;
+     *   we leave it alone.
+     *
+     * These are acceptable degradations — they only affect snapshots that
+     * are already too old to be useful for the rolling 7-day trend anyway.
+     *
+     * ## Math correctness
+     *
+     * - Time-domain RMSSD: [continuousBiometric.computeHrvForWindow] with
+     *   stages → same calc as today's BioLab.snapshot()
+     * - Freq-domain LF/HF + DFA α1 + SD1/SD2: [continuousBiometric.computeFrequencyDomainForWindow]
+     * - All fields populated from the same calculator outputs that
+     *   today's compute uses. Byte-identical.
+     *
+     * Returns the count of snapshots actually migrated (recomputed +
+     * saved). 0 = nothing needed migration OR nothing could be migrated.
+     */
+    suspend fun ensureBackfilled(
+        continuousBiometric: ContinuousBiometricRepository,
+        lastSleepReader: LastSleepReader,
+        client: androidx.health.connect.client.HealthConnectClient?,
+        granted: Set<String>,
+    ): Int = withContext(Dispatchers.IO) {
+        // Fast path: already done in this process.
+        if (backfillAttempted.get()) return@withContext 0
+        // Guard against concurrent racers + an actually broken HC client.
+        if (client == null) {
+            Log.d(TAG, "[v0.9.57] backfill skipped — HC client null")
+            return@withContext 0
+        }
+        backfillMutex.withLock {
+            // Re-check inside the lock — a concurrent caller may have just
+            // finished while we were waiting on the mutex.
+            if (!backfillAttempted.compareAndSet(false, true)) {
+                return@withLock 0
+            }
+            runMigration(continuousBiometric, lastSleepReader, client, granted)
+        }
+    }
+
+    private suspend fun runMigration(
+        continuousBiometric: ContinuousBiometricRepository,
+        lastSleepReader: LastSleepReader,
+        client: androidx.health.connect.client.HealthConnectClient,
+        granted: Set<String>,
+    ): Int {
+        val all = listAll()
+        if (all.isEmpty()) {
+            Log.d(TAG, "[v0.9.57] backfill: no snapshots on disk, nothing to migrate")
+            return 0
+        }
+        // Only legacy / pre-v0.9.48 versions need migration.
+        // Current ones (v0.9.48-stage-aware-sliding) AND the explicit
+        // fallback (v0.9.28-lomb-scargle-no-stages) are both accepted as
+        // "current methodology" — the fallback is the correct answer when
+        // a night had no stages available, and recomputing it without
+        // stages would produce the same fallback again.
+        val staleVersions = all.filter { snap ->
+            snap.methodologyVersion != METHODOLOGY_VERSION &&
+                snap.methodologyVersion != METHODOLOGY_VERSION_FALLBACK
+        }
+        if (staleVersions.isEmpty()) {
+            Log.d(
+                TAG,
+                "[v0.9.57] backfill: all ${all.size} snapshots already on current methodology — no work",
+            )
+            return 0
+        }
+        Log.d(
+            TAG,
+            "[v0.9.57] backfill: ${staleVersions.size} of ${all.size} snapshots need migration to $METHODOLOGY_VERSION",
+        )
+        // Pull sleep sessions for the broadest window HC will give us
+        // (~30 days). Older stored snapshots that aren't covered can't be
+        // re-windowed and stay legacy until naturally rolled off.
+        val sessions = runCatching {
+            lastSleepReader.listLastNDays(client, granted, 30)
+        }.rethrowCancellation()
+            .onFailure { Log.w(TAG, "[v0.9.57] backfill: sleep list failed", it) }
+            .getOrDefault(emptyList())
+        if (sessions.isEmpty()) {
+            Log.d(
+                TAG,
+                "[v0.9.57] backfill: no HC sleep sessions available (perm missing or empty), cannot migrate",
+            )
+            return 0
+        }
+        val zone = java.time.ZoneId.systemDefault()
+        val sessionByDate: Map<LocalDate, LastSleepReader.Result> = sessions.associateBy {
+            it.endedAt.atZone(zone).toLocalDate()
+        }
+        var migrated = 0
+        for (snap in staleVersions) {
+            val date = runCatching { LocalDate.parse(snap.dateIsoLocal) }.getOrNull()
+            if (date == null) {
+                Log.w(TAG, "[v0.9.57] backfill: skip ${snap.dateIsoLocal} — unparseable date")
+                continue
+            }
+            val session = sessionByDate[date]
+            if (session == null) {
+                Log.d(
+                    TAG,
+                    "[v0.9.57] backfill: skip $date — no HC sleep session in retention window",
+                )
+                continue
+            }
+            // Best effort: pull stages so we land on v0.9.48 methodology.
+            // If stages are unavailable we still recompute (lands on the
+            // fallback methodology, which is current for the stage-less
+            // case). Either way we converge on current math.
+            val stages = runCatching {
+                lastSleepReader.readStagesForSession(client, granted, session.startedAt, session.endedAt)
+            }.rethrowCancellation()
+                .getOrDefault(emptyList())
+            val freshHrv = continuousBiometric.computeHrvForWindow(
+                session.startedAt,
+                session.endedAt,
+                stages,
+            )
+            if (freshHrv == null) {
+                Log.d(
+                    TAG,
+                    "[v0.9.57] backfill: skip $date — recompute returned null (insufficient samples)",
+                )
+                continue
+            }
+            val freshFreq = continuousBiometric.computeFrequencyDomainForWindow(
+                session.startedAt,
+                session.endedAt,
+            )
+            val newVersion = if (stages.isNotEmpty()) METHODOLOGY_VERSION else METHODOLOGY_VERSION_FALLBACK
+            // Skip the write when recompute produces the same version AND
+            // RMSSD lands within 0.05 ms of the existing snapshot — that's
+            // floating-point noise, not a real correction.
+            val rmssdDelta = freshHrv.rmssdMs - (snap.rmssdMs ?: 0f)
+            if (snap.methodologyVersion == newVersion && kotlin.math.abs(rmssdDelta) < 0.05f) {
+                Log.d(
+                    TAG,
+                    "[v0.9.57] backfill: skip $date — same version $newVersion, delta ${"%.3f".format(rmssdDelta)} ms (noise)",
+                )
+                continue
+            }
+            val perStage = freshHrv.perStageRmssdMs
+            // Note: awakeMinutesExcluded is not exposed by TimeDomainHrv —
+            // snap.copy() preserves the existing value (or null if the
+            // original snapshot pre-dated that field, which is fine — the
+            // field is informational, not used in scoring).
+            val migrated_ = snap.copy(
+                rmssdMs = freshHrv.rmssdMs,
+                sdnnMs = freshHrv.sdnnMs,
+                pnn50Percent = freshHrv.pnn50Percent,
+                pnn20Percent = freshHrv.pnn20Percent,
+                meanHrBpm = freshHrv.meanHrBpm,
+                sampleCount = freshHrv.sampleCount,
+                windowCount = freshHrv.windowCount,
+                deepRmssdMs = perStage["deep"],
+                remRmssdMs = perStage["rem"],
+                lightRmssdMs = perStage["light"],
+                stageFiltered = stages.isNotEmpty(),
+                vlfMs2 = freshFreq?.vlfMs2,
+                lfMs2 = freshFreq?.lfMs2,
+                hfMs2 = freshFreq?.hfMs2,
+                totalPowerMs2 = freshFreq?.totalPowerMs2,
+                lfHfRatio = freshFreq?.lfHfRatio,
+                sd1Ms = freshFreq?.sd1Ms,
+                sd2Ms = freshFreq?.sd2Ms,
+                dfaAlpha1 = freshFreq?.dfaAlpha1,
+                sampleEntropy = freshFreq?.sampleEntropy,
+                methodologyVersion = newVersion,
+                computedAtMs = System.currentTimeMillis(),
+            )
+            val ok = save(migrated_, date, overrideHistorical = true)
+            if (ok) {
+                migrated++
+                Log.d(
+                    TAG,
+                    "[v0.9.57] backfill: $date migrated " +
+                        "${snap.methodologyVersion} → $newVersion " +
+                        "(rmssd ${snap.rmssdMs?.let { "%.1f".format(it) } ?: "—"} → " +
+                        "${freshHrv.rmssdMs.let { "%.1f".format(it) }} ms)",
+                )
+            }
+        }
+        Log.d(
+            TAG,
+            "[v0.9.57] backfill complete: $migrated migrated, " +
+                "${staleVersions.size - migrated} skipped, ${all.size - staleVersions.size} already current",
+        )
+        return migrated
+    }
+
+    /** Test-only — reset the migration flag so unit tests can re-invoke. */
+    @Suppress("unused")
+    internal fun resetBackfillStateForTesting() {
+        backfillAttempted.set(false)
     }
 
     companion object {
