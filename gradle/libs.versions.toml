@@ -58,12 +58,16 @@ androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "j
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 
 # v0.9.56 — Firebase Crashlytics. BoM lets us declare deps without versions.
-# Analytics is a transitive dependency of Crashlytics-ndk + a soft dep of
-# Crashlytics for session tracking; pulling it explicitly keeps the dependency
-# graph honest.
+# v0.9.59 — firebase-analytics REMOVED. Crashlytics works fine without it;
+# Analytics added 3-5 background threads (ScionFrontendApi, Measurement
+# Worker, ProcessStablePhenotypeFlag) and ~10-20 MB heap state we didn't
+# need. The first Crashlytics-captured OOM (2026-05-28 15:51:14) showed
+# the process at the 384 MB heap ceiling with these threads alive —
+# removing Analytics gives back the headroom. We lose optional session
+# telemetry but keep full crash stack traces. See
+# [[reference_perf_architecture_findings_2026_05_27]] for the analysis.
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-crashlytics = { group = "com.google.firebase", name = "firebase-crashlytics" }
-firebase-analytics = { group = "com.google.firebase", name = "firebase-analytics" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
