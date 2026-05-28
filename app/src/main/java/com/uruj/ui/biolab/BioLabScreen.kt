@@ -1433,6 +1433,15 @@ private fun AutonomicHealthCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) 
             )
         }
     }
+    // v0.9.62 — wire the ⓘ tap to the existing AutonomicInfoDialog
+    // (BioLabInfoDialogs.kt:467). Pre-v0.9.62 the BioCard's `infoOnClick`
+    // flipped `showInfo` but no dialog was rendered, so the ⓘ button was
+    // visually present but functionally dead. Closes #218 for the Autonomic
+    // Health card (RMSSD/SDNN/pNN50/per-stage). Dialog already contains all
+    // ELI10 sections: what RMSSD is, why it matters, methodology, reference
+    // ranges, eHRV-vs-overnight caveat, baseline building period, and a
+    // personalized FOR YOU RIGHT NOW box.
+    if (showInfo) AutonomicInfoDialog(s = s, onDismiss = { showInfo = false })
 }
 
 /**
