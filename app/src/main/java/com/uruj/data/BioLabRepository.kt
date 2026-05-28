@@ -790,6 +790,103 @@ class BioLabRepository(context: Context) {
     }
 
     /**
+     * v0.9.63 — lightweight tracker-only refresh path. Replaces the full
+     * `snapshot(forceRefresh=true)` recompute when only tracker entries
+     * changed (subjective +TRACK save, delete). Reads ONLY the 8 today-
+     * filtered TrackerRepository keys — no NDJSON walk, no HC reads,
+     * no biomarker math.
+     *
+     * Closes the OOM crash captured by Crashlytics 2026-05-28 18:27
+     * (issue c37bfecceec82af248fb4e5518e370b0, app v0.9.61):
+     *
+     *   Fatal: java.lang.OutOfMemoryError ... 384 MB heap ceiling
+     *     at CollectionsKt.sortedWith (_Collections.kt:3834)
+     *     at ContinuousBiometricRepository.hrSamplesForWindow:433
+     *     at BioLabRepository.snapshot:149
+     *
+     * Trigger (verified in logcat):
+     *   - User taps +TRACK in Bio Lab
+     *   - Saves hydration / mood / energy / etc entry
+     *   - BioLabViewModel.saveTrackerEntry calls refresh(force=true)
+     *   - Force=true invalidates the v0.9.53 30d aggregation cache
+     *   - hrSamplesForWindow(30d) allocates ~30-50 MB Pair<Instant,Int> list
+     *   - sortedWith allocates same-size Array<Pair> for the sort
+     *   - Total transient ~60-100 MB → OOM at heap ceiling
+     *
+     * Tracker entries provably DO NOT affect ANY biomarker math:
+     *   - HRR1: ride history + strap NDJSON, no tracker dependency
+     *   - RHR: sleep window + strap NDJSON, no tracker dependency
+     *   - TSB: ride history + Samsung sessions, no tracker dependency
+     *   - VO2: MaxHR + RHR formula, no tracker dependency
+     *   - HRV time-domain: strap NDJSON, no tracker dependency
+     *   - HRV freq-domain: same as HRV
+     *   - CAR: strap NDJSON quiet-window + Samsung wake, no tracker dependency
+     *   - Orthostatic: 4-min sit→stand strap capture, no tracker dependency
+     *   - Postprandial: meal mark + strap NDJSON windowing, no TRACKER dep
+     *     (postprandial reads MealMarkRepository, not TrackerRepository —
+     *     this method is safe for postprandial, which uses a different repo)
+     *
+     * So architectural correctness: tracker save should refresh ONLY the
+     * tracker fields, not the entire snapshot.
+     *
+     * Edge cases:
+     *   1. Snapshot null (cold launch, +TRACK before first refresh): caller
+     *      returns early; the just-saved tracker entry still persisted to
+     *      disk; next snapshot refresh picks it up naturally.
+     *   2. Concurrent with full snapshot refresh: either order is fine — if
+     *      full refresh overwrites this partial mutation, it'll re-read
+     *      trackers from disk too (no data loss). If this partial mutation
+     *      lands after full refresh, all other fields stay correct.
+     *   3. Methodology version of tracker entries: trackers don't have a
+     *      methodologyVersion — they're raw subjective values, not derived
+     *      math. So no migration needed.
+     *
+     * Performance: ~8 disk reads × ~10 ms = ~80 ms total. Vs the 30-50s
+     * full snapshot recompute. ~600× faster and crash-immune.
+     *
+     * Returns the input snapshot with the 8 tracker fields refreshed.
+     * Caller (BioLabViewModel) emits the result to `_snapshot` for UI.
+     */
+    suspend fun refreshTrackerEntriesIntoSnapshot(
+        current: BioLabSnapshot,
+    ): BioLabSnapshot = withContext(Dispatchers.IO) {
+        val moodToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.MOOD.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val energyToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.ENERGY.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val hydrationToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.HYDRATION_ML.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val caffeineToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.CAFFEINE_MG.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val supplementsToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.SUPPLEMENTS.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val bristolToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.BRISTOL.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val sleepQualityToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.SLEEP_QUALITY.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        val sorenessToday = runCatching {
+            trackerRepo.listForToday(com.uruj.domain.TrackerType.SORENESS.key)
+        }.rethrowCancellation().getOrNull().orEmpty()
+        current.copy(
+            moodEntriesToday = moodToday,
+            energyEntriesToday = energyToday,
+            hydrationEntriesToday = hydrationToday,
+            caffeineEntriesToday = caffeineToday,
+            supplementsEntriesToday = supplementsToday,
+            bristolEntriesToday = bristolToday,
+            sleepQualityEntriesToday = sleepQualityToday,
+            sorenessEntriesToday = sorenessToday,
+        )
+    }
+
+    /**
      * v0.9.0 — map a freshly-computed HRR1 sample to its persistence sessionId.
      *
      * URUJ rides own their sessionId from `StoredRideSummary.sessionId`. We

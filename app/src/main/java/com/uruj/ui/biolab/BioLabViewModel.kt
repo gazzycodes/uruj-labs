@@ -258,7 +258,14 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
             } else {
                 "Failed to save ${type.displayName} entry. Try again."
             }
-            refresh(force = true)
+            // v0.9.63 — was `refresh(force = true)`. That path invalidated the
+            // v0.9.53 30d aggregation cache and called hrSamplesForWindow(30d)
+            // which allocated ~60-100 MB transient, OOM'ing at the 384 MB heap
+            // ceiling. Crashlytics caught this 2026-05-28 18:27 — issue
+            // c37bfecceec82af248fb4e5518e370b0. Tracker entries don't affect
+            // any biomarker math, so we only need to refresh the 8 tracker
+            // fields. ~8 disk reads, ~80ms total, crash-immune.
+            refreshTrackersOnly()
         }
     }
 
@@ -274,7 +281,41 @@ class BioLabViewModel(application: Application) : AndroidViewModel(application) 
             } else {
                 "Nothing to delete."
             }
-            refresh(force = true)
+            // v0.9.63 — same lightweight path as saveTrackerEntry. Delete
+            // doesn't affect biomarker math either; only the tracker fields
+            // need to re-read from disk to remove the deleted entry from UI.
+            refreshTrackersOnly()
+        }
+    }
+
+    /**
+     * v0.9.63 — lightweight tracker-only refresh. Closes #232 (OOM crash on
+     * every +TRACK tap captured by Crashlytics 2026-05-28).
+     *
+     * Pre-v0.9.63 tracker save called `refresh(force = true)` which
+     * invalidated the v0.9.53 30d aggregation cache and forced a fresh
+     * `hrSamplesForWindow(30d)` call. That allocates ~30-50 MB of
+     * `Pair<Instant, Int>` objects for 30 days of strap NDJSON, then
+     * `sortedWith` allocates the same size again. ~60-100 MB transient on
+     * a 384 MB heap ceiling → OOM.
+     *
+     * This path skips ALL of that. It only re-reads the 8 tracker keys
+     * from `TrackerRepository.listForToday()` (~80 ms total) and emits
+     * a mutated snapshot. No NDJSON walk, no HC reads, no biomarker math.
+     *
+     * Safe to call when `_snapshot.value` is null (cold launch / pre-first-
+     * refresh): no-op; the just-saved tracker entry is already persisted
+     * to disk via TrackerRepository and will be picked up by the next
+     * full snapshot refresh whenever it runs.
+     *
+     * See `BioLabRepository.refreshTrackerEntriesIntoSnapshot` for the
+     * architectural rationale + edge-case analysis.
+     */
+    fun refreshTrackersOnly() {
+        viewModelScope.launch {
+            val current = _snapshot.value ?: return@launch
+            val updated = repo.refreshTrackerEntriesIntoSnapshot(current)
+            _snapshot.value = updated
         }
     }
 
