@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "951755071857",
+    "project_id": "uruj-labs",
+    "storage_bucket": "uruj-labs.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:951755071857:android:bc4d1be5fa4355daeed6d0",
+        "android_client_info": {
+          "package_name": "com.uruj"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDKdHggtX0OAh4Vc1yH0cHn4iD85h97WdA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

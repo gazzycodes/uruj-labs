@@ -15,6 +15,12 @@ datastore = "1.1.1"
 navigationCompose = "2.8.5"
 kotlinxSerialization = "1.7.3"
 osmdroid = "6.1.20"
+# v0.9.56 — Firebase Crashlytics for automatic crash capture (replaces ADB-only
+# logcat workflow). BoM pins all Firebase library versions in lockstep so we
+# don't have to track individual SDK versions. Latest stable BoM as of 2025-Q4.
+firebaseBom = "33.7.0"
+googleServices = "4.4.2"
+firebaseCrashlyticsPlugin = "3.0.2"
 
 [libraries]
 # Compose + AndroidX existing
@@ -51,7 +57,20 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 
+# v0.9.56 — Firebase Crashlytics. BoM lets us declare deps without versions.
+# Analytics is a transitive dependency of Crashlytics-ndk + a soft dep of
+# Crashlytics for session tracking; pulling it explicitly keeps the dependency
+# graph honest.
+firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
+firebase-crashlytics = { group = "com.google.firebase", name = "firebase-crashlytics" }
+firebase-analytics = { group = "com.google.firebase", name = "firebase-analytics" }
+
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+# v0.9.56 — Firebase tooling plugins. google-services parses google-services.json
+# at build time + injects the Firebase config into the APK. The crashlytics
+# plugin uploads symbol/mapping files on release builds (no-op for debug).
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }
+firebase-crashlytics = { id = "com.google.firebase.crashlytics", version.ref = "firebaseCrashlyticsPlugin" }
