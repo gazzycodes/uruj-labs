@@ -136,10 +136,23 @@ fun BioLabScreen(
                     // v0.9.39 — TRACK button opens the in-app tracker sheet
                     // (#111) for mood / energy / hydration / caffeine entries.
                     // Same UX pattern as the MEAL button — quick log + save.
-                    TextButton(onClick = { showTrackerSheet = true }) {
+                    //
+                    // v0.9.64 — `enabled = !isLoading` prevents tapping while
+                    // Bio Lab is computing. Pre-v0.9.64 + pre-v0.9.63 a tap
+                    // during loading could trigger a tracker save → BioLab
+                    // full snapshot refresh during an already-in-flight
+                    // snapshot → memory cascade → OOM. v0.9.63 decoupled the
+                    // refresh path (saveTrackerEntry no longer calls
+                    // refresh(force=true)), but disabling the entry point
+                    // entirely while loading provides defense-in-depth and
+                    // makes the loading state visually obvious to the user.
+                    TextButton(
+                        onClick = { showTrackerSheet = true },
+                        enabled = !isLoading,
+                    ) {
                         Text(
                             "+ TRACK",
-                            color = UrujAccent,
+                            color = if (isLoading) UrujMuted else UrujAccent,
                             fontWeight = FontWeight.Black,
                             fontSize = 10.sp,
                             letterSpacing = 1.5.sp,
@@ -151,10 +164,19 @@ fun BioLabScreen(
                     // accurately. Pre-window is anchored to the adjusted
                     // timestamp so picking the correct meal-start gives
                     // a clean pre-meal baseline.
-                    TextButton(onClick = { showMealMarkPicker = true }) {
+                    //
+                    // v0.9.64 — `enabled = !isLoading` for the same reason as
+                    // +TRACK. Meal marks DO trigger a BioLab full refresh
+                    // (postprandial card needs to recompute) so allowing taps
+                    // during loading would compound memory pressure. Disabled
+                    // visual state cues the user to wait for loading to finish.
+                    TextButton(
+                        onClick = { showMealMarkPicker = true },
+                        enabled = !isLoading,
+                    ) {
                         Text(
                             "🍽 MEAL",
-                            color = UrujAccent,
+                            color = if (isLoading) UrujMuted else UrujAccent,
                             fontWeight = FontWeight.Black,
                             fontSize = 10.sp,
                             letterSpacing = 1.5.sp,

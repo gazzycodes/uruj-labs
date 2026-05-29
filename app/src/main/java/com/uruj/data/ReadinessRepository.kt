@@ -848,6 +848,31 @@ class ReadinessRepository(context: Context) {
                             )
                         }
                     }
+                // v0.9.64 — one-shot freq-domain recovery for snapshots that
+                // lost LF/HF + DFA α1 + SD1/SD2 + sample entropy due to the
+                // v0.9.61 Readiness-overwrite regression. Idempotent; runs
+                // once per process. For the specific case captured 2026-05-29:
+                // recovers 2026-05-28 snapshot whose freq-domain fields were
+                // nulled by Readiness's 23:50 IST save (then frozen at midnight).
+                // Math validated via pure-Python RMSSD check — see
+                // HrvSnapshotRepository.ensureFreqDomainBackfilled() KDoc.
+                runCatching {
+                    hrvSnapshots.ensureFreqDomainBackfilled(
+                        continuousBiometric,
+                        lastSleepReader,
+                        client,
+                        granted,
+                    )
+                }.rethrowCancellation()
+                    .onFailure { Log.w("URUJ-Readiness", "[v0.9.64] freq-domain backfill failed", it) }
+                    .onSuccess { recovered ->
+                        if (recovered > 0) {
+                            Log.d(
+                                "URUJ-Readiness",
+                                "[v0.9.64] freq-domain backfill recovered $recovered snapshots",
+                            )
+                        }
+                    }
 
                 val today = LocalDate.now(ZoneId.systemDefault())
                 val historicalSnapshots = runCatching {
@@ -946,7 +971,17 @@ class ReadinessRepository(context: Context) {
                 // informational, not consumed by any signal-pack downstream).
                 runCatching {
                     val todayDate = LocalDate.now(ZoneId.systemDefault())
-                    hrvSnapshots.save(
+                    // v0.9.64 — `saveMerged` instead of `save`. Field-by-field
+                    // non-null merge preserves whatever freq-domain (LF/HF,
+                    // DFA α1, SD1/SD2, sample entropy, totalPowerMs2)
+                    // BioLab may have already written for today. Pre-v0.9.64
+                    // we used save() which silently wiped those fields with
+                    // null defaults — that caused the 2026-05-28 data-loss
+                    // regression (Readiness fired at 23:50 IST overwriting
+                    // BioLab's 18:36 full save, then midnight froze it).
+                    // See HrvSnapshotRepository.saveMerged() KDoc for the
+                    // full merge semantics + race-safety rationale.
+                    hrvSnapshots.saveMerged(
                         HrvSnapshot(
                             dateIsoLocal = todayDate.toString(),
                             rmssdMs = computedHrv.rmssdMs,
@@ -959,6 +994,7 @@ class ReadinessRepository(context: Context) {
                             source = "strap",
                             // Frequency-domain + non-linear left null —
                             // populated when Bio Lab opens (today-mutable).
+                            // saveMerged() preserves these from existing snapshot.
                             deepRmssdMs = computedHrv.perStageRmssdMs?.get("deep"),
                             remRmssdMs = computedHrv.perStageRmssdMs?.get("rem"),
                             lightRmssdMs = computedHrv.perStageRmssdMs?.get("light"),

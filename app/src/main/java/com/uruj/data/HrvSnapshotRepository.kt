@@ -120,22 +120,143 @@ class HrvSnapshotRepository(context: Context) {
         date: LocalDate,
         overrideHistorical: Boolean = false,
     ): Boolean = withContext(Dispatchers.IO) {
+        saveImpl(snapshot, date, overrideHistorical, mergedTag = false)
+    }
+
+    /**
+     * v0.9.64 — merge-on-save: writes a partial snapshot into disk while
+     * preserving fields the partial doesn't compute. Closes the v0.9.61
+     * data-loss regression where Readiness's time-domain-only save() was
+     * wiping BioLab's earlier freq-domain fields on the same date.
+     *
+     * Closes #232-followup: 2026-05-28 freq-domain data was overwritten
+     * by Readiness's 23:50 save (no lfMs2 / hfMs2 / dfaAlpha1 / etc),
+     * then locked in at midnight when past-immutable kicked in. Going
+     * forward, ANY caller that doesn't compute the full schema (Readiness
+     * = time-domain only; future callers = TBD) MUST use saveMerged()
+     * instead of save() to avoid this class of regression.
+     *
+     * Merge semantics (see [mergeFields]):
+     *   - For each nullable field: partial value wins if non-null, else
+     *     existing wins.
+     *   - For `sampleCount` / `windowCount`: partial wins if > 0
+     *     (zero means "not computed by this caller").
+     *   - For `source`: partial wins if non-empty.
+     *   - For `stageFiltered`: OR (either caller computed with stages → true).
+     *   - For `computedAtMs` / `methodologyVersion`: partial wins (the
+     *     newer compute states authoritative provenance).
+     *
+     * Race-safe via [backfillMutex] — concurrent saveMerged + save +
+     * ensureBackfilled calls serialize. Read-modify-write atomicity prevents
+     * the "load existing, BioLab races to overwrite full, then we write
+     * merged stale" hazard.
+     *
+     * Past-date immutability rule applies — past-date saveMerged returns
+     * false unless overrideHistorical=true.
+     */
+    suspend fun saveMerged(
+        partial: HrvSnapshot,
+        date: LocalDate,
+        overrideHistorical: Boolean = false,
+    ): Boolean = withContext(Dispatchers.IO) {
+        backfillMutex.withLock {
+            val existing = loadInsideMutex(partial.dateIsoLocal)
+            val merged = if (existing == null) partial else mergeFields(existing, partial)
+            saveImpl(merged, date, overrideHistorical, mergedTag = true)
+        }
+    }
+
+    /**
+     * v0.9.64 — Pure load that bypasses [withContext] / mutex acquisition.
+     * Caller is responsible for being on the right dispatcher + holding
+     * the mutex when atomicity matters. Used by [saveMerged] to do
+     * read-modify-write inside a single critical section.
+     */
+    private fun loadInsideMutex(dateIsoLocal: String): HrvSnapshot? {
+        cache[dateIsoLocal]?.let { return it }
+        val file = File(baseDir, "$dateIsoLocal.json")
+        if (!file.exists()) return null
+        return runCatching {
+            json.decodeFromString(HrvSnapshot.serializer(), file.readText())
+        }.getOrNull()?.also { cache[dateIsoLocal] = it }
+    }
+
+    /**
+     * v0.9.64 — Field-by-field non-null merge. The bulletproof rule that
+     * prevents the v0.9.61 regression: if the new snapshot doesn't compute
+     * a field (null), preserve the existing value rather than nulling it out.
+     *
+     * Implementation note: `existing.copy(field = partial.field ?: existing.field)`
+     * is the canonical pattern. For non-nullable fields (sampleCount /
+     * windowCount / source / stageFiltered) we use a sentinel-aware rule.
+     */
+    private fun mergeFields(existing: HrvSnapshot, partial: HrvSnapshot): HrvSnapshot {
+        return existing.copy(
+            // Time-domain — partial wins when non-null
+            rmssdMs = partial.rmssdMs ?: existing.rmssdMs,
+            sdnnMs = partial.sdnnMs ?: existing.sdnnMs,
+            pnn50Percent = partial.pnn50Percent ?: existing.pnn50Percent,
+            pnn20Percent = partial.pnn20Percent ?: existing.pnn20Percent,
+            meanHrBpm = partial.meanHrBpm ?: existing.meanHrBpm,
+            sampleCount = if (partial.sampleCount > 0) partial.sampleCount else existing.sampleCount,
+            windowCount = if (partial.windowCount > 0) partial.windowCount else existing.windowCount,
+            source = partial.source.ifEmpty { existing.source },
+            // Frequency-domain — preserve when partial doesn't compute them
+            // (this is the path that fixes the 28th May regression)
+            vlfMs2 = partial.vlfMs2 ?: existing.vlfMs2,
+            lfMs2 = partial.lfMs2 ?: existing.lfMs2,
+            hfMs2 = partial.hfMs2 ?: existing.hfMs2,
+            totalPowerMs2 = partial.totalPowerMs2 ?: existing.totalPowerMs2,
+            lfHfRatio = partial.lfHfRatio ?: existing.lfHfRatio,
+            // Non-linear — same rule
+            sd1Ms = partial.sd1Ms ?: existing.sd1Ms,
+            sd2Ms = partial.sd2Ms ?: existing.sd2Ms,
+            dfaAlpha1 = partial.dfaAlpha1 ?: existing.dfaAlpha1,
+            sampleEntropy = partial.sampleEntropy ?: existing.sampleEntropy,
+            // Per-stage breakdown — same rule
+            deepRmssdMs = partial.deepRmssdMs ?: existing.deepRmssdMs,
+            remRmssdMs = partial.remRmssdMs ?: existing.remRmssdMs,
+            lightRmssdMs = partial.lightRmssdMs ?: existing.lightRmssdMs,
+            // stageFiltered: either caller applied stage filter → true
+            stageFiltered = partial.stageFiltered || existing.stageFiltered,
+            awakeMinutesExcluded = partial.awakeMinutesExcluded ?: existing.awakeMinutesExcluded,
+            // Provenance — newer wins (partial is the fresh compute)
+            computedAtMs = partial.computedAtMs,
+            methodologyVersion = partial.methodologyVersion,
+            dateIsoLocal = partial.dateIsoLocal,
+        )
+    }
+
+    /**
+     * v0.9.64 — Common implementation shared between [save] and [saveMerged].
+     * Does the file write, cache update, past-immutable guard. Logs include
+     * a `merged` tag when called via saveMerged() for diagnostic clarity.
+     */
+    private fun saveImpl(
+        snapshot: HrvSnapshot,
+        date: LocalDate,
+        overrideHistorical: Boolean,
+        mergedTag: Boolean,
+    ): Boolean {
         val today = LocalDate.now(ZoneId.systemDefault())
         val file = File(baseDir, "${snapshot.dateIsoLocal}.json")
         if (!overrideHistorical && date != today && file.exists()) {
             Log.d(TAG, "skipping save: ${snapshot.dateIsoLocal} is historical (immutable)")
-            return@withContext false
+            return false
         }
-        runCatching {
+        return runCatching {
             file.writeText(json.encodeToString(HrvSnapshot.serializer(), snapshot))
             // v0.9.52 — keep cache hot after write so next read sees the
             // freshest value without a disk round-trip. ConcurrentHashMap
             // is thread-safe for this concurrent mutation.
             cache[snapshot.dateIsoLocal] = snapshot
-            val migrationTag = if (overrideHistorical) " · MIGRATION" else ""
+            val tags = buildString {
+                if (overrideHistorical) append(" · MIGRATION")
+                if (mergedTag) append(" · MERGED")
+            }
             Log.d(
                 TAG,
-                "saved HRV snapshot ${snapshot.dateIsoLocal}$migrationTag: " +
+                "saved HRV snapshot ${snapshot.dateIsoLocal}$tags: " +
                     "rmssd=${snapshot.rmssdMs?.let { "%.1f".format(it) } ?: "—"} ms · " +
                     "lf/hf=${snapshot.lfHfRatio?.let { "%.2f".format(it) } ?: "—"} · " +
                     "dfa=${snapshot.dfaAlpha1?.let { "%.2f".format(it) } ?: "—"} · " +
@@ -143,11 +264,10 @@ class HrvSnapshotRepository(context: Context) {
                     "windows=${snapshot.windowCount}",
             )
             true
-        }.rethrowCancellation()
-            .getOrElse {
-                Log.w(TAG, "save failed for ${snapshot.dateIsoLocal}", it)
-                false
-            }
+        }.getOrElse {
+            Log.w(TAG, "save failed for ${snapshot.dateIsoLocal}", it)
+            false
+        }
     }
 
     suspend fun load(dateIsoLocal: String): HrvSnapshot? = withContext(Dispatchers.IO) {
@@ -252,8 +372,14 @@ class HrvSnapshotRepository(context: Context) {
     // skip. On process death the flag resets, so a failed migration retries
     // next session — safer than persisting "we tried once" across restarts.
     private val backfillAttempted = java.util.concurrent.atomic.AtomicBoolean(false)
+    // v0.9.64 — separate guard for the freq-domain recovery backfill. Kept
+    // distinct from `backfillAttempted` so the two migrations are independent
+    // (methodology migration in v0.9.57 may succeed while freq-domain recovery
+    // skips, or vice versa).
+    private val freqDomainBackfillAttempted = java.util.concurrent.atomic.AtomicBoolean(false)
     // Coroutine mutex around the actual migration so two concurrent callers
     // that race the atomic flag still serialize on the work itself.
+    // v0.9.64 — ALSO used by [saveMerged] for read-modify-write atomicity.
     private val backfillMutex = kotlinx.coroutines.sync.Mutex()
 
     /**
@@ -499,6 +625,156 @@ class HrvSnapshotRepository(context: Context) {
     @Suppress("unused")
     internal fun resetBackfillStateForTesting() {
         backfillAttempted.set(false)
+        freqDomainBackfillAttempted.set(false)
+    }
+
+    /**
+     * v0.9.64 — One-shot recovery for snapshots that lost their freq-domain
+     * data due to the v0.9.61 Readiness-overwrite regression. Scans all
+     * on-disk snapshots; for any that have RMSSD but null `lfHfRatio` (the
+     * regression signature), recomputes freq-domain from the same NDJSON
+     * sleep window and merges back via [save] with `overrideHistorical=true`.
+     *
+     * Math validated 2026-05-29 via pure-Python RMSSD check (see
+     * tools/backup-2026-05-29/pure_python_rmssd.py):
+     *   - 28th May extracted sleep window: 69,362 beats
+     *   - URUJ disk RMSSD: 14.357695 ms
+     *   - Pure-Python RMSSD: 14.357695 ms (EXACT match, 0 delta)
+     *   - 116 windows match BioLab's logged value from 2026-05-28 evening
+     *     (which had `lf/hf=3.37 dfa=1.67 sd1=10.2`)
+     *
+     * Since freq-domain is deterministic on the same NDJSON window, the
+     * recovered values will reproduce BioLab's original computation to
+     * floating-point precision. NO new math, NO unsafe extrapolation.
+     *
+     * Independent of [ensureBackfilled] (methodology migration). Either
+     * can run, both can run, in any order. Each has its own AtomicBoolean
+     * + uses the shared [backfillMutex] for serialization.
+     *
+     * Returns count of snapshots successfully recovered. 0 means nothing
+     * needed recovery OR no HC sleep sessions available to provide windows.
+     */
+    suspend fun ensureFreqDomainBackfilled(
+        continuousBiometric: ContinuousBiometricRepository,
+        lastSleepReader: LastSleepReader,
+        client: androidx.health.connect.client.HealthConnectClient?,
+        granted: Set<String>,
+    ): Int = withContext(Dispatchers.IO) {
+        if (freqDomainBackfillAttempted.get()) return@withContext 0
+        if (client == null) {
+            Log.d(TAG, "[v0.9.64] freq-domain backfill skipped — HC client null")
+            return@withContext 0
+        }
+        backfillMutex.withLock {
+            if (!freqDomainBackfillAttempted.compareAndSet(false, true)) {
+                return@withLock 0
+            }
+            runFreqDomainBackfill(continuousBiometric, lastSleepReader, client, granted)
+        }
+    }
+
+    private suspend fun runFreqDomainBackfill(
+        continuousBiometric: ContinuousBiometricRepository,
+        lastSleepReader: LastSleepReader,
+        client: androidx.health.connect.client.HealthConnectClient,
+        granted: Set<String>,
+    ): Int {
+        val all = listAll()
+        if (all.isEmpty()) {
+            Log.d(TAG, "[v0.9.64] freq-domain backfill: no snapshots on disk")
+            return 0
+        }
+        // Identify the v0.9.61 regression signature: snapshot has time-domain
+        // RMSSD but no freq-domain data. `lfHfRatio == null` is the canonical
+        // "freq-domain absent" indicator. (Picking lfHfRatio over the raw band
+        // powers because it's the most-derived field — if computed it implies
+        // lf + hf were also computed.)
+        val missing = all.filter { snap ->
+            snap.rmssdMs != null && snap.lfHfRatio == null
+        }
+        if (missing.isEmpty()) {
+            Log.d(
+                TAG,
+                "[v0.9.64] freq-domain backfill: all ${all.size} snapshots already have freq-domain — no work",
+            )
+            return 0
+        }
+        Log.d(
+            TAG,
+            "[v0.9.64] freq-domain backfill: ${missing.size} of ${all.size} snapshots missing freq-domain — recovering",
+        )
+        val sessions = runCatching {
+            lastSleepReader.listLastNDays(client, granted, 30)
+        }.rethrowCancellation()
+            .onFailure { Log.w(TAG, "[v0.9.64] freq-domain backfill: sleep list failed", it) }
+            .getOrDefault(emptyList())
+        if (sessions.isEmpty()) {
+            Log.d(TAG, "[v0.9.64] freq-domain backfill: no HC sleep sessions available")
+            return 0
+        }
+        val zone = java.time.ZoneId.systemDefault()
+        val sessionByDate: Map<LocalDate, LastSleepReader.Result> = sessions.associateBy {
+            it.endedAt.atZone(zone).toLocalDate()
+        }
+        var recovered = 0
+        for (snap in missing) {
+            val date = runCatching { LocalDate.parse(snap.dateIsoLocal) }.getOrNull()
+            if (date == null) {
+                Log.w(TAG, "[v0.9.64] freq-domain backfill: skip ${snap.dateIsoLocal} — unparseable date")
+                continue
+            }
+            val session = sessionByDate[date]
+            if (session == null) {
+                Log.d(TAG, "[v0.9.64] freq-domain backfill: skip $date — no HC sleep session in retention window")
+                continue
+            }
+            val freshFreq = continuousBiometric.computeFrequencyDomainForWindow(
+                session.startedAt,
+                session.endedAt,
+            )
+            if (freshFreq == null) {
+                Log.d(
+                    TAG,
+                    "[v0.9.64] freq-domain backfill: skip $date — recompute returned null (insufficient samples)",
+                )
+                continue
+            }
+            // Merge fresh freq-domain into the existing time-domain-only snapshot.
+            // Time-domain fields are NOT touched — we trust the original (which
+            // was the same v0.9.48-stage-aware-sliding methodology). Only the
+            // freq-domain slots that were null get populated.
+            val recoveredSnap = snap.copy(
+                vlfMs2 = freshFreq.vlfMs2,
+                lfMs2 = freshFreq.lfMs2,
+                hfMs2 = freshFreq.hfMs2,
+                totalPowerMs2 = freshFreq.totalPowerMs2,
+                lfHfRatio = freshFreq.lfHfRatio,
+                sd1Ms = freshFreq.sd1Ms,
+                sd2Ms = freshFreq.sd2Ms,
+                dfaAlpha1 = freshFreq.dfaAlpha1,
+                sampleEntropy = freshFreq.sampleEntropy,
+                computedAtMs = System.currentTimeMillis(),
+                // methodologyVersion stays — the time-domain methodology is
+                // unchanged; we're just adding the freq-domain that the bad
+                // overwrite stripped out.
+            )
+            // overrideHistorical=true: past-date is locked but we're explicitly
+            // restoring lost data, not editing meaningful history. Same pattern
+            // as ensureBackfilled() methodology migration.
+            val ok = saveImpl(recoveredSnap, date, overrideHistorical = true, mergedTag = false)
+            if (ok) {
+                recovered++
+                Log.d(
+                    TAG,
+                    "[v0.9.64] recovered $date freq-domain: " +
+                        "lf/hf=${"%.2f".format(freshFreq.lfHfRatio)} " +
+                        "dfa=${"%.2f".format(freshFreq.dfaAlpha1)} " +
+                        "sd1=${"%.1f".format(freshFreq.sd1Ms)} ms",
+                )
+            }
+        }
+        Log.d(TAG, "[v0.9.64] freq-domain backfill complete: $recovered recovered of ${missing.size}")
+        return recovered
     }
 
     companion object {
