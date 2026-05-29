@@ -93,6 +93,8 @@ fun BioLabScreen(
     // v0.9.28 — freq-domain HRV trends (LF/HF + DFA α1) from HrvSnapshotRepository
     onOpenLfHfTrend: () -> Unit = {},
     onOpenDfaAlpha1Trend: () -> Unit = {},
+    // v0.9.66 — per-stage RMSSD trend (deep/REM/light over time)
+    onOpenPerStageRmssdTrend: () -> Unit = {},
     // v0.9.34 — postprandial HRV response trend from PostprandialSnapshotRepository
     onOpenPostprandialTrend: () -> Unit = {},
     viewModel: BioLabViewModel = viewModel(),
@@ -331,7 +333,13 @@ fun BioLabScreen(
             // has captured RR data. RMSSD / SDNN / pNN50 from BLE chest strap.
             if (s.autonomicRmssdMs != null) {
                 item("autonomic_header") { SectionHeader("Autonomic Health") }
-                item("autonomic_card") { AutonomicHealthCard(s, onSeeTrend = onOpenHrvTrend) }
+                item("autonomic_card") {
+                    AutonomicHealthCard(
+                        s,
+                        onSeeTrend = onOpenHrvTrend,
+                        onSeePerStageTrend = onOpenPerStageRmssdTrend,
+                    )
+                }
                 // v0.9.25 — Frequency-domain + non-linear card (LF/HF / DFA α1).
                 // Only renders when sufficient beats (>= 240) computed in last
                 // HRV window; auto-hides while baseline-building.
@@ -1306,7 +1314,11 @@ private fun formatHrrSampleDate(ms: Long): String = hrrSampleDateFmt.format(Date
  * visible so the rider can audit the number.
  */
 @Composable
-private fun AutonomicHealthCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) {
+private fun AutonomicHealthCard(
+    s: BioLabSnapshot,
+    onSeeTrend: () -> Unit = {},
+    onSeePerStageTrend: () -> Unit = {},
+) {
     val rmssd = s.autonomicRmssdMs ?: return
     var showInfo by remember { mutableStateOf(false) }
     // Color-code RMSSD by athletic-tier ranges. Norms from Plews et al.
@@ -1406,7 +1418,10 @@ private fun AutonomicHealthCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) 
         // per stage, ~15 min — Plews convention).
         if (s.autonomicPerStageRmssdMs.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
-            PerStageBreakdown(perStage = s.autonomicPerStageRmssdMs)
+            PerStageBreakdown(
+                perStage = s.autonomicPerStageRmssdMs,
+                onSeeTrend = onSeePerStageTrend,
+            )
         }
         // Baseline-building notice — only shows during the first 7 days of
         // continuous monitoring when we don't yet have a stable personal
@@ -1495,7 +1510,10 @@ private fun AutonomicHealthCard(s: BioLabSnapshot, onSeeTrend: () -> Unit = {}) 
  * then any "asleep"/"unknown" leftovers.
  */
 @Composable
-private fun PerStageBreakdown(perStage: Map<String, Float>) {
+private fun PerStageBreakdown(
+    perStage: Map<String, Float>,
+    onSeeTrend: () -> Unit = {},
+) {
     val order = listOf("deep", "rem", "light", "awake", "asleep", "unknown")
     val ordered = order.mapNotNull { key -> perStage[key]?.let { key to it } }
     val deep = perStage["deep"]
@@ -1582,6 +1600,24 @@ private fun PerStageBreakdown(perStage: Map<String, Float>) {
             Text(
                 "DEEP > REM = healthy parasympathetic dominance during slow-wave sleep.",
                 color = UrujMuted, fontSize = 10.sp,
+            )
+        }
+        // v0.9.66 — SEE TREND link to PerStageRmssdTrendScreen (#229).
+        // Useful day-3+ as nightly readings accumulate. Shows the
+        // DEEP/REM/LIGHT relationship as a time series so the rider can
+        // watch the chronic-overreach inversion resolve (REM > DEEP →
+        // DEEP > REM) as recovery progresses.
+        Spacer(Modifier.height(6.dp))
+        TextButton(
+            onClick = onSeeTrend,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                "SEE PER-STAGE TREND →",
+                color = UrujAccent,
+                fontWeight = FontWeight.Black,
+                fontSize = 11.sp,
+                letterSpacing = 1.5.sp,
             )
         }
     }
