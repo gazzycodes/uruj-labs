@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material3.AlertDialog
 import androidx.compose.foundation.layout.Arrangement
@@ -25,7 +26,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -124,6 +127,23 @@ fun BioLabScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item("header") {
+                // v0.9.65 — header layout fix for #190 (button wrap regression).
+                // Pre-v0.9.65: 4 buttons (TRACK, MEAL, REFRESH, CLOSE) sat on a
+                // single Row that used `Spacer(weight = 1f)` to push them to the
+                // right. When REFRESH expanded to "REFRESHING" + spinner during
+                // load, total button width exceeded screen width on smaller
+                // phones (or with one-handed font scaling) → the row wrapped or
+                // CLOSE got pushed offscreen → no way to exit Bio Lab without
+                // back gesture. Fix:
+                //   - BIO LAB label takes its content width on the left
+                //   - CLOSE button is pinned to the right edge ALWAYS (last
+                //     in the layout, no scroll wrapper)
+                //   - The 3 action buttons (TRACK, MEAL, REFRESH) live in a
+                //     middle `weight(1f) + horizontalScroll` Row so they can
+                //     scroll horizontally if they collectively overflow, but
+                //     never push CLOSE offscreen.
+                // Net result: CLOSE is always tappable; action buttons degrade
+                // gracefully via scroll instead of wrap.
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         "BIO LAB",
@@ -132,75 +152,68 @@ fun BioLabScreen(
                         fontSize = 12.sp,
                         letterSpacing = 3.sp,
                     )
-                    Spacer(Modifier.weight(1f))
-                    // v0.9.39 — TRACK button opens the in-app tracker sheet
-                    // (#111) for mood / energy / hydration / caffeine entries.
-                    // Same UX pattern as the MEAL button — quick log + save.
-                    //
-                    // v0.9.64 — `enabled = !isLoading` prevents tapping while
-                    // Bio Lab is computing. Pre-v0.9.64 + pre-v0.9.63 a tap
-                    // during loading could trigger a tracker save → BioLab
-                    // full snapshot refresh during an already-in-flight
-                    // snapshot → memory cascade → OOM. v0.9.63 decoupled the
-                    // refresh path (saveTrackerEntry no longer calls
-                    // refresh(force=true)), but disabling the entry point
-                    // entirely while loading provides defense-in-depth and
-                    // makes the loading state visually obvious to the user.
-                    TextButton(
-                        onClick = { showTrackerSheet = true },
-                        enabled = !isLoading,
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            "+ TRACK",
-                            color = if (isLoading) UrujMuted else UrujAccent,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 10.sp,
-                            letterSpacing = 1.5.sp,
-                        )
-                    }
-                    // v0.9.31 → v0.9.32 — Tier B postprandial test trigger.
-                    // Now opens a backdate picker (rider can choose "Now",
-                    // "5 min ago", etc.) so a late tap can be timestamped
-                    // accurately. Pre-window is anchored to the adjusted
-                    // timestamp so picking the correct meal-start gives
-                    // a clean pre-meal baseline.
-                    //
-                    // v0.9.64 — `enabled = !isLoading` for the same reason as
-                    // +TRACK. Meal marks DO trigger a BioLab full refresh
-                    // (postprandial card needs to recompute) so allowing taps
-                    // during loading would compound memory pressure. Disabled
-                    // visual state cues the user to wait for loading to finish.
-                    TextButton(
-                        onClick = { showMealMarkPicker = true },
-                        enabled = !isLoading,
-                    ) {
-                        Text(
-                            "🍽 MEAL",
-                            color = if (isLoading) UrujMuted else UrujAccent,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 10.sp,
-                            letterSpacing = 1.5.sp,
-                        )
-                    }
-                    // v0.8.5 — explicit REFRESH tap bypasses sticky cache; user
-                    // asked for fresh, give it to them verbatim even if HC blips.
-                    TextButton(onClick = { viewModel.refresh(force = true) }, enabled = !isLoading) {
-                        if (isLoading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(12.dp),
-                                color = UrujAccent,
-                                strokeWidth = 1.5.dp,
+                        // v0.9.39 — TRACK button opens the in-app tracker sheet
+                        // (#111) for mood / energy / hydration / caffeine.
+                        //
+                        // v0.9.64 — `enabled = !isLoading` prevents tapping
+                        // while Bio Lab is computing. Defense-in-depth +
+                        // visual state cue.
+                        TextButton(
+                            onClick = { showTrackerSheet = true },
+                            enabled = !isLoading,
+                        ) {
+                            Text(
+                                "+ TRACK",
+                                color = if (isLoading) UrujMuted else UrujAccent,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 10.sp,
+                                letterSpacing = 1.5.sp,
                             )
-                            Spacer(Modifier.width(6.dp))
                         }
-                        Text(
-                            if (isLoading) "REFRESHING" else "↻ REFRESH",
-                            color = UrujAccent,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 10.sp,
-                            letterSpacing = 1.5.sp,
-                        )
+                        // v0.9.31 → v0.9.32 — Tier B postprandial test trigger
+                        // with backdate picker. v0.9.64 — disabled while loading.
+                        TextButton(
+                            onClick = { showMealMarkPicker = true },
+                            enabled = !isLoading,
+                        ) {
+                            Text(
+                                "🍽 MEAL",
+                                color = if (isLoading) UrujMuted else UrujAccent,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 10.sp,
+                                letterSpacing = 1.5.sp,
+                            )
+                        }
+                        // v0.8.5 — explicit REFRESH tap bypasses sticky cache.
+                        TextButton(
+                            onClick = { viewModel.refresh(force = true) },
+                            enabled = !isLoading,
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(12.dp),
+                                    color = UrujAccent,
+                                    strokeWidth = 1.5.dp,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            Text(
+                                if (isLoading) "REFRESHING" else "↻ REFRESH",
+                                color = UrujAccent,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 10.sp,
+                                letterSpacing = 1.5.sp,
+                            )
+                        }
                     }
+                    // CLOSE pinned outside the scroll — ALWAYS visible.
                     TextButton(onClick = onBack) {
                         Text(
                             "CLOSE",
@@ -2455,23 +2468,59 @@ private fun TrackerRow(
     value: String,
     sub: String? = null,
 ) {
+    // v0.9.65 — layout fix for #191 (label letter-stacking regression).
+    // Pre-v0.9.65: label used `Modifier.weight(1f)` with no maxLines/overflow
+    // discipline. Value column was unconstrained (only Alignment.End). When
+    // a tracker entry had a long sub-note (e.g., "after coffee evening at
+    // 18:27 pm"), the sub-Text could grow horizontally with the value
+    // column, squeezing the label column to a single-character width →
+    // "MOOD" rendered as M / O / O / D stacked vertically.
+    // Fix:
+    //   - Label: maxLines=1 + Ellipsis + softWrap=false → label never wraps;
+    //     truncates with "..." if absolutely necessary (rare given the
+    //     widthIn cap on value below).
+    //   - Value column: widthIn(max = 220.dp) → caps how much horizontal
+    //     real estate the value/sub pair can claim. The sub-note wraps
+    //     vertically inside that 220dp cap instead of expanding sideways.
+    //     220dp comfortably fits "750 ml" + 2 wrapped lines of note on
+    //     phones from 320dp upward.
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("$emoji  $label",
-            color = UrujMuted, fontSize = 11.sp,
-            letterSpacing = 1.sp, fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.weight(1f))
-        Column(horizontalAlignment = Alignment.End) {
-            Text(value,
+        Text(
+            "$emoji  $label",
+            color = UrujMuted,
+            fontSize = 11.sp,
+            letterSpacing = 1.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            softWrap = false,
+            modifier = Modifier.weight(1f),
+        )
+        Column(
+            horizontalAlignment = Alignment.End,
+            modifier = Modifier.widthIn(max = 220.dp),
+        ) {
+            Text(
+                value,
                 color = if (value == "—") UrujMuted else UrujText,
                 fontSize = 14.sp,
-                fontWeight = FontWeight.Bold)
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
             if (sub != null) {
-                Text(sub, color = UrujMuted, fontSize = 9.sp)
+                Text(
+                    sub,
+                    color = UrujMuted,
+                    fontSize = 9.sp,
+                    maxLines = 2,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
             }
         }
     }
