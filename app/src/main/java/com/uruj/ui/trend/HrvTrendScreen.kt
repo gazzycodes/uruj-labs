@@ -7,9 +7,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
-import com.uruj.data.ContinuousBiometricRepository
-import com.uruj.data.SleepSnapshot
-import com.uruj.data.SleepSnapshotRepository
+import com.uruj.data.HrvSnapshot
+import com.uruj.data.HrvSnapshotRepository
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujZone1
 import com.uruj.ui.theme.UrujZone2
@@ -18,51 +17,57 @@ import com.uruj.ui.theme.UrujZone4
 import com.uruj.ui.theme.UrujZone5
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 
 /**
  * v0.7.4 — overnight HRV trend.
  *
- * v0.9.9 — refactored to DISK-ONLY at render time, honoring the
- * [[reference_snapshot_persistence_architecture]] rule. Pre-v0.9.9 this
- * screen called `LastSleepReader.listLastNDays(client, granted, 90)`
- * directly on render — ~90 HC reads per open. Now it reads sleep windows
- * from [SleepSnapshotRepository] (disk) and slices the URUJ continuous
- * NDJSON for the HRV per window. ZERO HC reads at render time.
+ * v0.9.9 — refactored to disk-first via SleepSnapshotRepository (kills
+ * the ~90 HC reads per render the original version did).
  *
- * Bio Lab Autonomic card still uses live HC sleep window for TONIGHT's
- * single value (one-shot read, not 90 days). This trend screen is the
- * longitudinal view → all disk.
+ * v0.9.67 — switched data source from re-computing via
+ * [ContinuousBiometricRepository.computeHrvForWindow] (stage-blind path,
+ * 94-window legacy method) to reading [HrvSnapshotRepository.listAll()]
+ * disk snapshots. This is the canonical pattern every other trend screen
+ * (LfHfTrendScreen, DfaAlpha1TrendScreen, RhrTrendScreen, Vo2TrendScreen,
+ * TsbTrendScreen) already uses, but HRV was the holdout still re-computing.
+ *
+ * Closes presentation-layer inconsistency 2026-05-30:
+ *   Bio Lab Autonomic card + Readiness HRV row showed 14.1 ms (stage-aware
+ *   sliding 50% overlap, 188 windows) from the saved snapshot. The trend
+ *   chart called computeHrvForWindow() WITHOUT stages → stage-blind legacy
+ *   path → 94 windows → 13.8 ms for the SAME night. Three surfaces, two
+ *   numbers — violates [[reference_snapshot_persistence_architecture]] +
+ *   [[reference_lab_grade_architecture_rules]] Rule 4.
+ *
+ * After this fix all four HRV surfaces (Readiness row, Bio Lab card, RMSSD
+ * trend, LF/HF trend, DFA α1 trend) read from the same `HrvSnapshot.rmssdMs`
+ * field. One number per night, persisted once at Bio Lab compute time.
  */
 @Composable
 fun HrvTrendScreen(onBack: () -> Unit) {
     val context = LocalContext.current
-    val continuousRepo = remember { ContinuousBiometricRepository(context) }
-    val sleepSnapshots = remember { SleepSnapshotRepository(context) }
-    var nightlyHrv by remember {
-        mutableStateOf<List<NightlyHrvPoint>?>(null)
-    }
+    val repo = remember { HrvSnapshotRepository(context) }
+    var snapshots by remember { mutableStateOf<List<HrvSnapshot>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
         loading = true
-        nightlyHrv = withContext(Dispatchers.IO) {
-            buildNightlyHrvFromSnapshots(continuousRepo, sleepSnapshots)
-        }
+        snapshots = withContext(Dispatchers.IO) { repo.listAll() }
         loading = false
     }
 
     val zone = ZoneId.systemDefault()
     val todayIso = LocalDate.now(zone).toString()
-    val points = nightlyHrv?.sortedBy { it.sleepEndMs }?.map {
+    val points = snapshots.mapNotNull { snap ->
+        val rmssd = snap.rmssdMs ?: return@mapNotNull null
         TrendPoint(
-            labelMs = it.sleepEndMs,
-            y = it.rmssdMs,
-            isToday = it.dateIsoLocal == todayIso,
+            labelMs = dateAnchorMs(snap.dateIsoLocal, zone),
+            y = rmssd,
+            isToday = snap.dateIsoLocal == todayIso,
         )
-    } ?: emptyList()
+    }
     val rmssdMax = (points.maxOfOrNull { it.y } ?: 50f).coerceAtLeast(50f) + 10f
 
     TrendShell(
@@ -87,61 +92,25 @@ fun HrvTrendScreen(onBack: () -> Unit) {
             lineColor = UrujAccent,
             valueFormatter = { "${"%.1f".format(it)} ms" },
             detailFormatter = { p ->
-                val entry = nightlyHrv?.firstOrNull { it.sleepEndMs == p.labelMs }
-                "${entry?.windowCount ?: 0} windows"
+                val s = snapshots.firstOrNull { dateAnchorMs(it.dateIsoLocal, zone) == p.labelMs }
+                "${s?.windowCount ?: 0} windows"
             },
             higherIsBetter = true,
             emptyTitle = "No overnight readings yet",
             emptyBody = "Wear the strap to sleep with Samsung Health tracking sleep " +
                 "AND the 24/7 monitoring service enabled. First reading appears " +
                 "tomorrow morning after Samsung writes the sleep record + 24/7 NDJSON " +
-                "captures the window. Sleep snapshots persist to disk forever, so this " +
-                "trend chart builds without further HC reads.",
-            methodologyFootnote = "Each point = one night's median-of-5-min-windows " +
-                "RMSSD from the BLE chest strap, NATURAL breathing during the actual " +
-                "Samsung-detected sleep window. Sleep windows read from URUJ's local " +
-                "SleepSnapshotRepository (v0.9.8+) — no HC reads at chart render. " +
-                "Tier bands: Plews et al. + Shaffer & Ginsberg 2017 athletic norms.",
+                "captures the window. HRV snapshots persist to disk forever, so this " +
+                "trend chart builds without further compute.",
+            methodologyFootnote = "Each point = one night's RMSSD from the saved " +
+                "HrvSnapshot — same value the Bio Lab Autonomic card + Readiness HRV " +
+                "row read. v0.9.48+ stage-aware sliding 50%-overlap windowing on BLE " +
+                "chest strap RR intervals, NATURAL breathing during the actual " +
+                "Samsung-detected sleep window (awake periods excluded). Methodology " +
+                "${HrvSnapshotRepository.METHODOLOGY_VERSION}. Tier bands: Plews et " +
+                "al. + Shaffer & Ginsberg 2017 athletic norms.",
             loading = loading,
         ),
         onBack = onBack,
     )
-}
-
-/** One night's HRV plus the metadata the chart needs. */
-private data class NightlyHrvPoint(
-    val sleepEndMs: Long,
-    val rmssdMs: Float,
-    val windowCount: Int,
-    val dateIsoLocal: String,
-)
-
-/**
- * v0.9.9 — read sleep windows from disk-persisted [SleepSnapshot]s and
- * slice the URUJ continuous NDJSON per window. Zero HC reads.
- *
- * Edge cases:
- * - No snapshots yet → returns empty (chart shows empty state with guidance
- *   to wear strap + open URUJ daily)
- * - Sleep snapshot exists but NDJSON missing for that window → HRV computes
- *   null → night dropped (consistent with prior behavior)
- * - Today's snapshot present → renders with brighter `isToday` dot per v0.9.6
- */
-private suspend fun buildNightlyHrvFromSnapshots(
-    continuousRepo: ContinuousBiometricRepository,
-    sleepSnapshots: SleepSnapshotRepository,
-): List<NightlyHrvPoint> {
-    val snapshots: List<SleepSnapshot> = sleepSnapshots.listAll()
-    if (snapshots.isEmpty()) return emptyList()
-    return snapshots.mapNotNull { s ->
-        val start = Instant.ofEpochMilli(s.sessionStartMs)
-        val end = Instant.ofEpochMilli(s.sessionEndMs)
-        val hrv = continuousRepo.computeHrvForWindow(start, end) ?: return@mapNotNull null
-        NightlyHrvPoint(
-            sleepEndMs = s.sessionEndMs,
-            rmssdMs = hrv.rmssdMs,
-            windowCount = hrv.windowCount,
-            dateIsoLocal = s.dateIsoLocal,
-        )
-    }
 }
