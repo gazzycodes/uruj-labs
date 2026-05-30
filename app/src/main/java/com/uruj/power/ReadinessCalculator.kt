@@ -46,7 +46,22 @@ class ReadinessCalculator {
         var weightedSum = 0f
         var totalWeight = 0f
 
-        scoreSleep(inputs.sleepLastNightHours)?.let { (s, detail) ->
+        // v0.9.66 — detect chronic recovery state for context-aware sleep
+        // scoring (#208). Body recovering from chronic non-functional
+        // overreach NEEDS extended sleep (10-12h) — the original "over-slept"
+        // penalty (drops to 70 at >10h) was punishing the rider for doing
+        // exactly what their physiology required. Detected via two cumulative
+        // signals to avoid mis-triggering on a single bad day:
+        //   (a) TSB ≤ -15 (significant fatigue band)
+        //   (b) HRV absolute value suppressed (<18ms with stable enough baseline)
+        // Either gate true → chronic-recovery mode → wider optimal sleep
+        // window (7-12h scores 100; 12-14h soft penalty 90; >14h true excess 70).
+        val tsbChronic = (inputs.trainingStressBalance ?: 0f) <= -15f
+        val hrvSuppressed = (inputs.hrvTodayRmssd ?: 100f) < 18f &&
+            inputs.hrvDaysOfDataIn7d >= 5
+        val isChronicRecovery = tsbChronic || hrvSuppressed
+
+        scoreSleep(inputs.sleepLastNightHours, isChronicRecovery)?.let { (s, detail) ->
             components += ReadinessComponent("Sleep", s, detail)
             weightedSum += s * 0.35f
             totalWeight += 0.35f
@@ -140,20 +155,55 @@ class ReadinessCalculator {
         return "$pct% data only — score is based on what's available. Wear band overnight to unlock $missingLabel."
     }
 
-    private fun scoreSleep(hours: Float?): Pair<Int, String>? {
+    private fun scoreSleep(
+        hours: Float?,
+        isChronicRecovery: Boolean = false,
+    ): Pair<Int, String>? {
         if (hours == null) return null
-        // Optimal sleep window 7-9h. Above 10h or below 6h gets penalized.
-        val score = when {
-            hours < 4f -> 20
-            hours < 5f -> 40
-            hours < 6f -> 60
-            hours in 6f..7f -> 80
-            hours in 7f..9f -> 100
-            hours in 9f..10f -> 90
-            else -> 70
+        // v0.9.66 — context-aware sleep scoring (#208).
+        // NORMAL state: standard 7-9h optimal window (Walker 2017,
+        //   Hirshkowitz 2015 — National Sleep Foundation consensus).
+        //   Penalty above 10h reflects that excess sleep in healthy adults
+        //   correlates with depression / inflammation / cardiovascular risk
+        //   in epidemiological studies.
+        // CHRONIC RECOVERY state: body is repairing chronic non-functional
+        //   overreach (Meeusen 2013, Halson 2014, Kreher 2016). Extended
+        //   sleep 10-12h is RECOVERY-PROMOTING, not pathological. Penalizing
+        //   it tells the rider "stop sleeping so much" — exactly opposite
+        //   of what their physiology needs. Wider optimal window 7-12h
+        //   scores full 100, soft penalty 12-14h (rare but possible during
+        //   peak recovery), true excess >14h still flagged.
+        val score = if (isChronicRecovery) {
+            when {
+                hours < 4f -> 20
+                hours < 5f -> 40
+                hours < 6f -> 60
+                hours in 6f..7f -> 85    // mild under-sleep — still concerning even in recovery
+                hours in 7f..12f -> 100  // wider optimal — body is doing what it needs
+                hours in 12f..14f -> 90  // soft penalty for very long sleep
+                else -> 70                // >14h is real excess regardless of state
+            }
+        } else {
+            // Standard scoring for non-chronic states.
+            when {
+                hours < 4f -> 20
+                hours < 5f -> 40
+                hours < 6f -> 60
+                hours in 6f..7f -> 80
+                hours in 7f..9f -> 100
+                hours in 9f..10f -> 90
+                else -> 70
+            }
         }
         val hStr = "%.1fh".format(hours)
-        return score to hStr
+        // Append context hint so the reader (Readiness card detail line)
+        // sees why the threshold differs from the default.
+        val detail = if (isChronicRecovery && hours >= 9f) {
+            "$hStr — chronic-recovery range"
+        } else {
+            hStr
+        }
+        return score to detail
     }
 
     /**
