@@ -138,16 +138,38 @@ class BioLabRepository(context: Context) {
             cachedAgg
         } else {
             Log.d(TAG, "[v0.9.53] 30d aggregations cache miss — fresh reads")
-            // Fresh pull. Order preserved from pre-v0.9.53 to match
-            // logcat-trace expectations during diagnosis.
+            // v0.9.68 — read the inputs the strap-window bound needs FIRST, then
+            // bound the strap NDJSON read to ONLY the windows its two consumers
+            // touch. Pre-v0.9.68 this called hrSamplesForWindow(monthAgo, now),
+            // which materialized ~30 days of per-second strap samples
+            // (~2.6M Pair<Instant,Int> + the underlying ContinuousSample objects)
+            // in one allocation → the OOM that made BioLab crash on nearly every
+            // open (Crashlytics issues c37bfecc + 45de1480, 23 crashes, 0%
+            // crash-free on v0.9.67). See
+            // [[reference_perf_architecture_findings_2026_05_27]] + #175.
+            //
+            // The single cached strap list feeds exactly two consumers:
+            //   • SleepingRhrCalculator — only reads samples inside sleep windows
+            //   • HrRecoveryCalculator  — only reads samples inside
+            //     [sessionEnd - 30min, sessionEnd + 180s] per session
+            // Bounding to the UNION of those windows returns a byte-identical
+            // subset for both (each filters internally; every sample they could
+            // touch is included), at a fraction of the memory.
+            val sleepWindows = readSleepWindows(client, granted, monthAgo, now)
+            val exerciseEnds = readExerciseSessionEnds(client, granted, monthAgo, now)
+            val rideEndsForBound = rideHistory.listAll()
+                .map { Instant.ofEpochMilli(it.endedAtMs) }
+                .filter { !it.isBefore(monthAgo) && !it.isAfter(now) }
+            // HRR1 window is [end - EFFORT_LOOKBACK(30m), end + RECOVERY_WINDOW_END(180s)].
+            // Pad to 31m / 4m so the bound never clips the calculator's window.
+            val strapBoundWindows = sleepWindows + (exerciseEnds + rideEndsForBound).map {
+                it.minus(Duration.ofMinutes(31)) to it.plus(Duration.ofMinutes(4))
+            }
             val fresh = BioLab30dCache.Aggregations(
                 hrTimed30d = readHrSamplesTimestamped(client, granted, monthAgo, now),
-                sleepWindows30d = readSleepWindows(client, granted, monthAgo, now),
-                // v0.7.7 — pull strap NDJSON for the FULL 30d window.
-                // Calculator picks strap vs HC per-night based on coverage.
-                // Now cache-accelerated via NdjsonDayCache.
-                strapHrSamples30d = continuousBiometric.hrSamplesForWindow(monthAgo, now),
-                exerciseSessionEnds30d = readExerciseSessionEnds(client, granted, monthAgo, now),
+                sleepWindows30d = sleepWindows,
+                strapHrSamples30d = continuousBiometric.hrSamplesWithinWindows(strapBoundWindows),
+                exerciseSessionEnds30d = exerciseEnds,
                 samsungVo2Max = readLatestVo2Max(client, granted, monthAgo, now),
                 latestWeight = readLatestWeight(client, granted, monthAgo, now),
             )

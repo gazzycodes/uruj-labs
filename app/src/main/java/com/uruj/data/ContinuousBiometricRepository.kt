@@ -113,6 +113,88 @@ class ContinuousBiometricRepository(context: Context) {
     }
 
     /**
+     * v0.9.68 — MEMORY-SAFE bounded strap HR read.
+     *
+     * Returns `(timestamp, bpm)` pairs that fall inside ANY of the supplied
+     * windows, sorted by timestamp, bpm > 0. This is the bounded replacement
+     * for `hrSamplesForWindow(monthAgo, now)` when the consumer only ever
+     * filters the result to specific windows anyway.
+     *
+     * WHY THIS EXISTS
+     * ===============
+     * `hrSamplesForWindow(30d)` materialized the ENTIRE 30-day per-second strap
+     * stream — `samplesForWindow` builds a `List<ContinuousSample>` of ~2.6M
+     * elements, then `.filter`/`.map`/`.sortedBy` build three more full-size
+     * collections on top (~145 MB just for the returned `Pair` list, plus the
+     * underlying parsed `ContinuousSample` objects). On the 384 MB heap ceiling
+     * that is a guaranteed `OutOfMemoryError` once enough days accumulate.
+     * Confirmed by Crashlytics on v0.9.67 (issues c37bfecc + 45de1480, 23
+     * crashes, 0% crash-free) — the fatal allocation is the `sortedWith`
+     * (`Arrays.copyOf`, 8.6 MB) / the `TuplesKt.to` map inside this exact call,
+     * driven from `BioLabRepository.snapshot`. See
+     * [[reference_perf_architecture_findings_2026_05_27]] + #175.
+     *
+     * MATH INVARIANT (identical output for the real consumers)
+     * ========================================================
+     * The two consumers of the 30d strap list both filter internally:
+     *   • [com.uruj.power.SleepingRhrCalculator] → samples inside sleep windows
+     *   • [com.uruj.power.HrRecoveryCalculator]  → samples inside
+     *     `[sessionEnd - 30min, sessionEnd + 180s]`
+     * Passing the UNION of those windows here returns a subset that, when the
+     * consumer re-applies its own per-window filter, is byte-identical to
+     * filtering the full-range result — every sample either consumer could
+     * touch is present; samples outside every window were never read by anyone.
+     * A sample landing in two overlapping windows is emitted exactly once (the
+     * inner loop breaks on first match) so no per-window count is inflated.
+     *
+     * MEMORY PROFILE
+     * ==============
+     * Peak transient = one day's parsed `ContinuousSample` list (~110k objects,
+     * cached or GC'd as we advance) + the accumulating output (only in-window
+     * samples — a few sleep nights + per-ride recovery windows ≈ tens of MB at
+     * most, vs ~250-400 MB for the full 30d). Same [NdjsonDayCache]-backed
+     * per-day parse as [samplesForWindow]; values, filter logic, and provenance
+     * are unchanged.
+     */
+    fun hrSamplesWithinWindows(windows: List<Pair<Instant, Instant>>): List<Pair<Instant, Int>> {
+        if (windows.isEmpty() || !baseDir.exists()) return emptyList()
+        val zone = ZoneId.systemDefault()
+        val earliest = windows.minOf { it.first }
+        val latest = windows.maxOf { it.second }
+        val days = generateDayRange(
+            earliest.atZone(zone).toLocalDate(),
+            latest.atZone(zone).toLocalDate(),
+        )
+        // Pre-extract bounds as primitive epoch-ms so the per-sample membership
+        // check avoids allocating an Instant for every one of the (potentially
+        // millions of) samples we SCAN — we only allocate an Instant for the
+        // ones we actually EMIT.
+        val winStartMs = LongArray(windows.size) { windows[it].first.toEpochMilli() }
+        val winEndMs = LongArray(windows.size) { windows[it].second.toEpochMilli() }
+        val out = ArrayList<Pair<Instant, Int>>()
+        for (day in days) {
+            val file = File(baseDir, "$day.ndjson")
+            if (!file.exists()) continue
+            val daySamples = NdjsonDayCache.get(day, file)
+                ?: parseDayFile(day, file).also { NdjsonDayCache.put(day, file, it) }
+            for (sample in daySamples) {
+                if (sample.bpm <= 0) continue
+                val ts = sample.timestampMs
+                var inWindow = false
+                for (i in winStartMs.indices) {
+                    if (ts >= winStartMs[i] && ts <= winEndMs[i]) {
+                        inWindow = true
+                        break
+                    }
+                }
+                if (inWindow) out += Instant.ofEpochMilli(ts) to sample.bpm
+            }
+        }
+        out.sortBy { it.first }
+        return out
+    }
+
+    /**
      * Reconstructs the actual beat timestamps from a list of ContinuousSamples.
      * Per Bluetooth HRP spec, RR intervals in each notification are ordered
      * oldest-to-newest. The latest beat is at sample.timestampMs. Walking the

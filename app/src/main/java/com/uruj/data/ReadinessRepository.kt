@@ -409,8 +409,10 @@ class ReadinessRepository(context: Context) {
         val sleepPerm = HealthPermission.getReadPermission(SleepSessionRecord::class) in granted
         if (!hrPerm || !sleepPerm) return null
         val sleepingData = readSleepingHrInputs(client, Instant.now()) ?: return null
-        val weekAgo = Instant.now().minus(Duration.ofDays(7))
-        val strapSamples = continuousBiometric.hrSamplesForWindow(weekAgo, Instant.now())
+        // v0.9.68 — bound the strap read to the sleep windows the calculator
+        // filters to anyway (was hrSamplesForWindow(7d) — same OOM class as the
+        // BioLab 30d read). Identical RHR output; far less heap.
+        val strapSamples = continuousBiometric.hrSamplesWithinWindows(sleepingData.second)
         val sleepingResult = sleepingRhrCalc.compute(
             hcSamples = sleepingData.first,
             sleepWindows = sleepingData.second,
@@ -741,8 +743,10 @@ class ReadinessRepository(context: Context) {
             if (sleepingHrData != null) {
                 // v0.7.7 — also pass strap NDJSON to the calculator so it can
                 // pick STRAP when 24/7 service covered the sleep window.
-                val weekAgo = now.minus(Duration.ofDays(7))
-                val strapSamples = continuousBiometric.hrSamplesForWindow(weekAgo, now)
+                // v0.9.68 — bound to the sleep windows the calculator filters to
+                // anyway (was hrSamplesForWindow(7d) — same OOM class as the
+                // BioLab 30d read). Identical RHR output; far less heap.
+                val strapSamples = continuousBiometric.hrSamplesWithinWindows(sleepingHrData.second)
                 val sleepingResult = sleepingRhrCalc.compute(
                     hcSamples = sleepingHrData.first,
                     sleepWindows = sleepingHrData.second,
