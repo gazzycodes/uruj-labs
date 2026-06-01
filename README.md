@@ -8,7 +8,7 @@
 
 **عروج** — *ascent, rising, the act of climbing*
 
-`v0.9.16` · Android 8.0+
+`v0.9.68` · Android 8.0+
 
 </div>
 
@@ -63,7 +63,7 @@ URUJ scales gracefully with whatever sensors you have. Each metric reports its d
 
 ---
 
-## What's shipped (v0.9.16, 2026-05-19)
+## What's shipped (v0.9.68, 2026-06-01)
 
 ### Recording engine (production-quality from v0.1)
 - 1 Hz GPS via `FusedLocationProviderClient`, **crash-safe append-only NDJSON** (force-kill loses ≤ 1 sample), 30-sec checkpoint sidecar, foreground service with lock-screen HUD takeover
@@ -88,6 +88,14 @@ URUJ scales gracefully with whatever sensors you have. Each metric reports its d
 - **TSB / CTL / ATL** — Coggan calendar-day EWMA. Multi-sport: cycling rides use power-based TSS, Samsung-tracked runs use HR-Reserve hrTSS (`(HRR fraction / 0.87)² × hours × 100`).
 - **Snapshot persistence** — every trend metric writes to `/files/snapshots/<metric>/YYYY-MM-DD.json` at compute time with methodology version + source label. Trend charts read disk only — HC's 30-day retention no longer caps history.
 - **HC backfill** — one-time harvest of HC 30 d history into disk snapshots so the trend doesn't start at "today".
+- **Frequency-domain + non-linear HRV (v0.9.28+)** — Lomb-Scargle periodogram on the non-uniform RR series (no interpolation artifacts) for LF / HF / VLF power + LF/HF ratio; Poincaré SD1/SD2, DFA α1, sample entropy. Per-window LS-vs-Welch diagnostic logging. Cross-validated against pure-Python/scipy ground truth (RMSSD within 0.01 ms, SD1 invariant `SD1 = RMSSD/√2` holds to machine precision).
+- **Stage-aware HRV (v0.9.48)** — per-stage Deep / REM / Light RMSSD from Samsung sleep-stage segments, awake periods excluded, sliding 50%-overlap windowing across the full night. REM>DEEP inversion surfaced as a chronic-overreach marker (Pichot 2002, Plews 2014) with its own trend chart.
+- **Chronic-recovery-aware engine (v0.9.41–v0.9.68)** — absolute HRV floors cap ratio-vs-baseline scoring (kills the chronic-baseline trap), trend-direction-aware narrative, graded recovery prescription, chronic-recovery sleep-score window.
+
+### Stability & performance (v0.9.52–v0.9.68)
+- **Firebase Crashlytics + on-device crash log** — chained `UncaughtExceptionHandler` writes `/files/crash-logs/YYYY-MM-DD_HHmmss.txt` then delegates to Crashlytics. Auto-capture caught the OOM class below.
+- **Memory-safe bounded reads (v0.9.68)** — NDJSON-consuming compute is windowed: the 24/7 strap stream is only ever materialized for the windows a consumer actually uses (sleep windows for RHR, post-session recovery windows for HRR1), never the full 30-day stream. Peak heap stays flat regardless of how many months of data accumulate.
+- **Disk-first historical reads + LRU NDJSON cache + 60 s Bio Lab debounce** — Bio Lab cold-load 48 s → ~33 s, Readiness 17 s → 6 s, tab-switch instant within the debounce window.
 
 ### Readiness recommendation engine (v0.9.4 ReadinessContext signal pack)
 - Multi-signal tiering (`FullRest` / `ActiveRecovery` / `EasyAerobic` / `Moderate` / `HardGreenLight`) — composite score AND severe-flag count (TSB ≤ −25, sleep < 5 h, HRV crashed, RHR ≥ +5, exaggerated/blunted CAR). 2+ severe flags → `FullRest` regardless of score.
@@ -117,6 +125,7 @@ URUJ scales gracefully with whatever sensors you have. Each metric reports its d
 2. **ReadinessContext signal pack** — every new biomarker MUST plug into `ReadinessContext` from PR 1. Engine + AI coach + trend charts + future biomarkers all read the same struct. Plug-and-play AI seam.
 3. **HC rate-limit budget** — NO background HC polling. Throttle multi-reads with `delay(150L)`. Sticky cache fallback (never overwrite GOOD with BAD on HC blip). Surface freshness via "synced X ago" timestamp.
 4. **Lab-level honesty rules** — every metric must declare: source label · capture timestamp · methodology version · no fake numbers (refuse fabricated proxies) · deep-view trend chart · hardware-additive resurrection path · cycling-relevance test.
+5. **Bound input size** — any NDJSON-consuming compute must window its read to what the consumer actually uses. Never materialize the full 24/7 stream into one allocation. Peak memory must not grow with accumulated history.
 
 ---
 
@@ -164,9 +173,9 @@ You'll be prompted to grant:
 - **Visual polish for source labels** (bigger pills, card badges)
 
 ### Biology / methodology
-- **HRV frequency-domain + non-linear** — FFT on RR series for LF/HF/VLF power, SDNN, pNN50/pNN20, Poincaré SD1/SD2, DFA α1, sample entropy
-- **Sleep stage detection** from HRV trends
-- **Tier B tests** — postprandial response, caffeine, alcohol, cold/heat exposure, meditation, breath-work biofeedback (each = small computation on existing 24/7 RR data)
+- **Tier B tests** — caffeine, alcohol, cold/heat exposure, meditation, breath-work biofeedback (postprandial shipped v0.9.31; each remaining = small computation on existing 24/7 RR data)
+- **HRR1 cycling-only filter** — exclude Samsung non-cycling auto-detected sessions (wrist-PPG motion artifact during walking can cross the effort threshold and produce a misleading HRR1; chest strap reads the true sub-effort HR)
+- **Sleep stage detection** from HRV trends (independent of Samsung staging)
 - **In-app subjective tracker** — mood/energy 1–10, soreness map, hydration, caffeine timing, supplements, cold/sun exposure, meditation log, meal photo
 
 ### AI layer
