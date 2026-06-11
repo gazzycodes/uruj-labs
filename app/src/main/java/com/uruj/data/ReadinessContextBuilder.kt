@@ -171,7 +171,17 @@ class ReadinessContextBuilder(context: Context) {
         // v0.9.49.1 — opportunistically migrate any legacy orthostatic snapshots
         // before reading. Idempotent + cheap after first call per process.
         runCatching { orthostaticRepo.ensureBackfilled() }.rethrowCancellation()
-        val carResult = runCatching { carRepo.cachedLatest() }.rethrowCancellation().getOrNull()
+        // v0.9.69 — compute TODAY's CAR before reading, not just whatever's cached.
+        // FIX: a race where this builder ran before today's CAR was computed (CAR
+        // computes ~seconds later on the Bio Lab path) made it fall back to
+        // yesterday's cached CAR. By morning that snapshot is >24h old, so the
+        // engine's carIsRecent(<=24h) gate silently dropped the CAR severe flag and
+        // could relax the tier (e.g. FullRest -> ActiveRecovery) on the very morning
+        // CAR was still exaggerated. computeForLastWake() reads on-device NDJSON only
+        // (no HC), and returns null on an incomplete window (woke <45 min ago) — in
+        // which case we fall back to cache, which the engine then ages-out correctly.
+        val carResult = runCatching { carRepo.computeForLastWake() }.rethrowCancellation().getOrNull()
+            ?: runCatching { carRepo.cachedLatest() }.rethrowCancellation().getOrNull()
         val orthostaticResult = runCatching { orthostaticRepo.latest() }.rethrowCancellation().getOrNull()
 
         val todaySnap = ReadinessContext.TodaySnapshot(
