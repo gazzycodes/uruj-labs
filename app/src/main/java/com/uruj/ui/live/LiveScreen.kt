@@ -3,6 +3,7 @@ package com.uruj.ui.live
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -75,7 +76,7 @@ import kotlinx.coroutines.delay
  *   - At rest = confirm strap is clean before the morning HRV reading
  */
 @Composable
-fun LiveScreen(onBack: () -> Unit) {
+fun LiveScreen(onBack: () -> Unit, onOpenWindDown: () -> Unit) {
     val context = LocalContext.current
     val live by LiveStateHolder.state.collectAsStateWithLifecycle()
     val profileStore = remember { RiderProfileStore(context) }
@@ -137,6 +138,32 @@ fun LiveScreen(onBack: () -> Unit) {
                     "and confirming clean signal at rest before morning HRV.",
                 color = UrujMuted, fontSize = 12.sp,
             )
+
+            // ── Wind-Down entry (immersive guided breathing) ──
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(UrujAccent.copy(alpha = 0.12f))
+                    .border(1.dp, UrujAccent.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                    .clickable { onOpenWindDown() }
+                    .padding(14.dp),
+            ) {
+                Column {
+                    Text(
+                        "◐  WIND-DOWN MODE",
+                        color = UrujAccent,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 12.sp,
+                        letterSpacing = 1.5.sp,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "Immersive guided breathing — watch your live heart rate settle. Tap to begin.",
+                        color = UrujMuted, fontSize = 11.sp,
+                    )
+                }
+            }
 
             // ── Hero BPM ──
             HeroBpm(live = live, zones = zones)

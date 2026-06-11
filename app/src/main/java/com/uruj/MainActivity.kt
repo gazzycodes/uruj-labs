@@ -162,6 +162,7 @@ private sealed interface AppScreen {
     // v0.9.34 — postprandial HRV response trend from PostprandialSnapshotRepository
     data object PostprandialTrend : AppScreen
     data object LiveData : AppScreen
+    data object WindDown : AppScreen
     data class ViewingPastRide(val summary: StoredRideSummary) : AppScreen
 }
 
@@ -326,6 +327,10 @@ class MainActivity : ComponentActivity() {
                         )
                         AppScreen.LiveData -> com.uruj.ui.live.LiveScreen(
                             onBack = { screen = AppScreen.Checklist },
+                            onOpenWindDown = { screen = AppScreen.WindDown },
+                        )
+                        AppScreen.WindDown -> com.uruj.ui.live.WindDownScreen(
+                            onBack = { screen = AppScreen.LiveData },
                         )
                         AppScreen.Profile -> RiderProfileScreen(
                             onBack = { screen = AppScreen.Checklist },
