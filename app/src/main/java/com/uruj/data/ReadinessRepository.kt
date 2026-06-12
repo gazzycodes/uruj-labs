@@ -262,6 +262,19 @@ class ReadinessRepository(context: Context) {
             Log.d("URUJ-TSB", "[v0.9.11] backfill skipped — post-ride quiet window")
             return@withContext 0
         }
+        // v0.9.73 — cheap early-exit: if past snapshots exist AND none are on a
+        // stale methodology, there's nothing to fill or migrate → skip the HC
+        // setup + computes entirely. One listAll() = small disk reads. This is
+        // what makes the now-always-called backfill a no-op in steady state.
+        run {
+            val all = tsbSnapshots.listAll()
+            val todayStr = LocalDate.now(ZoneId.systemDefault()).toString()
+            val anyPast = all.any { it.dateIsoLocal != todayStr }
+            val anyStalePast = all.any {
+                it.dateIsoLocal != todayStr && it.methodologyVersion != TsbSnapshotRepository.METHODOLOGY_VERSION
+            }
+            if (anyPast && !anyStalePast) return@withContext 0
+        }
         HcReadGuard.recordRead("backfill.tsb")
         val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
         val client = if (sdkOk) {
@@ -278,7 +291,14 @@ class ReadinessRepository(context: Context) {
         var written = 0
         for (i in 1..days) {
             val date = today.minusDays(i.toLong())
-            if (tsbSnapshots.load(date) != null) continue  // already backfilled
+            // v0.9.73 — skip ONLY if up-to-date. Recompute when MISSING or when the
+            // stored snapshot predates the current methodology (the power-TSS →
+            // cycling-hrTSS migration), force-overwriting the stale historical value
+            // so the TSB trend chart has no discontinuity at the switch. Idempotent:
+            // once a date carries the current methodology it's skipped on every later
+            // open, so this never re-runs the HC reads needlessly.
+            val existing = tsbSnapshots.load(date)
+            if (existing != null && existing.methodologyVersion == TsbSnapshotRepository.METHODOLOGY_VERSION) continue
             val detailed = computeTsbDetailed(client, granted, rhrForLoad, targetDate = date)
                 ?: continue
             val saved = tsbSnapshots.save(
@@ -288,14 +308,15 @@ class ReadinessRepository(context: Context) {
                     ctl = detailed.ctl,
                     atl = detailed.atl,
                     totalLoad42d = detailed.totalLoad42d,
-                    methodologyVersion = "v0.9.11-backfill-coggan-ewma",
+                    methodologyVersion = TsbSnapshotRepository.METHODOLOGY_VERSION,
                     computedAtMs = System.currentTimeMillis(),
                 ),
                 date = date,
+                allowHistoricalOverwrite = existing != null,
             )
             if (saved) written++
         }
-        Log.d("URUJ-TSB", "[v0.9.11] backfill: $written new TSB snapshots over last ${days}d")
+        Log.d("URUJ-TSB", "[v0.9.73] backfill/migrate: $written TSB snapshots (re)computed over last ${days}d (missing or stale-methodology → cycling-hrTSS)")
         written
     }
 
@@ -1167,7 +1188,10 @@ class ReadinessRepository(context: Context) {
      *   CTL = EWMA of last 42 days of TSS (α = 1/42)
      *   TSB = CTL − ATL  (positive = fresh, negative = fatigued)
      *
-     * Cycling TSS (URUJ rides): IF² × hours × 100, IF = avgPower / FTP.
+     * Cycling hrTSS (URUJ rides, v0.9.72+): IF² × hours × 100, IF from HR-Reserve
+     * fraction (same formula as runs below). No power meter → measured HR beats
+     * physics-estimated watts. Falls back to power-TSS (IF = avgPower/FTP) only
+     * when a ride has no HR / no RHR baseline.
      *
      * Non-cycling hrTSS (Samsung exercise sessions): IF_hr² × hours × 100, where
      *   IF_hr = ((avgHR − RHR) / (MaxHR − RHR)) / 0.87
@@ -1212,20 +1236,41 @@ class ReadinessRepository(context: Context) {
         var totalLoad = 0f
         val urujRideStarts = mutableListOf<Instant>()
 
-        // 1. URUJ cycling rides (power-based TSS)
+        // v0.9.72 — profile fetched ONCE up front; maxHR + athleticRhr feed BOTH
+        // the cycling hrTSS below AND the Samsung non-cycling hrTSS further down.
+        val profile = runCatching { profileStore.current() }.rethrowCancellation().getOrNull()
+        val maxHrForLoad = (profile?.maxHrBpm ?: 190).coerceAtLeast((athleticRhr ?: 40) + 1)
+
+        // 1. URUJ cycling rides — HR-based hrTSS (v0.9.72). URUJ has NO power
+        //    meter, so physics-estimated watts are systematically biased: they
+        //    inflate on stop-start city surges (every re-acceleration is a power
+        //    spike) and on GPS-speed noise when light-pedalling / stationary.
+        //    The chest-strap HR is the rider's MEASURED internal load and isn't
+        //    fooled by wind / traffic / GPS — so cycling now uses the SAME hrTSS
+        //    as runs (one honest methodology; see [computeHrTss]).
+        //    FALLBACK: a ride with no usable HR (legacy / strap off) OR no RHR
+        //    baseline falls back to the old power-TSS, so no ride is ever dropped.
+        //    POWER-METER FUTURE: if a real meter is added, branch here on a
+        //    hasPowerMeter flag — all power fields stay captured in
+        //    StoredRideSummary, so re-enabling power-TSS is trivial.
         val ftp = rides.lastOrNull()?.ftpWatts?.coerceAtLeast(1) ?: 200
         var urujRideTssTotal = 0f
         var urujRidesInWindow = 0
+        var urujRidesPowerFallback = 0
         for (ride in rides) {
             val rideInstant = Instant.ofEpochMilli(ride.startedAtMs)
             val rideDate = rideInstant.atZone(zone).toLocalDate()
             val daysAgo = ChronoUnit.DAYS.between(rideDate, todayDate).toInt()
             if (daysAgo !in 0..42) continue
             val hours = ride.movingTimeMs / 3_600_000f
-            val intensityFactor = if (ride.averagePowerWatts > 0f) {
-                ride.averagePowerWatts / ftp
-            } else 0f
-            val tss = intensityFactor * intensityFactor * hours * 100f
+            val avgHr = ride.averageHrBpm
+            val tss = if (avgHr != null && athleticRhr != null && athleticRhr > 0 && avgHr > athleticRhr) {
+                computeHrTss(avgHr, athleticRhr, maxHrForLoad, hours)
+            } else {
+                urujRidesPowerFallback++
+                val intensityFactor = if (ride.averagePowerWatts > 0f) ride.averagePowerWatts / ftp else 0f
+                intensityFactor * intensityFactor * hours * 100f
+            }
             dailyTss[daysAgo] += tss
             totalLoad += tss
             urujRideTssTotal += tss
@@ -1238,26 +1283,22 @@ class ReadinessRepository(context: Context) {
         //    without a personal baseline would mislead.
         var samsungHrTssTotal = 0f
         var samsungSessionsInWindow = 0
-        if (client != null && athleticRhr != null && athleticRhr > 0) {
-            val profile = runCatching { profileStore.current() }.rethrowCancellation().getOrNull()
-            val maxHr = profile?.maxHrBpm ?: 190
-            if (maxHr > athleticRhr) {
-                val sessions = readNonCyclingSessionLoads(
-                    client = client,
-                    granted = granted,
-                    todayDate = todayDate,
-                    zone = zone,
-                    urujRideStarts = urujRideStarts,
-                    rhr = athleticRhr,
-                    maxHr = maxHr,
-                )
-                for (s in sessions) {
-                    if (s.daysAgo !in 0..42) continue
-                    dailyTss[s.daysAgo] += s.tss
-                    totalLoad += s.tss
-                    samsungHrTssTotal += s.tss
-                    samsungSessionsInWindow++
-                }
+        if (client != null && athleticRhr != null && athleticRhr > 0 && maxHrForLoad > athleticRhr) {
+            val sessions = readNonCyclingSessionLoads(
+                client = client,
+                granted = granted,
+                todayDate = todayDate,
+                zone = zone,
+                urujRideStarts = urujRideStarts,
+                rhr = athleticRhr,
+                maxHr = maxHrForLoad,
+            )
+            for (s in sessions) {
+                if (s.daysAgo !in 0..42) continue
+                dailyTss[s.daysAgo] += s.tss
+                totalLoad += s.tss
+                samsungHrTssTotal += s.tss
+                samsungSessionsInWindow++
             }
         }
 
@@ -1281,13 +1322,13 @@ class ReadinessRepository(context: Context) {
         // batched HC sync arriving mid-day.
         Log.d(
             "URUJ-TSB",
-            "[v0.9.7] computed: TSB=${"%.2f".format(tsbValue)} " +
+            "[v0.9.72] computed: TSB=${"%.2f".format(tsbValue)} " +
                 "(CTL=${"%.2f".format(ctl)} · ATL=${"%.2f".format(atl)}) | " +
-                "inputs: $urujRidesInWindow URUJ rides → TSS ${"%.0f".format(urujRideTssTotal)} · " +
-                "$samsungSessionsInWindow Samsung non-cycling sessions → hrTSS ${"%.0f".format(samsungHrTssTotal)} · " +
+                "inputs: $urujRidesInWindow URUJ cycling rides → hrTSS ${"%.0f".format(urujRideTssTotal)} " +
+                "($urujRidesPowerFallback power-fallback, no HR) · " +
+                "$samsungSessionsInWindow Samsung non-cycling → hrTSS ${"%.0f".format(samsungHrTssTotal)} · " +
                 "totalLoad42d ${"%.0f".format(totalLoad)} · " +
-                "athleticRhr=${athleticRhr ?: "null"} · " +
-                "ftp=$ftp",
+                "athleticRhr=${athleticRhr ?: "null"} · maxHr=$maxHrForLoad · ftp=$ftp(fallback-only)",
         )
         return TsbCompute(tsb = tsbValue, ctl = ctl, atl = atl, totalLoad42d = totalLoad)
     }
@@ -1311,6 +1352,16 @@ class ReadinessRepository(context: Context) {
     )
 
     private data class SessionLoad(val daysAgo: Int, val tss: Float)
+
+    /**
+     * v0.9.72 — HR-based Training Stress Score (Banister / HR-Reserve). IF = 1.0
+     * at threshold (0.87 of HR Reserve), squared × hours × 100. SINGLE SOURCE OF
+     * TRUTH used by BOTH cycling rides and Samsung non-cycling sessions, so the
+     * whole TSB model runs on one honest, MEASURED methodology — no estimated
+     * power. Returns 0 when HR <= RHR or inputs are invalid.
+     */
+    private fun computeHrTss(avgHr: Int, rhr: Int, maxHr: Int, hours: Float): Float =
+        com.uruj.power.TrainingLoad.hrTss(avgHr, rhr, maxHr, hours)
 
     /**
      * Reads Samsung exercise sessions from HC (last 42d), filters out cycling
@@ -1344,7 +1395,6 @@ class ReadinessRepository(context: Context) {
             .getOrDefault(emptyList())
         if (sessions.isEmpty()) return emptyList()
 
-        val hrReserveRange = (maxHr - rhr).toFloat()
         val results = mutableListOf<SessionLoad>()
         for (session in sessions) {
             // Skip cycling — URUJ owns it.
@@ -1377,11 +1427,9 @@ class ReadinessRepository(context: Context) {
             val avgHr = hrSamples.average().toInt()
             if (avgHr <= rhr) continue  // sub-rest is invalid
 
-            // HR Reserve fraction, normalized to IF=1.0 at threshold (0.87 HRR).
-            val hrReserveFrac = (avgHr - rhr).toFloat() / hrReserveRange
-            val intensityFactor = (hrReserveFrac / 0.87f).coerceIn(0f, 1.4f)
+            // v0.9.72 — shared hrTSS (single source of truth, identical to cycling).
             val hours = durationMin / 60f
-            val hrTss = intensityFactor * intensityFactor * hours * 100f
+            val hrTss = computeHrTss(avgHr, rhr, maxHr, hours)
 
             val sessionDate = session.startTime.atZone(zone).toLocalDate()
             val daysAgo = ChronoUnit.DAYS.between(sessionDate, todayDate).toInt()

@@ -65,6 +65,14 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
     private val _timeInZone = MutableStateFlow<TimeInZoneCalculator.Result?>(null)
     val timeInZone: StateFlow<TimeInZoneCalculator.Result?> = _timeInZone.asStateFlow()
 
+    /**
+     * v0.9.73 — (restingHr, maxHr) anchors for the ride-summary hrTSS display.
+     * Lets EffortCard compute HR-based Training Load via the SAME [com.uruj.power.TrainingLoad]
+     * util the TSB engine uses, so the card agrees with TSB. Null until profile loads.
+     */
+    private val _riderHrAnchors = MutableStateFlow<Pair<Int, Int>?>(null)
+    val riderHrAnchors: StateFlow<Pair<Int, Int>?> = _riderHrAnchors.asStateFlow()
+
     private var pollingJob: Job? = null
 
     /**
@@ -243,6 +251,7 @@ class RideSummaryViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch {
             runCatching {
                 val profile = profileStore.current()
+                _riderHrAnchors.value = profile.restingHrBpm to profile.maxHrBpm // v0.9.73 — hrTSS display anchors
                 val timed = samples.map { Instant.ofEpochMilli(it.timestampMs) to it.bpm }
                 // v0.9.14 — Karvonen needs Athletic RHR. Profile holds the
                 // cached value from latest Bio Lab compute (default 50 if

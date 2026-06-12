@@ -989,12 +989,13 @@ private fun TrainingLoadInfo(component: ReadinessComponent?, result: ReadinessRe
     )
     InfoSection(
         "How it auto-updates (multi-sport)",
-        "• Every URUJ ride adds TSS = IF² × hours × 100, with IF = avgPower/FTP " +
-            "(power-based, the precise version).\n\n" +
-            "• Every Samsung-tracked run / HIIT / strength session also adds " +
-            "hrTSS based on HR Reserve fraction during the session (Banister-" +
-            "style, normalized to threshold = IF 1.0 at 87% HR Reserve). So " +
-            "your runs count toward TSB even though URUJ doesn't record runs.\n\n" +
+        "• Every URUJ cycling ride adds hrTSS = IF² × hours × 100, with IF from " +
+            "your HR-Reserve fraction (Banister-style). URUJ has no power meter, " +
+            "so measured heart rate beats physics-estimated watts.\n\n" +
+            "• Every Samsung-tracked run / HIIT / strength session adds the SAME " +
+            "hrTSS from HR Reserve (normalized to threshold = IF 1.0 at 87% HR " +
+            "Reserve). One honest method — your runs count toward TSB too, even " +
+            "though URUJ doesn't record runs natively yet.\n\n" +
             "• Cycling sessions in Samsung that overlap a URUJ ride are skipped " +
             "(no double-counting).\n\n" +
             "• Every calendar day at midnight, both batteries leak — fatigue " +

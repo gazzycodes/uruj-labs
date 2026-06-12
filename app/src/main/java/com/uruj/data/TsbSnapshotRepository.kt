@@ -69,7 +69,14 @@ class TsbSnapshotRepository(context: Context) {
         encodeDefaults = true
     }
 
-    suspend fun save(snapshot: TsbSnapshot, date: LocalDate = LocalDate.now()): Boolean =
+    suspend fun save(
+        snapshot: TsbSnapshot,
+        date: LocalDate = LocalDate.now(),
+        // v0.9.73 — the methodology migration (power-TSS → cycling-hrTSS) must
+        // overwrite immutable historical snapshots ONCE. Default false preserves
+        // normal immutability (a past date's saved value never drifts).
+        allowHistoricalOverwrite: Boolean = false,
+    ): Boolean =
         withContext(Dispatchers.IO) {
             val file = File(baseDir, "${date}.json")
             // v0.9.7 — today's snapshot is MUTABLE during the day because
@@ -84,7 +91,7 @@ class TsbSnapshotRepository(context: Context) {
             // integrity (we never want yesterday's saved value to drift
             // because today's recompute happened to also touch that bucket).
             val today = LocalDate.now()
-            if (date != today && file.exists()) {
+            if (date != today && file.exists() && !allowHistoricalOverwrite) {
                 Log.d(TAG, "skipping save: $date is historical (immutable)")
                 return@withContext false
             }
@@ -133,9 +140,15 @@ class TsbSnapshotRepository(context: Context) {
     companion object {
         private const val TAG = "URUJ-TsbSnap"
 
-        /** Bumped when TSB calc changes. v0.4.3 was when multi-sport hrTSS
-         *  was added. Stays "v0.4.3" until methodology bumps again. */
-        const val METHODOLOGY_VERSION = "v0.4.3-coggan-ewma-multisport-hrtss"
+        /** Bumped when TSB calc changes. v0.4.3 added multi-sport hrTSS (runs).
+         *  v0.4.4 (app v0.9.72) switched CYCLING from estimated-power TSS to the
+         *  SAME HR-based hrTSS: URUJ has no power meter, so physics-estimated
+         *  watts were systematically biased (inflate on stop-start city surges +
+         *  GPS-noise when light-pedalling/stationary). HR from the chest strap is
+         *  the rider's measured internal load. Whole TSB model now = one honest
+         *  methodology. Power fields stay captured → re-adding power-TSS if a real
+         *  meter ever arrives is trivial (branch on a hasPowerMeter flag). */
+        const val METHODOLOGY_VERSION = "v0.4.4-coggan-ewma-cycling-hrtss"
     }
 }
 
