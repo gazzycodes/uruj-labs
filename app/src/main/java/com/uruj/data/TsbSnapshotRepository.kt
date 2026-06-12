@@ -133,9 +133,15 @@ class TsbSnapshotRepository(context: Context) {
     companion object {
         private const val TAG = "URUJ-TsbSnap"
 
-        /** Bumped when TSB calc changes. v0.4.3 was when multi-sport hrTSS
-         *  was added. Stays "v0.4.3" until methodology bumps again. */
-        const val METHODOLOGY_VERSION = "v0.4.3-coggan-ewma-multisport-hrtss"
+        /** Bumped when TSB calc changes. v0.4.3 added multi-sport hrTSS (runs).
+         *  v0.4.4 (app v0.9.72) switched CYCLING from estimated-power TSS to the
+         *  SAME HR-based hrTSS: URUJ has no power meter, so physics-estimated
+         *  watts were systematically biased (inflate on stop-start city surges +
+         *  GPS-noise when light-pedalling/stationary). HR from the chest strap is
+         *  the rider's measured internal load. Whole TSB model now = one honest
+         *  methodology. Power fields stay captured → re-adding power-TSS if a real
+         *  meter ever arrives is trivial (branch on a hasPowerMeter flag). */
+        const val METHODOLOGY_VERSION = "v0.4.4-coggan-ewma-cycling-hrtss"
     }
 }
 
