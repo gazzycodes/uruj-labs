@@ -55,17 +55,15 @@ fun TsbTrendScreen(onBack: () -> Unit) {
             // days may under-count multi-sport load. Trend chart still
             // shows the shape; methodology tag on backfilled days flags
             // the limitation.
-            val existing = repo.listAll()
-            val hasPastSnapshots = existing.any {
-                it.dateIsoLocal != LocalDate.now(ZoneId.systemDefault()).toString()
+            // v0.9.73 — always run the (idempotent, self-migrating) backfill: it
+            // fills missing days AND force-recomputes any snapshot on an older
+            // methodology (power-TSS → cycling-hrTSS) so the chart has no
+            // discontinuity at the switch. Cheap early-exit no-op once all past
+            // days are on the current methodology.
+            runCatching {
+                ReadinessRepository(context).backfillTsbSnapshots(days = 42)
             }
-            if (!hasPastSnapshots) {
-                runCatching {
-                    ReadinessRepository(context).backfillTsbSnapshots(days = 30)
-                }
-                return@withContext repo.listAll()
-            }
-            existing
+            repo.listAll()
         }
         loading = false
     }

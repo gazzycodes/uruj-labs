@@ -262,6 +262,19 @@ class ReadinessRepository(context: Context) {
             Log.d("URUJ-TSB", "[v0.9.11] backfill skipped — post-ride quiet window")
             return@withContext 0
         }
+        // v0.9.73 — cheap early-exit: if past snapshots exist AND none are on a
+        // stale methodology, there's nothing to fill or migrate → skip the HC
+        // setup + computes entirely. One listAll() = small disk reads. This is
+        // what makes the now-always-called backfill a no-op in steady state.
+        run {
+            val all = tsbSnapshots.listAll()
+            val todayStr = LocalDate.now(ZoneId.systemDefault()).toString()
+            val anyPast = all.any { it.dateIsoLocal != todayStr }
+            val anyStalePast = all.any {
+                it.dateIsoLocal != todayStr && it.methodologyVersion != TsbSnapshotRepository.METHODOLOGY_VERSION
+            }
+            if (anyPast && !anyStalePast) return@withContext 0
+        }
         HcReadGuard.recordRead("backfill.tsb")
         val sdkOk = HealthConnectClient.getSdkStatus(appContext) == HealthConnectClient.SDK_AVAILABLE
         val client = if (sdkOk) {
@@ -278,7 +291,14 @@ class ReadinessRepository(context: Context) {
         var written = 0
         for (i in 1..days) {
             val date = today.minusDays(i.toLong())
-            if (tsbSnapshots.load(date) != null) continue  // already backfilled
+            // v0.9.73 — skip ONLY if up-to-date. Recompute when MISSING or when the
+            // stored snapshot predates the current methodology (the power-TSS →
+            // cycling-hrTSS migration), force-overwriting the stale historical value
+            // so the TSB trend chart has no discontinuity at the switch. Idempotent:
+            // once a date carries the current methodology it's skipped on every later
+            // open, so this never re-runs the HC reads needlessly.
+            val existing = tsbSnapshots.load(date)
+            if (existing != null && existing.methodologyVersion == TsbSnapshotRepository.METHODOLOGY_VERSION) continue
             val detailed = computeTsbDetailed(client, granted, rhrForLoad, targetDate = date)
                 ?: continue
             val saved = tsbSnapshots.save(
@@ -288,14 +308,15 @@ class ReadinessRepository(context: Context) {
                     ctl = detailed.ctl,
                     atl = detailed.atl,
                     totalLoad42d = detailed.totalLoad42d,
-                    methodologyVersion = "v0.9.11-backfill-coggan-ewma",
+                    methodologyVersion = TsbSnapshotRepository.METHODOLOGY_VERSION,
                     computedAtMs = System.currentTimeMillis(),
                 ),
                 date = date,
+                allowHistoricalOverwrite = existing != null,
             )
             if (saved) written++
         }
-        Log.d("URUJ-TSB", "[v0.9.11] backfill: $written new TSB snapshots over last ${days}d")
+        Log.d("URUJ-TSB", "[v0.9.73] backfill/migrate: $written TSB snapshots (re)computed over last ${days}d (missing or stale-methodology → cycling-hrTSS)")
         written
     }
 
@@ -1336,12 +1357,8 @@ class ReadinessRepository(context: Context) {
      * whole TSB model runs on one honest, MEASURED methodology — no estimated
      * power. Returns 0 when HR <= RHR or inputs are invalid.
      */
-    private fun computeHrTss(avgHr: Int, rhr: Int, maxHr: Int, hours: Float): Float {
-        if (avgHr <= rhr || maxHr <= rhr || hours <= 0f) return 0f
-        val hrReserveFrac = (avgHr - rhr).toFloat() / (maxHr - rhr).toFloat()
-        val intensityFactor = (hrReserveFrac / 0.87f).coerceIn(0f, 1.4f)
-        return intensityFactor * intensityFactor * hours * 100f
-    }
+    private fun computeHrTss(avgHr: Int, rhr: Int, maxHr: Int, hours: Float): Float =
+        com.uruj.power.TrainingLoad.hrTss(avgHr, rhr, maxHr, hours)
 
     /**
      * Reads Samsung exercise sessions from HC (last 42d), filters out cycling

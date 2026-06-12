@@ -153,7 +153,8 @@ fun RideSummaryScreen(
             Spacer(Modifier.height(12.dp))
             ClimbCard(state)
             Spacer(Modifier.height(12.dp))
-            EffortCard(state)
+            val hrAnchors by viewModel.riderHrAnchors.collectAsStateWithLifecycle()
+            EffortCard(state, hrState, hrAnchors)
 
             Spacer(Modifier.height(28.dp))
 
@@ -533,21 +534,42 @@ private fun ClimbCard(state: RideState) {
 }
 
 @Composable
-private fun EffortCard(state: RideState) {
-    val intensityFactor = if (state.ftpWatts > 0) state.averagePowerWatts / state.ftpWatts else 0f
+private fun EffortCard(state: RideState, hrState: HrEnrichmentState, hrAnchors: Pair<Int, Int>?) {
+    // v0.9.73 — Training Load = HR-based hrTSS (same TrainingLoad util + the same
+    // ride avg-HR the TSB engine uses, so this card AGREES with TSB). URUJ has no
+    // power meter; physics watts are biased, so HR is the honest load. FALLBACK to
+    // the power-≈ estimate only until HR enrichment lands (or if the ride has none).
     val hours = state.movingTimeMs / 3_600_000f
-    val tss = (intensityFactor.toDouble().pow(2) * hours * 100).toFloat()
+    val avgHr = (hrState as? HrEnrichmentState.Done)?.avgHrBpm
+    val rhr = hrAnchors?.first
+    val maxHr = hrAnchors?.second
+    val hrBased = avgHr != null && rhr != null && maxHr != null && maxHr > rhr && avgHr > rhr
+
+    val intensityFactor: Float
+    val tss: Float
+    if (hrBased) {
+        intensityFactor = com.uruj.power.TrainingLoad.hrIntensityFactor(avgHr!!, rhr!!, maxHr!!)
+        tss = com.uruj.power.TrainingLoad.hrTss(avgHr, rhr, maxHr, hours)
+    } else {
+        intensityFactor = if (state.ftpWatts > 0) state.averagePowerWatts / state.ftpWatts else 0f
+        tss = (intensityFactor.toDouble().pow(2) * hours * 100).toFloat()
+    }
 
     Card("TRAINING LOAD", accent = UrujNeonMagenta) {
         BigStatRow(
             left = "%.2f".format(intensityFactor),
-            leftLabel = "IF (avg/FTP)",
+            leftLabel = if (hrBased) "IF (HR-reserve)" else "IF (avg/FTP, ≈)",
             right = "${tss.toInt()}",
-            rightLabel = "TSS (≈)",
+            rightLabel = if (hrBased) "TSS (HR)" else "TSS (≈)",
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "IF: 0.55=recovery, 0.75=endurance, 0.85=tempo, 0.95+=race. TSS: 100=1hr at threshold.",
+            text = if (hrBased)
+                "HR-based load — your measured internal effort (no power meter). " +
+                    "IF: 0.65=endurance, 0.85=tempo, 0.95+=threshold. TSS: 100 = 1hr at threshold."
+            else
+                "≈ power estimate (HR not synced yet — will switch to HR load). " +
+                    "IF: 0.55=recovery, 0.75=endurance, 0.85=tempo.",
             color = UrujMuted,
             fontSize = 11.sp,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),

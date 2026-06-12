@@ -69,7 +69,14 @@ class TsbSnapshotRepository(context: Context) {
         encodeDefaults = true
     }
 
-    suspend fun save(snapshot: TsbSnapshot, date: LocalDate = LocalDate.now()): Boolean =
+    suspend fun save(
+        snapshot: TsbSnapshot,
+        date: LocalDate = LocalDate.now(),
+        // v0.9.73 — the methodology migration (power-TSS → cycling-hrTSS) must
+        // overwrite immutable historical snapshots ONCE. Default false preserves
+        // normal immutability (a past date's saved value never drifts).
+        allowHistoricalOverwrite: Boolean = false,
+    ): Boolean =
         withContext(Dispatchers.IO) {
             val file = File(baseDir, "${date}.json")
             // v0.9.7 — today's snapshot is MUTABLE during the day because
@@ -84,7 +91,7 @@ class TsbSnapshotRepository(context: Context) {
             // integrity (we never want yesterday's saved value to drift
             // because today's recompute happened to also touch that bucket).
             val today = LocalDate.now()
-            if (date != today && file.exists()) {
+            if (date != today && file.exists() && !allowHistoricalOverwrite) {
                 Log.d(TAG, "skipping save: $date is historical (immutable)")
                 return@withContext false
             }
