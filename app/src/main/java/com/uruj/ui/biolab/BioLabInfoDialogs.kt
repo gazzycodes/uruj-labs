@@ -155,10 +155,13 @@ fun TrainingStateInfoDialog(tsb: TsbSnapshot?, onDismiss: () -> Unit) {
         )
         InfoSection(
             "How it auto-updates (multi-sport)",
-            "Every URUJ cycling ride → power-based TSS = IF² × hours × 100.\n\n" +
-                "Every Samsung-tracked run / HIIT / strength session → hrTSS based " +
-                "on HR Reserve fraction (Banister-style). Lets running + dumbbells " +
-                "count toward your training load alongside cycling.\n\n" +
+            "Every URUJ cycling ride → hrTSS = IF² × hours × 100, where IF comes " +
+                "from your HR-Reserve fraction (Banister-style). URUJ has no power " +
+                "meter, so MEASURED heart rate beats physics-estimated watts (which " +
+                "inflate on stop-start city surges + GPS noise).\n\n" +
+                "Every Samsung-tracked run / HIIT / strength session → the SAME " +
+                "hrTSS from HR Reserve. One honest method across every sport — " +
+                "cycling, running + dumbbells all count the same way.\n\n" +
                 "Cycling sessions in Samsung that overlap a URUJ ride are skipped " +
                 "(no double-count). Bazaar walks + light activity won't trigger " +
                 "session detection unless Samsung Health flags them.\n\n" +

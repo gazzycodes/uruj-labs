@@ -116,8 +116,9 @@ fun TsbTrendScreen(onBack: () -> Unit) {
                 "builds as snapshots accumulate. Disk-persisted forever — your " +
                 "6-month fitness arc is yours, not Strava's paywall.",
             methodologyFootnote = "TSB = CTL − ATL. CTL = 42d EWMA of TSS; ATL " +
-                "= 7d EWMA of TSS. Cycling TSS from power. Multi-sport hrTSS " +
-                "(running/HIIT) from HR Reserve fraction. Methodology " +
+                "= 7d EWMA of TSS. All sport (cycling + running/HIIT) → hrTSS " +
+                "from HR-Reserve fraction — no power meter, so measured HR beats " +
+                "estimated watts. Methodology " +
                 "${TsbSnapshotRepository.METHODOLOGY_VERSION}. Race-day " +
                 "target +5..+15. Productive training −10..−20. <-25 mandates " +
                 "rest. Every dot persisted to URUJ's local disk — Strava + " +

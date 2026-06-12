@@ -1188,7 +1188,10 @@ class ReadinessRepository(context: Context) {
      *   CTL = EWMA of last 42 days of TSS (α = 1/42)
      *   TSB = CTL − ATL  (positive = fresh, negative = fatigued)
      *
-     * Cycling TSS (URUJ rides): IF² × hours × 100, IF = avgPower / FTP.
+     * Cycling hrTSS (URUJ rides, v0.9.72+): IF² × hours × 100, IF from HR-Reserve
+     * fraction (same formula as runs below). No power meter → measured HR beats
+     * physics-estimated watts. Falls back to power-TSS (IF = avgPower/FTP) only
+     * when a ride has no HR / no RHR baseline.
      *
      * Non-cycling hrTSS (Samsung exercise sessions): IF_hr² × hours × 100, where
      *   IF_hr = ((avgHR − RHR) / (MaxHR − RHR)) / 0.87

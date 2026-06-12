@@ -233,8 +233,8 @@ fun BioLabScreen(
                     fontSize = 32.sp,
                 )
                 Text(
-                    "Multi-sport training metrics — power-based load for cycling, " +
-                        "HR-based load (Banister-style) for runs + other sessions tracked " +
+                    "Multi-sport training metrics — HR-based load (Banister-style) " +
+                        "for cycling AND runs + other sessions tracked " +
                         "by your Samsung Fit Band 3. Wellness data (sleep staging, activity, " +
                         "body comp, live stress) stays in Samsung Health.",
                     color = UrujMuted,
