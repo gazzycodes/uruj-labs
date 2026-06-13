@@ -310,7 +310,10 @@ class MainActivity : ComponentActivity() {
                         sessionId = activeMapSession,
                         onBack = { routeMapSession = null },
                     )
-                    rideState.isRecording -> HudScreen(onStopRide = ::stopRide)
+                    rideState.isRecording -> HudScreen(
+                        onStopRide = ::stopRide,
+                        onTogglePause = ::togglePauseRide,
+                    )
                     completed != null -> RideSummaryScreen(
                         state = completed!!,
                         onDone = { RideStateHolder.dismissCompleted() },
@@ -431,6 +434,17 @@ class MainActivity : ComponentActivity() {
     private fun stopRide() {
         val intent = Intent(this, RideRecorderService::class.java).apply {
             action = RideRecorderService.ACTION_STOP
+        }
+        startService(intent)
+    }
+
+    // v0.9.76 — toggle the rider's MANUAL pause from the HUD button. Mirrors
+    // stopRide()'s intent pattern (the service is already running in the
+    // foreground during a ride, so startService delivers the action). The
+    // service flips RideState.manuallyPaused and freezes/resumes moving-time.
+    private fun togglePauseRide() {
+        val intent = Intent(this, RideRecorderService::class.java).apply {
+            action = RideRecorderService.ACTION_TOGGLE_PAUSE
         }
         startService(intent)
     }

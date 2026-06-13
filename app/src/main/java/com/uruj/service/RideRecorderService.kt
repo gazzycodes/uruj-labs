@@ -71,6 +71,13 @@ class RideRecorderService : Service() {
     private val prTracker by lazy { PrTracker(this) }
     private var tts: TtsAnnouncer? = null
 
+    // v0.9.76 — auto-pause detector promoted to a field (was a recordLoop local)
+    // so the manual PAUSE/RESUME control can reset() it: on a manual RESUME we
+    // hand control back to auto-pause with a fresh window (no instant re-pause
+    // flicker). reset() is also called at the top of each recordLoop so a reused
+    // service instance starts every ride with a clean detector.
+    private val autoPause = AutoPauseDetector()
+
     override fun onCreate() {
         super.onCreate()
         RideNotifications.ensureChannel(this)
@@ -88,8 +95,47 @@ class RideRecorderService : Service() {
                 else Log.w(TAG, "ACTION_RESUME without session id, ignoring")
             }
             ACTION_STOP -> stopRecording()
+            ACTION_TOGGLE_PAUSE -> togglePause()
         }
         return START_NOT_STICKY
+    }
+
+    /**
+     * v0.9.76 — flip the rider's MANUAL pause (HUD PAUSE/RESUME button).
+     *
+     * PAUSE: set both `manuallyPaused` and `isPaused` true immediately, so the
+     * 1 Hz moving-time ticker freezes on its very next tick — independent of the
+     * GPS sampling cadence (which throttles when stationary, exactly when the
+     * rider stops). The collect loop then keeps `isPaused` true via
+     * `manuallyPaused || auto`.
+     *
+     * RESUME: clear `manuallyPaused`; drop `isPaused` to false and `reset()` the
+     * auto-pause detector so it re-evaluates from now with a fresh window (no
+     * instant re-pause flicker). If the rider is actually still stopped,
+     * auto-pause re-engages after its normal 5 s — correct.
+     *
+     * No-op when no ride is recording (the HUD only shows the button mid-ride,
+     * but guard defensively against a stray intent).
+     */
+    private fun togglePause() {
+        if (recordingJob?.isActive != true) return
+        var nowManuallyPaused = false
+        RideStateHolder.update { current ->
+            if (!current.isRecording) return@update current
+            nowManuallyPaused = !current.manuallyPaused
+            current.copy(manuallyPaused = nowManuallyPaused, isPaused = nowManuallyPaused)
+        }
+        if (!nowManuallyPaused) autoPause.reset() // manual resume → hand back to auto, fresh window
+        Log.d(TAG, "manual pause toggled → manuallyPaused=$nowManuallyPaused")
+        // Refresh the notification immediately so the shade reflects PAUSED/REC
+        // without waiting up to 1s for the next ticker rebuild. (The 1 Hz ticker
+        // also rebuilds it; this is just for responsiveness.)
+        runCatching {
+            getSystemService(NotificationManager::class.java)?.notify(
+                RideNotifications.NOTIFICATION_ID,
+                RideNotifications.build(this, RideStateHolder.state.value),
+            )
+        }.onFailure { Log.w(TAG, "notification refresh on pause-toggle failed", it) }
     }
 
     private fun startRecording(resumeSessionId: String? = null) {
@@ -300,7 +346,7 @@ class RideRecorderService : Service() {
         profile: RiderProfile,
     ) = supervisorScope {
         val recorder = NdjsonRideRecorder(samplesFile)
-        val autoPause = AutoPauseDetector()
+        autoPause.reset() // fresh detector state for this ride (field, reused across rides)
         val powerEstimator = PowerEstimator(profile)
         val elevation = ElevationTracker()
         val power3s = RollingAverage(windowSeconds = 3)
@@ -633,11 +679,18 @@ class RideRecorderService : Service() {
                 // Auto-pause uses GATED speed (0 when GPS is junk) — combined with the
                 // accelerometer this means a stationary phone with bad GPS WILL pause.
                 val effectiveSpeed = if (gpsAccurate) location.speedMetersPerSecond else 0f
-                val isPaused = autoPause.observe(
+                val autoPaused = autoPause.observe(
                     timestampMs = location.timestampMs,
                     speedMs = effectiveSpeed,
                     accelG = accelG,
                 )
+                // v0.9.76 — EFFECTIVE pause = manual OR auto. A rider-initiated
+                // PAUSE (HUD button) sticks until a manual RESUME — auto-resume
+                // can't clear it. Auto-pause keeps working normally when not
+                // manually paused. This single `isPaused` flows through every
+                // existing exclusion below (distance, power, max-speed, sample
+                // stamping) and the 1 Hz moving-time gate, so nothing else changes.
+                val isPaused = RideStateHolder.state.value.manuallyPaused || autoPaused
 
                 val prev = previousLocation
                 var distanceMovedM = 0.0
@@ -784,7 +837,10 @@ class RideRecorderService : Service() {
 
                 RideStateHolder.update { current ->
                     current.copy(
-                        isPaused = isPaused,
+                        // Re-derive from the freshest manual flag inside the atomic
+                        // update so a manual toggle landing between the observe()
+                        // above and here is never clobbered (v0.9.76).
+                        isPaused = current.manuallyPaused || autoPaused,
                         latestSample = sample,
                         gpsAccurate = gpsAccurate,
                         gpsAccuracyMeters = location.horizontalAccuracyMeters,
@@ -840,6 +896,10 @@ class RideRecorderService : Service() {
         const val ACTION_STOP = "com.uruj.action.STOP_RIDE"
         /** Resume an interrupted ride. Must be paired with EXTRA_RESUME_SESSION_ID. */
         const val ACTION_RESUME = "com.uruj.action.RESUME_RIDE"
+        /** v0.9.76 — toggle the rider's MANUAL pause from the HUD button. Distinct
+         *  from [ACTION_RESUME] (crash-recovery session resume). Single toggle:
+         *  flips [RideState.manuallyPaused]. */
+        const val ACTION_TOGGLE_PAUSE = "com.uruj.action.TOGGLE_PAUSE"
         const val EXTRA_RESUME_SESSION_ID = "com.uruj.extra.RESUME_SESSION_ID"
 
         /** Marker file written on service start, deleted on clean stop. Cold-start

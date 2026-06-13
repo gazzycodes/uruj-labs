@@ -16,17 +16,22 @@ class AutoPauseDetectorTest {
     }
 
     @Test
-    fun `pauses once 10 seconds of stillness have elapsed`() {
+    fun `pauses once the stillness window has elapsed`() {
+        // v0.9.76 (#167) — fixed a stale assertion: this test expected a 10s
+        // window, but the detector's windowMs is 5_000L (matches Garmin / Strava
+        // / Wahoo). The code is the intended behavior; the test was never updated
+        // when the window was shortened. Now asserts the real 5s window.
         val d = AutoPauseDetector()
-        // Riding for one second, then a full stop.
+        // Riding at t=0, then a full stop.
         d.observe(0L, 5.5f, 0.3f)
 
-        for (t in 1_000L..9_000L step 1_000L) {
+        // Up to (but not including) the 5s window: still considered moving.
+        for (t in 1_000L..4_000L step 1_000L) {
             assertFalse("paused too early at $t ms", d.observe(t, 0.0f, 0.05f))
         }
-        // 10s after the last movement: pause kicks in.
-        assertTrue("expected paused at 10s mark", d.observe(10_000L, 0.0f, 0.05f))
-        assertTrue("still paused at 12s", d.observe(12_000L, 0.0f, 0.05f))
+        // 5s after the last movement: pause kicks in.
+        assertTrue("expected paused at the 5s mark", d.observe(5_000L, 0.0f, 0.05f))
+        assertTrue("still paused at 7s", d.observe(7_000L, 0.0f, 0.05f))
     }
 
     @Test
