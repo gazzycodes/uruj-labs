@@ -9,7 +9,16 @@ import com.uruj.weather.WeatherStatus
 
 data class RideState(
     val isRecording: Boolean = false,
+    /** Effective pause = manual OR auto. Gates moving-time accrual (1 Hz ticker),
+     *  distance/power/max-speed accumulation, and per-sample `isPaused` stamping
+     *  (which the summary + HR-enrichment exclude). Written every GPS sample by
+     *  the service as `manuallyPaused || autoPauseVerdict`. */
     val isPaused: Boolean = false,
+    /** v0.9.76 — rider-initiated manual pause (HUD PAUSE button). Distinct from
+     *  the auto-pause verdict so it STICKS: auto-resume can't clear it, only a
+     *  manual RESUME can. OR'd into [isPaused]. Transient/in-memory — not restored
+     *  across process death (a crash-resumed ride starts un-paused). */
+    val manuallyPaused: Boolean = false,
     val sessionId: String? = null,
     val startedAtMs: Long? = null,
     val latestSample: RideSample? = null,

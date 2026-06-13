@@ -69,7 +69,7 @@ import com.uruj.ui.theme.UrujZone5
 import kotlinx.coroutines.delay
 
 @Composable
-fun HudScreen(onStopRide: () -> Unit) {
+fun HudScreen(onStopRide: () -> Unit, onTogglePause: () -> Unit = {}) {
     val state by RideStateHolder.state.collectAsStateWithLifecycle()
 
     // Stop-ride confirmation dialog state. v0.3.7 fix — user reported
@@ -153,7 +153,26 @@ fun HudScreen(onStopRide: () -> Unit) {
                 .background(MaterialTheme.colorScheme.background)
                 .padding(horizontal = 20.dp, vertical = 12.dp),
         ) {
-            StopButton(onClick = { showStopConfirm = true })
+            // v0.9.76 — PAUSE/RESUME (manual) sits beside STOP, both fixed at the
+            // bottom (same 82dp scroll-reserve). PAUSE lets the rider halt the
+            // timer + moving-stats on purpose (long light, phone pickup, break)
+            // when auto-pause hasn't caught it. Button label tracks the MANUAL
+            // pause flag; the top-bar "PAUSED" indicator already covers the
+            // effective (auto OR manual) state.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                PauseResumeButton(
+                    manuallyPaused = state.manuallyPaused,
+                    onClick = onTogglePause,
+                    modifier = Modifier.weight(1f),
+                )
+                StopButton(
+                    onClick = { showStopConfirm = true },
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
 
         if (showStopConfirm) {
@@ -936,10 +955,10 @@ private fun StopConfirmDialog(
 }
 
 @Composable
-private fun StopButton(onClick: () -> Unit) {
+private fun StopButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     Button(
         onClick = onClick,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(58.dp),
         shape = RoundedCornerShape(16.dp),
@@ -949,7 +968,39 @@ private fun StopButton(onClick: () -> Unit) {
         ),
     ) {
         Text(
-            text = "■  STOP RIDE",
+            text = "■  STOP",
+            fontWeight = FontWeight.Black,
+            fontSize = 16.sp,
+            letterSpacing = 4.sp,
+        )
+    }
+}
+
+/**
+ * v0.9.76 — manual PAUSE / RESUME toggle. Label + colour track the rider's
+ * MANUAL pause flag ([RideState.manuallyPaused]): amber "PAUSE" when running,
+ * green "RESUME" when manually paused. Leads with the WORD so the control is
+ * unambiguous even if the ❚❚ / ▶ glyph fails to render on a given font.
+ */
+@Composable
+private fun PauseResumeButton(
+    manuallyPaused: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(58.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (manuallyPaused) UrujZone2 else UrujZone3,
+            contentColor = Color.Black,
+        ),
+    ) {
+        Text(
+            text = if (manuallyPaused) "▶  RESUME" else "❚❚  PAUSE",
             fontWeight = FontWeight.Black,
             fontSize = 16.sp,
             letterSpacing = 4.sp,
