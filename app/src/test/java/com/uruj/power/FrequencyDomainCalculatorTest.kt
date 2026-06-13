@@ -80,19 +80,31 @@ class FrequencyDomainCalculatorTest {
     }
 
     @Test
-    fun `filter alignment rejects timestamp-gap pairs`() {
-        // Sequence where one beat is missing (long gap). HrvCalculator
-        // rejects the cross-gap pair via the timestamp-consecutiveness check.
+    fun `keeps timestamp-gap pairs - only the ectopic filter applies (v0_9_48_7, matches scipy-Kubios)`() {
+        // v0.9.48.6/.7 REMOVED the timestamp-consecutiveness check from BOTH
+        // HrvCalculator AND FrequencyDomainCalculator. That filter (reject pairs
+        // whose beat-time gap didn't match the RR within max(150ms, 30%)) was
+        // rejecting ~30-50% of legitimate pairs and biasing RMSSD/SD1 LOW
+        // (SD1 7.0 vs the math identity RMSSD/√2 = 9.83). Kubios / Task Force
+        // 1996 / scipy / neurokit2 / pyhrv do NOT timestamp-filter — they rely
+        // on the ectopic 20% filter alone. So a missed-beat gap with EQUAL RR
+        // values is NOT rejected (RR delta 0% ≪ 20% ectopic threshold).
+        //
+        // This test is the REGRESSION GUARD for that decision: if anyone
+        // re-adds a timestamp filter, the diff count drops to 2 and this fails.
+        // (It replaces the pre-v0.9.48.7 assertion that expected 2 — that test
+        // was stale, asserting behavior that was deliberately removed.)
         val beats = listOf(
             HrvCalculator.Beat(timestampMs = 0L, rrMs = 800),
             HrvCalculator.Beat(timestampMs = 800L, rrMs = 800),
-            // (missing beat that should have been at 1600)
-            HrvCalculator.Beat(timestampMs = 2400L, rrMs = 800),  // 1600ms gap, expected 800
+            // a beat was missed around 1600 (1600ms gap) — but RR is still 800
+            HrvCalculator.Beat(timestampMs = 2400L, rrMs = 800),
             HrvCalculator.Beat(timestampMs = 3200L, rrMs = 800),
         )
         val diffs = freq.consecutiveDiffsMs(beats)
-        // Valid pairs: (0,1) and (2,3). Pair (1,2) rejected: actualGap=1600, expectedGap=800, |diff|=800 > tolerance(240).
-        assertEquals("Should reject the cross-gap pair", 2, diffs.size)
+        // All 3 pairs kept (RR delta 0% ≤ 20% ectopic); the timestamp gap is ignored.
+        assertEquals("timestamp gaps no longer rejected — ectopic filter only", 3, diffs.size)
+        assertTrue("clean equal-RR diffs are all 0", diffs.all { it == 0 })
     }
 
     // ────────────────────────────────────────────────────────────────────
