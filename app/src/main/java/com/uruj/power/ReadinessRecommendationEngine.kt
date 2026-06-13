@@ -74,7 +74,9 @@ class RuleBasedReasoner : ReadinessReasoner {
         // Mild = caution, not block.
         val tsbValue = today.tsb?.value
         val sleepHours = today.sleep?.hours
-        val hrvRatio = today.hrv?.ratioVsBaseline
+        // v0.9.74 — `ratioVsBaseline` (today/median) is no longer read by the
+        // engine: HRV severity is now the personal-baseline [HrvReadiness]
+        // verdict below (Ln-rMSSD vs his own 7d mean + CV), not a raw ratio.
         val hrvAbs = today.hrv?.rmssdMs
         val rhrDelta = today.rhr?.let { r ->
             if (r.baselineBpm != null) r.todayBpm - r.baselineBpm else null
@@ -90,19 +92,46 @@ class RuleBasedReasoner : ReadinessReasoner {
         val subjSoreness = today.tracker?.latestSoreness
         val subjSleepQuality = today.tracker?.sleepQualitySubjective
 
+        // v0.9.74 — PERSONAL-BASELINE HRV assessment (single source of truth:
+        // [HrvReadiness]). Replaces the fixed population thresholds
+        // (<12 / <15 / <18 ms) that were scattered across the flags, the tier
+        // ceiling, the score cap, the unlock estimate, and the UI — and that
+        // mis-fired on this rider's constitutional ~13.8 ms baseline (flipped
+        // his recommendation Z2→Z1 on a 1 ms wobble, 2026-06-13).
+        //
+        // assess() works in Ln rMSSD vs HIS OWN 7-day rolling mean + CV
+        // (Plews/Buchheit smallest-worthwhile-change), with a parasympathetic-
+        // saturation guard: a low reading with a CALM RHR is benign high-vagal-
+        // tone, NOT fatigue, and is never escalated to severe without RHR
+        // corroboration (Plews 2016 — the lowest-HRV world-champ rower had the
+        // lowest resting HR and won). Self-recalibrating: as the baseline rises
+        // (nicotine taper / sleep / fitness) the whole band tracks up.
+        // Why: docs/research/2026-06-13-hrv-personal-baseline-readiness.md +
+        // [[reference_hrv_baseline_reframe]].
+        val hrvStats = today.hrv?.stats
+        val hrvAssessment = HrvReadiness.assess(
+            todayMs = hrvAbs,
+            baselineMs = hrvStats?.recent7dMeanMs,
+            cvPercent = hrvStats?.cvPercent,
+            rhrDelta = rhrDelta,
+            daysOfData = hrvStats?.samplesUsed ?: 0,
+        )
+
         val severeFlags = mutableListOf<String>()
         if (tsbValue != null && tsbValue <= -25f) severeFlags += "tsb-crashed"
         if (sleepHours != null && sleepHours < 5f) severeFlags += "sleep-crashed"
-        if ((hrvRatio != null && hrvRatio < 0.70f) ||
-            (hrvRatio == null && hrvAbs != null && hrvAbs < 12f)
-        ) severeFlags += "hrv-crashed"
-        // v0.9.41 — ABSOLUTE HRV FLOOR severe flag (chronic-baseline trap fix).
-        // The old check above only fired when hrvRatio < 0.70 OR baseline absent.
-        // Adds: even when ratio says "stable vs your suppressed self", an absolute
-        // RMSSD < 15ms is the body screaming "non-functional overreach territory."
-        // This is independent of ratio — pure population-norm safety net.
-        if (hrvAbs != null && hrvAbs < 15f && "hrv-crashed" !in severeFlags) {
-            severeFlags += "hrv-absolute-suppressed"
+        // v0.9.74 — HRV severe flag is now BASELINE-RELATIVE. SEVERE fires only
+        // when today is clearly below HIS baseline AND corroborated by an
+        // elevated RHR, OR an extreme crash (illness/overreach safety) regardless
+        // of corroboration. This preserves the v0.9.41 chronic-baseline-trap
+        // safety net (#192 — a genuine crash well below his own baseline still
+        // fires) WITHOUT the old fixed <12 / <15 ms population lines. NO_BASELINE
+        // (new user / <7 nights) keeps a WIDE absolute sanity floor (<12 ms) only.
+        when (hrvAssessment.verdict) {
+            HrvReadiness.Verdict.SEVERE -> severeFlags += "hrv-suppressed"
+            HrvReadiness.Verdict.NO_BASELINE ->
+                if (hrvAbs != null && hrvAbs < 12f) severeFlags += "hrv-crashed"
+            else -> {} // NORMAL / MILD → no severe flag
         }
         if (rhrDelta != null && rhrDelta >= 5) severeFlags += "rhr-elevated"
         // v0.9.4 — CAR as 5th severe flag. Exaggerated OR blunted both
@@ -127,8 +156,16 @@ class RuleBasedReasoner : ReadinessReasoner {
         val mildFlags = mutableListOf<String>()
         if (tsbValue != null && tsbValue <= -15f && "tsb-crashed" !in severeFlags) mildFlags += "tsb-deep"
         if (sleepHours != null && sleepHours < 6f && "sleep-crashed" !in severeFlags) mildFlags += "sleep-low"
-        if (hrvRatio != null && hrvRatio < 0.85f && "hrv-crashed" !in severeFlags) mildFlags += "hrv-low"
-        if (hrvAbs != null && hrvAbs < 18f && hrvRatio == null && "hrv-crashed" !in severeFlags) mildFlags += "hrv-low"
+        // v0.9.74 — HRV mild flag is baseline-relative (MILD verdict = mildly
+        // below HIS own normal; includes the benign saturation case). NO_BASELINE
+        // keeps the wide <18 ms absolute floor for new users / thin data.
+        if (hrvAssessment.verdict == HrvReadiness.Verdict.MILD) {
+            mildFlags += "hrv-low"
+        } else if (hrvAssessment.verdict == HrvReadiness.Verdict.NO_BASELINE &&
+            hrvAbs != null && hrvAbs < 18f && "hrv-crashed" !in severeFlags
+        ) {
+            mildFlags += "hrv-low"
+        }
         if (rhrDelta != null && rhrDelta >= 3 && "rhr-elevated" !in severeFlags) mildFlags += "rhr-creeping"
         if (carIsRecent && carTier == CarTier.SUPPRESSED) mildFlags += "car-suppressed"
         if (patterns.tsbUnderwaterDays >= 3) mildFlags += "tsb-underwater-streak"
@@ -172,7 +209,7 @@ class RuleBasedReasoner : ReadinessReasoner {
         // when 7d-baseline ratios are misleading.
         //
         // Rule: take the MORE CONSERVATIVE of baseTier vs absoluteCeiling.
-        val absoluteCeiling = computeAbsoluteCeiling(today)
+        val absoluteCeiling = computeAbsoluteCeiling(today, hrvAssessment)
         val tier = pickMoreConservative(baseTier, absoluteCeiling)
         // endregion
 
@@ -208,7 +245,7 @@ class RuleBasedReasoner : ReadinessReasoner {
             tier = tier,
             tsbValue = tsbValue,
             sleepHours = sleepHours,
-            hrvRatio = hrvRatio,
+            hrvAssessment = hrvAssessment,
             hrvAbs = hrvAbs,
             rhrDelta = rhrDelta,
             carTier = if (carIsRecent) carTier else null,
@@ -228,7 +265,7 @@ class RuleBasedReasoner : ReadinessReasoner {
         // v0.9.5 polish: pass severeFlags so we can skip dup info that's
         // already in the rationale (e.g. CAR exaggerated appears in both
         // — the rationale line is the source of truth, bullet was noise).
-        val insights = buildInsights(today, trends, patterns, severeFlags)
+        val insights = buildInsights(today, trends, patterns, severeFlags, hrvAssessment)
         // endregion
 
         // region Missing-data callout
@@ -240,10 +277,14 @@ class RuleBasedReasoner : ReadinessReasoner {
         // Tag: URUJ-ReadinessEngine. Grep this to verify tier overrides.
         android.util.Log.d(
             "URUJ-ReadinessEngine",
-            "[v0.9.48] score=$score · tier=$tier (was $baseTier · ceiling $absoluteCeiling) · " +
+            "[v0.9.74] score=$score · tier=$tier (was $baseTier · ceiling $absoluteCeiling) · " +
                 "severe=${severeFlags.size}[${severeFlags.joinToString(",")}] · " +
                 "mild=${mildFlags.size} · " +
-                "hrv=${hrvAbs?.let { "%.1f".format(it) } ?: "—"}ms · " +
+                "hrv=${hrvAbs?.let { "%.1f".format(it) } ?: "—"}ms " +
+                "[${hrvAssessment.verdict}" +
+                "${hrvAssessment.deviationSds?.let { " %+.2fSD".format(it) } ?: ""}" +
+                "${if (hrvAssessment.saturationLikely) " sat?" else ""}" +
+                " base=${hrvAssessment.baselineMs?.let { "%.1f".format(it) } ?: "—"}] · " +
                 "tsb=${tsbValue?.toInt() ?: "—"} · " +
                 "rhrΔ=${rhrDelta ?: "—"} · " +
                 "car=${carTier?.name ?: "—"} · " +
@@ -277,22 +318,56 @@ class RuleBasedReasoner : ReadinessReasoner {
      *   - Coggan & Allen (TSB / training stress)
      *   - Pruessner 1997 / Clow 2010 (CAR norms)
      */
-    private fun computeAbsoluteCeiling(today: ReadinessContext.TodaySnapshot): ReadinessTier {
+    private fun computeAbsoluteCeiling(
+        today: ReadinessContext.TodaySnapshot,
+        hrvAssessment: HrvReadiness.Assessment,
+    ): ReadinessTier {
         val hrvAbs = today.hrv?.rmssdMs
         val tsb = today.tsb?.value
         val rhrDelta = today.rhr?.let { r ->
             if (r.baselineBpm != null) r.todayBpm - r.baselineBpm else null
         }
 
-        // HRV absolute ceiling
-        val hrvCeiling = when {
-            hrvAbs == null -> ReadinessTier.HardGreenLight
-            hrvAbs < 12f -> ReadinessTier.FullRest         // critically suppressed
-            hrvAbs < 15f -> ReadinessTier.ActiveRecovery   // severely suppressed
-            hrvAbs < 20f -> ReadinessTier.EasyAerobic      // suppressed
-            hrvAbs < 25f -> ReadinessTier.ModerateEndurance // below athletic norm
-            else -> ReadinessTier.HardGreenLight
+        // v0.9.74 — HRV ceiling from the PERSONAL-BASELINE verdict (no fixed
+        // population ms ladder). NORMAL → no cap; MILD → easy only; SEVERE →
+        // recovery only. A genuine crash also fires the `hrv-suppressed` severe
+        // flag, so the multi-signal baseTier (2+ severe → FullRest) still
+        // escalates to full rest when corroborated — HRV alone no longer slams
+        // the brakes (the research point: never read HRV in isolation).
+        // NO_BASELINE keeps a WIDE absolute crash floor for new users.
+        val hrvCeiling = when (hrvAssessment.verdict) {
+            HrvReadiness.Verdict.NORMAL -> ReadinessTier.HardGreenLight
+            HrvReadiness.Verdict.MILD -> ReadinessTier.EasyAerobic
+            HrvReadiness.Verdict.SEVERE -> ReadinessTier.ActiveRecovery
+            HrvReadiness.Verdict.NO_BASELINE -> when {
+                hrvAbs == null -> ReadinessTier.HardGreenLight
+                hrvAbs < 12f -> ReadinessTier.ActiveRecovery // genuine crash, new user
+                else -> ReadinessTier.HardGreenLight
+            }
         }
+
+        // v0.9.74 — CAR ceiling (RIPPLE FIX, #261). Before this, the ONLY thing
+        // gating a "go hard" recommendation on an exaggerated-CAR morning was the
+        // miscalibrated HRV<15 severe flag adding a 2nd severe → FullRest. With
+        // HRV now correctly NOT firing at his baseline, an exaggerated / blunted
+        // CAR alone no longer constrained the tier — CAR had a severe FLAG but,
+        // unlike HRV/TSB/RHR/subjective, no CEILING. That would have flipped a
+        // high-cortisol morning to HardGreenLight. CAR is a validated genuine
+        // stress signal ([[reference_car_cross_validation_2026_06_11]]), so it
+        // now caps the tier like the other markers:
+        //   EXAGGERATED → easy aerobic only (no intensity on a high-cortisol
+        //                 morning; easy Z2 itself lowers cortisol)
+        //   BLUNTED     → recovery only (flat HPA = chronic-stress pattern)
+        // Only when recent (≤24h); SUPPRESSED / NORMAL / ROBUST impose no cap.
+        val carCeiling = today.car
+            ?.takeIf { it.ageHours <= 24f }
+            ?.let { car ->
+                when (car.tier) {
+                    CarTier.EXAGGERATED -> ReadinessTier.EasyAerobic
+                    CarTier.BLUNTED -> ReadinessTier.ActiveRecovery
+                    else -> ReadinessTier.HardGreenLight
+                }
+            } ?: ReadinessTier.HardGreenLight
 
         // TSB ceiling — only allow hard sessions when fatigue is resolved
         val tsbCeiling = when {
@@ -355,108 +430,82 @@ class RuleBasedReasoner : ReadinessReasoner {
         }
 
         // Take the most conservative (lowest tier) of all ceilings — objective + subjective.
-        return listOf(hrvCeiling, tsbCeiling, rhrCeiling,
+        return listOf(hrvCeiling, tsbCeiling, rhrCeiling, carCeiling,
             moodCeiling, energyCeiling, sorenessCeiling, sleepQualityCeiling)
             .reduce { acc, next -> pickMoreConservative(acc, next) }
     }
 
     /**
-     * v0.9.43 — FORWARD UNLOCK ESTIMATE for a training tier.
+     * v0.9.74 — FORWARD INTENSITY-UNLOCK ESTIMATE (Z3–Z5 / tempo–threshold–VO2).
      *
-     * Linear extrapolation from current trend slopes per gating signal.
-     * Returns the predicted "X days at current trajectory" until ALL
-     * gating signals cross their thresholds for the tier.
+     * Pre-v0.9.74 this gated each intensity tier on an ABSOLUTE HRV target
+     * (18 / 25 / 30 ms). For a rider whose constitutional baseline is ~14 ms
+     * those targets are UNREACHABLE — the estimate effectively said "never,"
+     * the exact miscalibration this release removes (the 0.9.43 design leaned on
+     * population ms cutoffs that aren't comparable between individuals).
      *
-     * Bottleneck = slowest signal. If any signal is moving the WRONG way
-     * (e.g. HRV trending down when we need it to rise), returns warning
-     * copy explaining the divergence.
+     * New gating is baseline-relative + reachable:
+     *   - HRV gate → [HrvReadiness] verdict must be NORMAL (today at/above HIS
+     *                own baseline). Suppressed-vs-baseline → defer with a
+     *                baseline-relative message, NOT an impossible ms target.
+     *   - TSB gate → must climb to ≥ −10 (Coggan "hard sessions OK" band, the
+     *                same cut the absolute-ceiling tsb ladder uses). Estimated
+     *                from the typical +1.5/day rest decay.
+     *   - VO2 only → DFA α1 ≤ 1.30 (chronic autonomic marker; unchanged — that's
+     *                a non-linear metric, not an RMSSD threshold).
      *
-     * TSB defaults to +1.5/day rise during rest (typical Coggan EWMA decay).
-     * HRV slope from 7d trend. Future v0.9.44+ will refine with personalized
-     * recovery-rate learning.
+     * Collapsed to ONE intensity estimate: the three old per-tier bullets were
+     * differentiated ONLY by the now-removed HRV ms targets — they shared the
+     * same TSB gate, so three near-identical bullets were just noise.
      *
-     * Returns null when:
-     *   - Already unlocked (no estimate needed)
-     *   - Insufficient data (no HRV today / no trend yet)
-     *   - Critical signals trending wrong direction (different copy)
+     * Returns null when intensity is already unlocked, or data is insufficient.
      */
     private fun computeTierUnlockDays(
         today: ReadinessContext.TodaySnapshot,
-        trends: ReadinessContext.Trends,
-        tierKey: String,
+        hrvAssessment: HrvReadiness.Assessment,
     ): String? {
-        val hrvNow = today.hrv?.rmssdMs ?: return null
+        // Need at least an HRV reading today to say anything useful.
+        today.hrv?.rmssdMs ?: return null
         val tsbNow = today.tsb?.value
-        val hrvTrend = trends.hrv
 
-        val (hrvTarget, tsbTarget, tierLabel) = when (tierKey) {
-            "tempo" -> Triple(18f, -10f, "TEMPO (Z3)")
-            "threshold" -> Triple(25f, -10f, "THRESHOLD (Z4)")
-            "vo2" -> Triple(30f, -10f, "VO2 (Z5)")
-            else -> return null
-        }
-
-        // v0.9.44 — VO2 tier additionally gated by DFA α1 ≤ 1.3 (chronic
-        // marker — weeks-to-months timescale). When chronic, defer with
-        // descriptive copy rather than huge numeric estimate.
-        if (tierKey == "vo2") {
-            val dfa = today.hrv?.frequencyDomain?.dfaAlpha1
-            if (dfa != null && dfa > 1.3f) {
-                return "VO2 (Z5) unlock: gated by DFA α1 (currently ${"%.2f".format(dfa)}, " +
-                    "need ≤ 1.30). Chronic marker — typically 4-12 weeks of " +
-                    "consistent recovery to normalize."
+        // HRV gate — baseline-relative, NOT a fixed ms target. Self-recalibrates.
+        when (hrvAssessment.verdict) {
+            HrvReadiness.Verdict.SEVERE -> {
+                val base = hrvAssessment.baselineMs?.let { " (~${"%.0f".format(it)} ms)" } ?: ""
+                return "Intensity (Z3–Z5) on hold — HRV below YOUR baseline$base today. " +
+                    "It's not a fixed target; it tracks you — let it return to your own " +
+                    "normal with easy aerobic + sleep first."
             }
+            HrvReadiness.Verdict.MILD ->
+                return "Intensity (Z3–Z5) on hold — HRV mildly below YOUR baseline today. " +
+                    "A day or two easy should bring it back to your normal."
+            // Baseline still building (new user / thin data) — don't promise a day.
+            HrvReadiness.Verdict.NO_BASELINE -> return null
+            HrvReadiness.Verdict.NORMAL -> { /* HRV not a blocker — check TSB + DFA */ }
         }
 
-        // Already cleared? Skip.
-        if (hrvNow >= hrvTarget && (tsbNow == null || tsbNow >= tsbTarget)) {
-            return null
+        val tsbTarget = -10f
+        val tsbClear = tsbNow == null || tsbNow >= tsbTarget
+        // VO2/Z5 chronic gate — DFA α1 (weeks-to-months timescale).
+        val dfa = today.hrv?.frequencyDomain?.dfaAlpha1
+        val dfaBlocksVo2 = dfa != null && dfa > 1.3f
+
+        // HRV is at/above his baseline. If TSB + DFA are also clear → unlocked.
+        if (tsbClear && !dfaBlocksVo2) return null
+
+        val dfaNote = if (dfaBlocksVo2) {
+            " · VO2 (Z5) further gated by DFA α1 ${"%.2f".format(dfa)} (need ≤ 1.30) — " +
+                "chronic marker, typically 4–12 weeks"
+        } else ""
+
+        if (!tsbClear) {
+            val days = ((tsbTarget - tsbNow!!) / 1.5f).toInt().coerceAtLeast(1)
+            val daysDisplay = if (days > 90) "90+" else days.toString()
+            return "Intensity (Z3–Z5) unlock in $daysDisplay days (est.) · " +
+                "HRV at your baseline ✓, TSB climbing to ${tsbTarget.toInt()}$dfaNote"
         }
-
-        // HRV gap days
-        val hrvDays: Int? = if (hrvNow >= hrvTarget) {
-            0
-        } else {
-            val slope = hrvTrend?.slopePerDay
-            if (slope == null || slope <= 0f) {
-                // Not improving — warn explicitly
-                if (hrvTrend?.direction == TrendDirection.FALLING) {
-                    return "$tierLabel unlock: deferring — HRV trending DOWN " +
-                        "${"%.1f".format(kotlin.math.abs(hrvTrend.slopePerDay))} ms/day, " +
-                        "need to reverse first"
-                }
-                return "$tierLabel unlock: HRV stable at " +
-                    "${"%.1f".format(hrvNow)} ms (need ${hrvTarget.toInt()}+) — " +
-                    "no improvement trend yet, give it a few days"
-            }
-            ((hrvTarget - hrvNow) / slope).toInt().coerceAtLeast(1)
-        }
-
-        // TSB gap days (assume +1.5/day rest decay if no negative training)
-        val tsbDays: Int = if (tsbNow == null || tsbNow >= tsbTarget) {
-            0
-        } else {
-            val effectiveSlope = 1.5f  // typical TSB EWMA decay at full rest
-            ((tsbTarget - tsbNow) / effectiveSlope).toInt().coerceAtLeast(1)
-        }
-
-        // Bottleneck = slowest gating signal
-        val daysRaw = maxOf(hrvDays ?: 0, tsbDays)
-        if (daysRaw <= 0) return null
-
-        // v0.9.44 — cap at 90 days. Beyond that, slope-based estimate is
-        // mostly noise — recovery rate will likely change before then.
-        // Surface as "90+ days" rather than misleading huge numbers.
-        val daysDisplay = if (daysRaw > 90) "90+" else daysRaw.toString()
-
-        val bottleneck = when {
-            hrvDays != null && hrvDays >= tsbDays -> "HRV bottleneck (gap ${"%.1f".format(hrvTarget - hrvNow)} ms)"
-            else -> "TSB bottleneck (gap ${"%.1f".format(tsbTarget - tsbNow!!)} pts)"
-        }
-
-        // v0.9.44 — removed "~" tilde (rendered as "-" on some Android fonts).
-        // Use "in" word + "(est.)" parenthetical for clarity.
-        return "$tierLabel unlock in $daysDisplay days (est.) · $bottleneck"
+        // TSB clear, only DFA blocks → Z3–Z4 are cleared, Z5 waits on DFA.
+        return "Z3–Z4 cleared (HRV at your baseline ✓, TSB ok)$dfaNote"
     }
 
     /**
@@ -592,7 +641,9 @@ class RuleBasedReasoner : ReadinessReasoner {
         tier: ReadinessTier,
         tsbValue: Float?,
         sleepHours: Float?,
-        hrvRatio: Float?,
+        // v0.9.74 — HRV driver now reads the personal-baseline verdict (was the
+        // raw ratio + absolute ms). hrvAbs kept only to print today's value.
+        hrvAssessment: HrvReadiness.Assessment,
         hrvAbs: Float?,
         rhrDelta: Int?,
         carTier: CarTier?,
@@ -628,21 +679,31 @@ class RuleBasedReasoner : ReadinessReasoner {
             sleepHours != null && sleepHours < 5f -> drivers += "${"%.1fh".format(sleepHours)} sleep (severe deficit)"
             sleepHours != null && sleepHours < 6f -> drivers += "${"%.1fh".format(sleepHours)} sleep (low)"
         }
-        when {
-            hrvRatio != null && hrvRatio < 0.70f -> {
-                val pct = ((hrvRatio - 1f) * 100).roundToInt()
-                drivers += "HRV $pct% vs baseline (crashed$hrvTrendQualifier)"
+        // v0.9.74 — HRV driver is BASELINE-RELATIVE. NORMAL adds nothing (it's
+        // not a concern, even at his constitutional ~14 ms). MILD/SEVERE describe
+        // the dip vs HIS OWN baseline, with the saturation note when RHR is calm
+        // (likely high vagal tone, not fatigue). NO_BASELINE (new user / thin
+        // data) falls back to a wide absolute description.
+        val hrvMsStr = hrvAbs?.let { "%.1f".format(it) } ?: "—"
+        when (hrvAssessment.verdict) {
+            HrvReadiness.Verdict.SEVERE -> {
+                val tag = if (hrvAssessment.saturationLikely) "below your baseline"
+                    else "below your baseline · genuine suppression"
+                drivers += "HRV $hrvMsStr ms ($tag$hrvTrendQualifier)"
             }
-            hrvRatio != null && hrvRatio < 0.85f -> {
-                val pct = ((hrvRatio - 1f) * 100).roundToInt()
-                drivers += "HRV $pct% vs baseline (suppressed$hrvTrendQualifier)"
+            HrvReadiness.Verdict.MILD -> {
+                val tag = if (hrvAssessment.saturationLikely)
+                    "low but RHR calm · likely high vagal tone, not fatigue"
+                else "mildly below your baseline"
+                drivers += "HRV $hrvMsStr ms ($tag$hrvTrendQualifier)"
             }
-            hrvRatio == null && hrvAbs != null && hrvAbs < 12f -> {
-                drivers += "HRV ${"%.0f".format(hrvAbs)} ms (below athletic$hrvTrendQualifier)"
+            HrvReadiness.Verdict.NO_BASELINE -> when {
+                hrvAbs != null && hrvAbs < 12f ->
+                    drivers += "HRV ${"%.0f".format(hrvAbs)} ms (below athletic norms$hrvTrendQualifier)"
+                hrvAbs != null && hrvAbs < 18f ->
+                    drivers += "HRV ${"%.0f".format(hrvAbs)} ms (low · baseline still building$hrvTrendQualifier)"
             }
-            hrvRatio == null && hrvAbs != null && hrvAbs < 18f -> {
-                drivers += "HRV ${"%.0f".format(hrvAbs)} ms (suppressed$hrvTrendQualifier)"
-            }
+            HrvReadiness.Verdict.NORMAL -> { /* at/above his baseline — not a driver */ }
         }
         when {
             rhrDelta != null && rhrDelta >= 5 -> drivers += "RHR +$rhrDelta bpm (elevated)"
@@ -714,6 +775,9 @@ class RuleBasedReasoner : ReadinessReasoner {
          * driver, once as bullet).
          */
         severeFlags: List<String>,
+        // v0.9.74 — personal-baseline HRV verdict, for the baseline-relative
+        // intensity-unlock estimate (replaces the old absolute-ms targets).
+        hrvAssessment: HrvReadiness.Assessment,
     ): List<String> {
         val insights = mutableListOf<String>()
 
@@ -752,18 +816,12 @@ class RuleBasedReasoner : ReadinessReasoner {
             insights += "Readiness < 50 for ${patterns.consecutiveLowReadinessDays} days running — check sleep + load"
         }
 
-        // v0.9.43 — FORWARD UNLOCK ESTIMATES (motivational layer).
-        // For each LOCKED tier, compute "X days at current trajectory until
-        // unlock." Linear extrapolation from 7d trend slopes. Reads gating
-        // signal current values + slopes, picks the bottleneck signal, shows
-        // estimated days. Critical: tells rider WHEN they'll be cleared,
-        // ending the "never ready" worry. Caveats noted in copy.
-        val tempoEstimate = computeTierUnlockDays(today, trends, tierKey = "tempo")
-        val thresholdEstimate = computeTierUnlockDays(today, trends, tierKey = "threshold")
-        val vo2Estimate = computeTierUnlockDays(today, trends, tierKey = "vo2")
-        if (tempoEstimate != null) insights += tempoEstimate
-        if (thresholdEstimate != null) insights += thresholdEstimate
-        if (vo2Estimate != null) insights += vo2Estimate
+        // v0.9.74 — FORWARD INTENSITY-UNLOCK ESTIMATE (motivational layer).
+        // ONE baseline-relative estimate (was three per-tier bullets gated on
+        // unreachable absolute HRV ms targets). Tells the rider WHEN intensity
+        // clears — gated on HRV-at-his-own-baseline + TSB (+ DFA α1 for Z5) —
+        // ending both the "never ready" worry and the impossible-target trap.
+        computeTierUnlockDays(today, hrvAssessment)?.let { insights += it }
 
         // v0.9.43 — SUBJECTIVE / Body Voice insight (#111 visibility).
         // When rider has logged subjective tracker values today, surface them

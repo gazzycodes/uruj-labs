@@ -20,6 +20,20 @@ data class ReadinessInputs(
      *  scores well even without baseline); 7+ days → ratio vs personal baseline.
      *  Fixes the bug where day-1 "+0% vs 7d avg" showed misleading score. */
     val hrvDaysOfDataIn7d: Int = 0,
+    /**
+     * v0.9.74 — personal-baseline HRV inputs for [com.uruj.power.HrvReadiness].
+     * Distinct from [hrvBaseline7d] (the 7d MEDIAN used for ratio scoring): the
+     * baseline here is the 7d MEAN, and the CV is the rider's own day-to-day
+     * coefficient of variation — both from [com.uruj.power.HrvStatsCalculator],
+     * computed over the SAME disk-preferred night history the
+     * [com.uruj.data.ReadinessContextBuilder] uses, so the score and the engine
+     * derive identical verdicts. [hrvSamplesUsed] is the number of nights
+     * backing that baseline (≥ [com.uruj.power.HrvReadiness.MIN_DAYS] to trust
+     * it). All null/0 when fewer than 2 nights → assess() returns NO_BASELINE
+     * and callers fall back to the wide absolute floor. */
+    val hrvBaselineMeanMs: Float? = null,
+    val hrvCvPercent: Float? = null,
+    val hrvSamplesUsed: Int = 0,
 )
 
 @Serializable

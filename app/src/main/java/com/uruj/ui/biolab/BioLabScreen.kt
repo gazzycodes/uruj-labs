@@ -1321,25 +1321,52 @@ private fun AutonomicHealthCard(
 ) {
     val rmssd = s.autonomicRmssdMs ?: return
     var showInfo by remember { mutableStateOf(false) }
-    // Color-code RMSSD by athletic-tier ranges. Norms from Plews et al.
-    // (elite cyclist HRV) + Shaffer & Ginsberg 2017 (general adult HRV):
-    //   <20ms = severely suppressed (illness, overtraining)
-    //   20-30ms = below average
-    //   30-50ms = average healthy adult
-    //   50-80ms = trained athlete range
-    //   80+ms = elite parasympathetic dominance
-    val accent = when {
+    // v0.9.74 — judge today's RMSSD vs the RIDER'S OWN baseline ([HrvReadiness]),
+    // not a fixed population ladder. RMSSD is ~50-64% genetic and not comparable
+    // between people, so a constitutionally-low value sitting at HIS baseline is
+    // GREEN (normal for him), not red "below athletic average". Saturation guard:
+    // low-but-RHR-calm reads as benign high vagal tone. Falls back to the general
+    // population ranges ONLY while his baseline is still building (<7 nights).
+    // rhrDelta is null here — this is an informational card; the Readiness engine
+    // owns the RHR-corroborated training gate.
+    val hrvVerdict = com.uruj.power.HrvReadiness.assess(
+        todayMs = rmssd,
+        baselineMs = s.autonomicBaselineMeanMs,
+        cvPercent = s.autonomicCvPercent,
+        rhrDelta = null,
+        daysOfData = s.autonomicSamplesUsed,
+    )
+    val usingBaseline = hrvVerdict.verdict != com.uruj.power.HrvReadiness.Verdict.NO_BASELINE
+    val baseStr = "%.1f".format(s.autonomicBaselineMeanMs ?: rmssd)
+    val accent = if (usingBaseline) {
+        when (hrvVerdict.verdict) {
+            com.uruj.power.HrvReadiness.Verdict.NORMAL -> UrujZone2
+            com.uruj.power.HrvReadiness.Verdict.SEVERE -> UrujZone5
+            else -> UrujZone3 // MILD (incl. saturation)
+        }
+    } else when {
+        // Baseline still building → general population orientation (clearly
+        // labelled as such in the card body + ⓘ). Softer than the old hard red.
         rmssd >= 50f -> UrujZone2
         rmssd >= 30f -> UrujZone3
-        rmssd >= 20f -> UrujZone3
-        else -> UrujZone5
+        else -> UrujZone3
     }
-    val tierLabel = when {
+    val tierLabel = if (usingBaseline) {
+        when (hrvVerdict.verdict) {
+            com.uruj.power.HrvReadiness.Verdict.NORMAL ->
+                "Within YOUR normal range ✓ (baseline ~$baseStr ms)"
+            com.uruj.power.HrvReadiness.Verdict.SEVERE ->
+                "Below YOUR $baseStr ms baseline — check RHR + sleep"
+            else -> // MILD
+                if (hrvVerdict.saturationLikely)
+                    "Below your $baseStr ms baseline but RHR calm — likely high vagal tone"
+                else "Mildly below YOUR $baseStr ms baseline — easy day"
+        }
+    } else when {
         rmssd >= 80f -> "Elite parasympathetic dominance ✓"
         rmssd >= 50f -> "Trained athlete range ✓"
         rmssd >= 30f -> "Average healthy adult range"
-        rmssd >= 20f -> "Below athletic average"
-        else -> "Below athletic average — check trend"
+        else -> "Low vs population — your own baseline is still building"
     }
     BioCard(
         "Autonomic HRV — beat-to-beat parasympathetic",
@@ -1458,8 +1485,12 @@ private fun AutonomicHealthCard(
                 "overnight breathing. Filters: 300–2000 ms physiological range + " +
                 "timestamp-aware consecutive-beat check + 20% ectopic delta cap " +
                 "(Kubios). Real ECG data from Magene H613, NOT a PPG proxy. " +
-                "Athletic norms: <20 below / 20-30 low / 30-50 average / 50-80 " +
-                "trained / 80+ elite (Plews et al., Shaffer & Ginsberg 2017).\n\n" +
+                "General population orientation (NOT your gate): <20 low / 20-30 " +
+                "below-average / 30-50 average / 50-80 trained / 80+ elite (Plews " +
+                "et al., Shaffer & Ginsberg 2017). RMSSD is ~50-64% genetic and " +
+                "isn't comparable between people — URUJ judges you vs YOUR own " +
+                "rolling baseline (+ saturation guard), so a low number that's " +
+                "normal for you isn't a deficiency.\n\n" +
                 "Why this can differ from Elite HRV / morning seated readings: " +
                 "those use paced breathing (~5 breaths/min) which maximizes RSA " +
                 "and inflates RMSSD 1.5-3× over natural breathing. URUJ measures " +
