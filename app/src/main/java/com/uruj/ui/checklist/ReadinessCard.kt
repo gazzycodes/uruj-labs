@@ -878,12 +878,30 @@ private fun HrvInfo(component: ReadinessComponent?) {
             "not a paced-breathing peak measurement.",
     )
     InfoSection(
-        "Reference ranges (athletic norms)",
+        "How URUJ judges YOUR HRV (v0.9.74)",
+        "Not against the population — against YOUR own baseline.\n\n" +
+            "Resting RMSSD is ~50-64% genetic and isn't comparable between people " +
+            "(healthy range spans ~19-75 ms). So URUJ compares today to YOUR own " +
+            "7-day rolling average, using YOUR own day-to-day variation (CV) as the " +
+            "yardstick — the method elite-sport science (Plews, Buchheit) and apps " +
+            "like HRV4Training use. \"Suppressed\" only fires when you drop " +
+            "meaningfully below YOUR normal — and as your baseline shifts (sleep, " +
+            "less nicotine, fitness) the whole band tracks with it automatically.\n\n" +
+            "Parasympathetic saturation: in a fit heart with a low resting HR, a " +
+            "LOW RMSSD can mean HIGH vagal tone, not fatigue. So a low reading with " +
+            "a calm RHR is treated as benign — URUJ never reads HRV alone.\n\n" +
+            "Your low absolute number with an elite RHR (~41) + elite VO2 is exactly " +
+            "that profile — plus a live nicotine effect. It's not a deficiency.",
+    )
+    InfoSection(
+        "General population reference (context only — NOT your gate)",
         "80+ ms — Elite parasympathetic dominance\n" +
             "50-80 ms — Trained athlete range\n" +
             "30-50 ms — Average healthy adult\n" +
-            "20-30 ms — Below athletic average\n" +
-            "<20 ms — Below athletic average — check trend",
+            "20-30 ms — Below the population athletic average\n" +
+            "<20 ms — Below the population athletic average\n\n" +
+            "These are GENERAL norms for orientation. They do NOT gate your " +
+            "training — your own baseline (above) does.",
     )
     InfoSection(
         "Why this differs from Elite HRV / morning readings",
@@ -900,11 +918,13 @@ private fun HrvInfo(component: ReadinessComponent?) {
     )
     InfoSection(
         "Baseline building period",
-        "First 1-6 nights: we score against ABSOLUTE tier ranges (above). " +
-            "A real 60 ms scores well even without your personal baseline.\n\n" +
-            "Day 7+: we switch to RATIO vs your personal 7-day median. " +
-            "Catches subtle changes vs YOUR normal (a 50 ms HRV that's normal " +
-            "for you can be a warning sign for someone whose baseline is 80 ms).",
+        "First 1-6 nights: no personal baseline yet, so we use the general " +
+            "ranges above as a wide sanity floor (a real 60 ms scores well " +
+            "regardless).\n\n" +
+            "Day 7+: we switch to the personal-baseline verdict — today vs YOUR " +
+            "own 7-day average and YOUR own variation, with the saturation guard. " +
+            "That's what catches a real dip below YOUR normal while ignoring the " +
+            "1-2 ms night-to-night noise that isn't a signal.",
     )
     if (component?.detail != null && component.score != null) {
         YouSection(

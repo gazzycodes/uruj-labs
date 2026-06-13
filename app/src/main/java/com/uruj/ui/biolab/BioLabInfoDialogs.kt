@@ -499,12 +499,26 @@ fun AutonomicInfoDialog(s: BioLabSnapshot, onDismiss: () -> Unit) {
                 "PPG proxy, not a std-dev hack.",
         )
         InfoSection(
-            "Reference ranges (athletic norms)",
+            "How URUJ judges YOUR HRV (v0.9.74)",
+            "Against YOUR own baseline, not the population. Resting RMSSD is " +
+                "~50-64% genetic and not comparable between people — so URUJ " +
+                "compares today to your own 7-day rolling average using your own " +
+                "day-to-day variation (CV) as the yardstick (Plews/Buchheit). " +
+                "\"Below baseline\" only fires when you drop meaningfully below " +
+                "YOUR normal, and the band self-recalibrates as your baseline " +
+                "moves (sleep, less nicotine, fitness).\n\n" +
+                "Parasympathetic saturation: in a fit heart with a low resting HR, " +
+                "a LOW RMSSD can mean HIGH vagal tone, not fatigue — so a low " +
+                "reading with a calm RHR is treated as benign, never read alone.",
+        )
+        InfoSection(
+            "General population reference (context only — NOT your gate)",
             "80+ ms   Elite parasympathetic dominance\n" +
                 "50–80    Trained athlete range\n" +
                 "30–50    Average healthy adult\n" +
-                "20–30    Below athletic average\n" +
-                "<20      Below athletic average — check trend",
+                "20–30    Below the population athletic average\n" +
+                "<20      Below the population athletic average\n\n" +
+                "Orientation only. Your training gate is your own baseline (above).",
         )
         InfoSection(
             "Why this differs from morning eHRV readings",
@@ -526,17 +540,38 @@ fun AutonomicInfoDialog(s: BioLabSnapshot, onDismiss: () -> Unit) {
         )
         val rmssd = s.autonomicRmssdMs
         if (rmssd != null) {
-            val tier = when {
-                rmssd >= 80f -> "ELITE (${"%.1f".format(rmssd)} ms) — parasympathetic dominance"
-                rmssd >= 50f -> "TRAINED (${"%.1f".format(rmssd)} ms) — athletic range"
-                rmssd >= 30f -> "AVERAGE HEALTHY (${"%.1f".format(rmssd)} ms)"
-                rmssd >= 20f -> "BELOW ATHLETIC (${"%.1f".format(rmssd)} ms)"
-                else -> "BELOW ATHLETIC (${"%.1f".format(rmssd)} ms) — check trend over a week"
+            // v0.9.74 — personal-baseline verdict (HrvReadiness), not a population
+            // tier. rhrDelta null here (informational); Readiness owns the gate.
+            val verdict = com.uruj.power.HrvReadiness.assess(
+                todayMs = rmssd,
+                baselineMs = s.autonomicBaselineMeanMs,
+                cvPercent = s.autonomicCvPercent,
+                rhrDelta = null,
+                daysOfData = s.autonomicSamplesUsed,
+            )
+            val msStr = "%.1f".format(rmssd)
+            val tier = when (verdict.verdict) {
+                com.uruj.power.HrvReadiness.Verdict.NORMAL ->
+                    "$msStr ms — within YOUR normal range ✓ (${verdict.label})"
+                com.uruj.power.HrvReadiness.Verdict.MILD ->
+                    "$msStr ms — ${verdict.label}"
+                com.uruj.power.HrvReadiness.Verdict.SEVERE ->
+                    "$msStr ms — ${verdict.label}"
+                com.uruj.power.HrvReadiness.Verdict.NO_BASELINE -> {
+                    // Baseline still building — general population orientation only.
+                    val pop = when {
+                        rmssd >= 80f -> "elite range"
+                        rmssd >= 50f -> "trained range"
+                        rmssd >= 30f -> "average healthy range"
+                        else -> "low vs population"
+                    }
+                    "$msStr ms — $pop (your own baseline still building — judged vs YOU once 7 nights captured)"
+                }
             }
             YouSection(
                 "$tier\n\n" +
-                    "Single-night readings vary 20-30%. Trust trend over single-point " +
-                    "interpretation. See SEE TREND for the chart."
+                    "Single-night readings vary 20-30%. Trust the trend vs YOUR " +
+                    "baseline over any single point. See SEE TREND for the chart."
             )
         } else {
             YouSection(

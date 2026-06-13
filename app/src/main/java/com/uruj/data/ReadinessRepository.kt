@@ -15,6 +15,7 @@ import com.uruj.domain.ReadinessGrade
 import com.uruj.domain.ReadinessInputs
 import com.uruj.domain.ReadinessResult
 import com.uruj.domain.RecommendationSnapshot
+import com.uruj.power.HrvStatsCalculator
 import com.uruj.power.ReadinessCalculator
 import com.uruj.power.ReadinessReasoner
 import com.uruj.power.RuleBasedReasoner
@@ -1074,6 +1075,24 @@ class ReadinessRepository(context: Context) {
             lastTsbRefreshMs = System.currentTimeMillis()
         }
 
+        // v0.9.74 — personal-baseline HRV stats for the score path's
+        // [com.uruj.power.HrvReadiness] cap + sleep gate. Computed over the SAME
+        // disk-preferred night history that [ReadinessContextBuilder] uses for
+        // today.hrv.stats (prefer disk superset; fall back to the live 7d list),
+        // so the score and the engine derive byte-identical mean/CV → identical
+        // verdicts. Cheap disk read (small JSON snapshots); the perf-sensitive
+        // paths are NDJSON walks + HC reads, not snapshot listAll.
+        val hrvNightsFromDisk = runCatching { hrvSnapshots.listAll() }
+            .rethrowCancellation().getOrDefault(emptyList())
+            .mapNotNull { it.rmssdMs }
+            .filter { it > 0f }
+        val hrvNightlyForStats = if (hrvNightsFromDisk.size >= hrvNightlyRmssdMs.size) {
+            hrvNightsFromDisk
+        } else {
+            hrvNightlyRmssdMs
+        }
+        val hrvStatsForInputs = HrvStatsCalculator().compute(hrvNightlyForStats)
+
         return GatheredInputs(
             inputs = ReadinessInputs(
                 sleepLastNightHours = sleep,
@@ -1083,6 +1102,9 @@ class ReadinessRepository(context: Context) {
                 restingHrBaseline7d = rhrBaseline,
                 trainingStressBalance = tsbDetailed?.tsb,
                 hrvDaysOfDataIn7d = hrvDaysOfDataIn7d,
+                hrvBaselineMeanMs = hrvStatsForInputs.recent7dMeanMs,
+                hrvCvPercent = hrvStatsForInputs.cvPercent,
+                hrvSamplesUsed = hrvStatsForInputs.samplesUsed,
             ),
             rhrSource = rhrSource,
             hrvSource = hrvSource,

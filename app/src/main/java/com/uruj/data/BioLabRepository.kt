@@ -16,6 +16,7 @@ import com.uruj.domain.CarResult
 import com.uruj.power.CarDetector
 import com.uruj.power.HrAnalyzer
 import com.uruj.power.HrRecoveryCalculator
+import com.uruj.power.HrvStatsCalculator
 import com.uruj.power.KarvonenZonesCalculator
 import com.uruj.power.SleepingRhrCalculator
 import com.uruj.power.VO2MaxCalculator
@@ -539,6 +540,15 @@ class BioLabRepository(context: Context) {
             hrvSnapshots.countInLastNDays(7)
         }.rethrowCancellation().getOrDefault(0)
 
+        // v0.9.74 — personal-baseline stats (7d mean + CV) so the Autonomic card
+        // judges today's RMSSD vs the rider's OWN baseline via [HrvReadiness]
+        // rather than a population "below athletic average" verdict. Same
+        // disk-preferred history + [HrvStatsCalculator] the Readiness path uses.
+        val autonomicHrvStats = runCatching {
+            val nightly = hrvSnapshots.listAll().mapNotNull { it.rmssdMs }.filter { it > 0f }
+            HrvStatsCalculator().compute(nightly)
+        }.rethrowCancellation().getOrNull()
+
         // v0.9.27 — persist today's HRV snapshot to disk for trend chart
         // history. Today-mutable, past-immutable. Per [[reference_snapshot_
         // persistence_architecture]] every trend metric persists at compute
@@ -787,6 +797,10 @@ class BioLabRepository(context: Context) {
             autonomicWindowLabel = autonomicWindowLabel,
             autonomicWindowCount = autonomicWindowCount,
             autonomicDaysOfData = autonomicDaysOfData,
+            // v0.9.74 — personal-baseline inputs for the card's HrvReadiness verdict
+            autonomicBaselineMeanMs = autonomicHrvStats?.recent7dMeanMs,
+            autonomicCvPercent = autonomicHrvStats?.cvPercent,
+            autonomicSamplesUsed = autonomicHrvStats?.samplesUsed ?: 0,
             // v0.9.50 — per-stage RMSSD for Bio Lab Autonomic card breakdown
             autonomicPerStageRmssdMs = autonomicHrv?.perStageRmssdMs ?: emptyMap(),
 
@@ -1275,6 +1289,21 @@ data class BioLabSnapshot(
     /** Days of overnight HRV captured in last 7 days. Drives baseline-building
      *  UX: <7 days → show "baseline building" notice on the Autonomic card. */
     val autonomicDaysOfData: Int = 0,
+
+    /**
+     * v0.9.74 — personal-baseline inputs so the Autonomic card can judge today's
+     * RMSSD vs the RIDER'S OWN baseline ([com.uruj.power.HrvReadiness]) instead
+     * of pronouncing a population verdict ("below athletic average") on a
+     * constitutionally-low value. Mean = 7d rolling mean RMSSD; CV = his own
+     * day-to-day coefficient of variation; samplesUsed = nights backing it.
+     * Computed from the same [com.uruj.power.HrvStatsCalculator] over the same
+     * disk history the Readiness path uses. Null/0 until ≥2 nights → card falls
+     * back to the general population reference (clearly labelled as such).
+     * Additive nullable fields → backward-compatible with older serialized snapshots.
+     */
+    val autonomicBaselineMeanMs: Float? = null,
+    val autonomicCvPercent: Float? = null,
+    val autonomicSamplesUsed: Int = 0,
 
     /**
      * v0.9.50 — per-stage RMSSD breakdown from sleep-stage-aware windowing.

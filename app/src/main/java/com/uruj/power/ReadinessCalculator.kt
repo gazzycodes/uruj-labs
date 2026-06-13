@@ -46,6 +46,25 @@ class ReadinessCalculator {
         var weightedSum = 0f
         var totalWeight = 0f
 
+        // v0.9.74 — PERSONAL-BASELINE HRV assessment, computed once and reused by
+        // both the sleep-context gate (below) and the HRV score cap (scoreHrv).
+        // Single source of truth ([HrvReadiness]) — replaces the fixed population
+        // thresholds (<18 / <15 / <12 ms) this calculator used to scatter. Same
+        // util the engine calls; with matching inputs they produce identical
+        // verdicts. See docs/research/2026-06-13-hrv-personal-baseline-readiness.md.
+        val rhrDelta: Int? = if (inputs.restingHrToday != null &&
+            inputs.restingHrBaseline7d != null && inputs.restingHrBaseline7d >= 1
+        ) {
+            inputs.restingHrToday - inputs.restingHrBaseline7d
+        } else null
+        val hrvAssessment = HrvReadiness.assess(
+            todayMs = inputs.hrvTodayRmssd,
+            baselineMs = inputs.hrvBaselineMeanMs,
+            cvPercent = inputs.hrvCvPercent,
+            rhrDelta = rhrDelta,
+            daysOfData = inputs.hrvSamplesUsed,
+        )
+
         // v0.9.66 — detect chronic recovery state for context-aware sleep
         // scoring (#208). Body recovering from chronic non-functional
         // overreach NEEDS extended sleep (10-12h) — the original "over-slept"
@@ -53,12 +72,20 @@ class ReadinessCalculator {
         // exactly what their physiology required. Detected via two cumulative
         // signals to avoid mis-triggering on a single bad day:
         //   (a) TSB ≤ -15 (significant fatigue band)
-        //   (b) HRV absolute value suppressed (<18ms with stable enough baseline)
+        //   (b) HRV suppressed vs HIS OWN baseline (v0.9.74 — was a fixed <18ms
+        //       population line; now baseline-relative so it fires when he's
+        //       genuinely recovering, not on his constitutional ~14 ms normal).
         // Either gate true → chronic-recovery mode → wider optimal sleep
         // window (7-12h scores 100; 12-14h soft penalty 90; >14h true excess 70).
         val tsbChronic = (inputs.trainingStressBalance ?: 0f) <= -15f
-        val hrvSuppressed = (inputs.hrvTodayRmssd ?: 100f) < 18f &&
-            inputs.hrvDaysOfDataIn7d >= 5
+        val hrvSuppressed = when (hrvAssessment.verdict) {
+            HrvReadiness.Verdict.MILD, HrvReadiness.Verdict.SEVERE -> true
+            HrvReadiness.Verdict.NORMAL -> false
+            // New user / thin data — keep the old wide absolute fallback so a
+            // genuinely low reading still widens the recovery sleep window.
+            HrvReadiness.Verdict.NO_BASELINE ->
+                (inputs.hrvTodayRmssd ?: 100f) < 18f && inputs.hrvDaysOfDataIn7d >= 5
+        }
         val isChronicRecovery = tsbChronic || hrvSuppressed
 
         scoreSleep(inputs.sleepLastNightHours, isChronicRecovery)?.let { (s, detail) ->
@@ -71,6 +98,7 @@ class ReadinessCalculator {
             today = inputs.hrvTodayRmssd,
             baseline = inputs.hrvBaseline7d,
             daysOfData = inputs.hrvDaysOfDataIn7d,
+            assessment = hrvAssessment,
         )?.let { (s, detail) ->
             components += ReadinessComponent("HRV", s, detail)
             weightedSum += s * 0.30f
@@ -232,10 +260,19 @@ class ReadinessCalculator {
      * RSA amplitude. Don't cross-reference URUJ's number against a paced-breathing
      * benchmark without that scaling. See methodology footer in Bio Lab.
      */
-    private fun scoreHrv(today: Float?, baseline: Float?, daysOfData: Int): Pair<Int, String>? {
+    private fun scoreHrv(
+        today: Float?,
+        baseline: Float?,
+        daysOfData: Int,
+        // v0.9.74 — personal-baseline verdict ([HrvReadiness], computed once in
+        // score()). Replaces the fixed-ms absoluteCap that produced this rider's
+        // erroneous "cap 50" at his constitutional ~14 ms baseline.
+        assessment: HrvReadiness.Assessment,
+    ): Pair<Int, String>? {
         if (today == null) return null
 
-        // Days 1-6: absolute-tier scoring (no real baseline yet)
+        // Days 1-6: absolute-tier scoring (no real baseline yet). This IS the
+        // wide-absolute fallback for new users — kept intentionally (v0.9.74).
         if (daysOfData < 7 || baseline == null || baseline < 1f) {
             val absScore = when {
                 today >= 80f -> 100
@@ -263,29 +300,28 @@ class ReadinessCalculator {
             else -> 25
         }
 
-        // v0.9.41 — ABSOLUTE FLOOR (chronic-baseline trap fix).
+        // v0.9.74 — PERSONAL-BASELINE CAP (replaces the v0.9.41 fixed-ms floor).
         //
-        // Bug we're fixing: when RMSSD has been suppressed for 7+ nights, the
-        // 7d-baseline IS the suppressed state. ratio = today / baseline →
-        // looks like "+0% vs avg" = score 95 = "autonomic primed ✓" even when
-        // the absolute value is severely below athletic norm.
+        // The v0.9.41 floor fixed a real bug — when RMSSD is suppressed for 7+
+        // nights the 7d baseline IS the suppressed state, so ratio≈1.0 scored 95
+        // "primed ✓" while the absolute value was low. But its FIX used a fixed
+        // population ladder (<12/<15/<20/<25 ms), which mis-fired on this rider's
+        // constitutional ~13.8 ms baseline: a perfectly normal night (14.1 ms,
+        // ratio 1.02) was capped to 50 ("suppressed · cap 50") purely for being
+        // below a population line that isn't comparable between individuals.
         //
-        // Fix: cap the ratio-derived score by an absolute-tier floor. If
-        // RMSSD is critically low, no amount of "stable vs your suppressed
-        // self" can produce a green-light score.
-        //
-        // Population norms (Shaffer & Ginsberg 2017; Plews et al. 2013):
-        //   - Healthy endurance athlete RMSSD: 30-50 ms
-        //   - <25 ms = below athletic average
-        //   - <20 ms = suppressed
-        //   - <15 ms = severely suppressed (illness/overtraining territory)
-        //   - <12 ms = critically suppressed (non-functional overreach)
-        val absoluteCap = when {
-            today < 12f -> 35   // critically suppressed
-            today < 15f -> 50   // severely suppressed
-            today < 20f -> 70   // suppressed
-            today < 25f -> 85   // below athletic norm
-            else -> 100         // no cap — ratio scoring stands
+        // The cap is now derived from the personal-baseline verdict (today vs HIS
+        // own 7d mean + CV, with the RHR-corroboration / saturation guard). This
+        // still solves the original trap — a genuine drop BELOW his own baseline
+        // (or an extreme crash) is SEVERE and caps hard — but stops penalising a
+        // reading that's normal FOR HIM. Self-recalibrating as his baseline moves.
+        val absoluteCap = when (assessment.verdict) {
+            HrvReadiness.Verdict.NORMAL -> 100        // at/above his baseline — no cap
+            HrvReadiness.Verdict.MILD -> 85           // mildly below his own normal
+            HrvReadiness.Verdict.SEVERE -> 50         // genuine suppression / crash
+            // Shouldn't occur in ratio mode (daysOfData≥7 ⇒ baseline established),
+            // but be safe: no cap, ratio scoring stands.
+            HrvReadiness.Verdict.NO_BASELINE -> 100
         }
 
         val finalScore = minOf(ratioScore, absoluteCap)
@@ -293,9 +329,12 @@ class ReadinessCalculator {
         val pct = ((ratio - 1f) * 100).roundToInt()
         val pctStr = if (pct >= 0) "+$pct%" else "$pct%"
         val detail = if (finalScore < ratioScore) {
-            // Absolute floor caught a suppression that ratio-tier missed.
-            // Lead the detail with the absolute value so user sees the truth.
-            "${"%.1f".format(today)} ms suppressed · cap $absoluteCap"
+            // The personal-baseline cap caught a dip the ratio tier scored too
+            // high. Lead with the truth, baseline-relative — never a population ms.
+            val tag = if (assessment.saturationLikely) "low · RHR calm"
+                else if (assessment.verdict == HrvReadiness.Verdict.SEVERE) "below your baseline"
+                else "mild dip vs base"
+            "${"%.1f".format(today)} ms · $tag"
         } else {
             "$pctStr vs 7d avg"
         }
