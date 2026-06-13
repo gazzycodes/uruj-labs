@@ -21,10 +21,11 @@ import kotlin.math.sqrt
  *
  * v0.9.27 brings all four lab-grade corrections:
  *
- *   1. **Filter aligned with HrvCalculator** — port the per-pair
- *      validation from `consecutiveDiffsMs` (timestamp gap within 30%
- *      or 150ms floor + 20% ectopic delta cap). SD1 will now exactly
- *      reconcile with RMSSD/√2 per-window per the mathematical invariant.
+ *   1. **Filter aligned with HrvCalculator** — same per-pair validation as
+ *      `consecutiveDiffsMs` so SD1 exactly reconciles with RMSSD/√2 per-window.
+ *      (v0.9.48.7 update: that shared filter is now the 20% ectopic delta cap
+ *      ALONE — the timestamp-gap check was removed from BOTH calculators to
+ *      match scipy / Kubios / Task Force 1996; see `consecutiveDiffsMs` below.)
  *   2. **Linear detrending before FFT** — slow HR drift across a 5-min
  *      window (e.g. deep sleep onset) leaks into VLF/LF spectrum. Subtract
  *      best-fit linear trend before Hann windowing.
@@ -236,15 +237,16 @@ class FrequencyDomainCalculator {
     // ────────────────────────────────────────────────────────────────────
 
     /**
-     * Validated consecutive-pair diffs. For each pair (prev, curr):
-     *   - actualGap = curr.timestampMs - prev.timestampMs
-     *   - expectedGap = curr.rrMs
-     *   - tolerance = max(150ms, 30% of expectedGap)
-     *   - Accept only if |actualGap - expectedGap| ≤ tolerance
-     *     AND ectopic-delta |curr.rrMs - prev.rrMs| / prev.rrMs ≤ 20%
+     * Consecutive-pair RR diffs, ectopic-filtered. For each pair (prev, curr),
+     * accept iff the ectopic delta |curr.rrMs - prev.rrMs| / prev.rrMs ≤ 20%.
      *
-     * EXACT mirror of [HrvCalculator.consecutiveDiffsMs]. Same constants.
-     * If they ever diverge, the SD1 ≡ RMSSD/√2 invariant test fails.
+     * v0.9.48.7 — the old timestamp-consecutiveness check (actualGap vs
+     * expectedGap within max(150ms, 30%)) was REMOVED: it rejected ~30-50% of
+     * legitimate pairs and biased SD1 LOW (7.0 vs the RMSSD/√2 = 9.83 identity).
+     * Kubios / Task Force 1996 / scipy / neurokit2 timestamp-filter NONE of
+     * this — the ectopic 20% filter alone catches artifacts. EXACT mirror of
+     * [HrvCalculator.consecutiveDiffsMs] (same single filter, same constants);
+     * if they diverge, the SD1 ≡ RMSSD/√2 invariant test fails.
      */
     internal fun consecutiveDiffsMs(sortedBeats: List<HrvCalculator.Beat>): List<Int> {
         if (sortedBeats.size < 2) return emptyList()

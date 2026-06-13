@@ -8,14 +8,15 @@ import kotlin.math.sqrt
  *
  * **Methodology** — research-standard short-term + windowed RMSSD:
  *
- * 1. Input is List<Beat> (timestamp + RR), NOT a flat List<Int>. This lets us
- *    verify that RR pairs being differenced are TRULY consecutive heartbeats.
+ * 1. Input is List<Beat> (timestamp + RR), NOT a flat List<Int> — kept for the
+ *    windowed path (group beats into 5-min windows by timestamp) and provenance.
  *
- * 2. Two beats are "consecutive" iff (curr.timestampMs - prev.timestampMs)
- *    matches curr.rrMs within tolerance = max(150 ms, 30% of expected RR).
- *    Generous enough to absorb typical Android BLE scheduling jitter (30-200
- *    ms variance is normal under load), tight enough to reject genuine
- *    missed-beat gaps (which would be ~2× RR or more).
+ * 2. v0.9.48.6 — NO timestamp-consecutiveness check. An earlier filter rejected
+ *    pairs whose beat-time gap didn't match the RR within max(150ms, 30%); it
+ *    was rejecting ~30-50% of legitimate pairs and biasing RMSSD LOW (10.2 vs
+ *    pure Task Force 1996 math 13.91). Kubios / Task Force 1996 / neurokit2 /
+ *    pyhrv carry no such check — the ectopic filter (4) alone catches artifacts.
+ *    Removed to match that peer-reviewed ground truth.
  *
  * 3. Physiological range filter on every RR: 300-2000 ms (= 30-200 BPM).
  *    Anything outside is sensor noise or artifact, dropped.
@@ -342,22 +343,20 @@ class HrvCalculator {
     }
 
     /**
-     * Returns the list of true consecutive-pair RR diffs (ms). Walks the
-     * sorted beat list, keeps only pairs that pass:
+     * Returns the list of consecutive-pair RR diffs (ms). Walks the sorted beat
+     * list, keeping only pairs whose ectopic delta passes:
      *
-     * 1. Timestamp consecutiveness: `actualGap = curr.timestamp - prev.timestamp`
-     *    should be close to `expectedGap = curr.rrMs`. We allow up to 30% jitter
-     *    OR 150 ms (whichever is larger). This is generous enough to absorb
-     *    typical Android BLE scheduling jitter (30-200 ms variance is common
-     *    under normal load), tight enough to reject genuine missed-beat gaps
-     *    (which would be 2× RR or more).
+     * - Ectopic / artifact filter: drop pairs with >20% RR delta (likely PVC or
+     *   PAC). Kubios convention — the SAME single filter used by
+     *   [FrequencyDomainCalculator.consecutiveDiffsMs] (keeps SD1 ≡ RMSSD/√2).
      *
-     * 2. Ectopic / artifact filter: drop pairs with >20% RR delta (likely PVC
-     *    or PAC). Kubios convention.
-     *
-     * Within a single BLE notification, timestamps are precisely back-calculated
-     * from the same arrival timestamp so cross-RR pairs always satisfy (1) at
-     * 100% precision. Cross-notification pairs are where the tolerance matters.
+     * v0.9.48.6 — the former timestamp-consecutiveness check (reject pairs
+     * whose beat-time gap didn't match the RR within max(150ms, 30%)) was
+     * REMOVED. Cross-validation against pure Task Force 1996 math showed it was
+     * rejecting ~30-50% of legitimate pairs and biasing RMSSD LOW (URUJ 10.2 vs
+     * pure-math 13.91). Kubios / Task Force 1996 / neurokit2 / hrv-analysis /
+     * pyhrv carry NO such check — they assume the RR series is consecutive by
+     * construction and rely on the ectopic 20% filter alone. URUJ now matches.
      */
     private fun consecutiveDiffsMs(sorted: List<Beat>): List<Int> {
         if (sorted.size < 2) return emptyList()
