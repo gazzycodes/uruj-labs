@@ -209,7 +209,7 @@ class RuleBasedReasoner : ReadinessReasoner {
         // when 7d-baseline ratios are misleading.
         //
         // Rule: take the MORE CONSERVATIVE of baseTier vs absoluteCeiling.
-        val absoluteCeiling = computeAbsoluteCeiling(today, hrvAssessment)
+        val absoluteCeiling = computeAbsoluteCeiling(today, hrvAssessment, hrvTrendFalling)
         val tier = pickMoreConservative(baseTier, absoluteCeiling)
         // endregion
 
@@ -321,6 +321,7 @@ class RuleBasedReasoner : ReadinessReasoner {
     private fun computeAbsoluteCeiling(
         today: ReadinessContext.TodaySnapshot,
         hrvAssessment: HrvReadiness.Assessment,
+        hrvTrendFalling: Boolean,
     ): ReadinessTier {
         val hrvAbs = today.hrv?.rmssdMs
         val tsb = today.tsb?.value
@@ -368,6 +369,24 @@ class RuleBasedReasoner : ReadinessReasoner {
                     else -> ReadinessTier.HardGreenLight
                 }
             } ?: ReadinessTier.HardGreenLight
+
+        // v0.9.75 (#260 audit) — HRV-TREND ceiling. Same structural gap the CAR
+        // ceiling closed above: `hrv-trending-down` was a SEVERE flag with no
+        // CEILING, so a lone falling-HRV-trend with an otherwise-high score could
+        // still green-light a hard session — exactly when an early-overreach trend
+        // says ease off. A genuinely FALLING 7-night HRV trend (slope below the
+        // noise band) now caps the tier at ModerateEndurance: solid aerobic +
+        // controlled tempo stay on the table, but max VO2/threshold is held back
+        // until the trend turns. Deliberately GENTLER than the acute-CAR cap — a
+        // declining trend is a softer, slower signal than an acute cortisol spike,
+        // and today's absolute HRV may still be NORMAL vs his own baseline. The
+        // flag's severe status (toward the 2-severe→FullRest rule) is unchanged;
+        // this only stops the lone-flag "go hard" case.
+        val hrvTrendCeiling = if (hrvTrendFalling) {
+            ReadinessTier.ModerateEndurance
+        } else {
+            ReadinessTier.HardGreenLight
+        }
 
         // TSB ceiling — only allow hard sessions when fatigue is resolved
         val tsbCeiling = when {
@@ -430,7 +449,7 @@ class RuleBasedReasoner : ReadinessReasoner {
         }
 
         // Take the most conservative (lowest tier) of all ceilings — objective + subjective.
-        return listOf(hrvCeiling, tsbCeiling, rhrCeiling, carCeiling,
+        return listOf(hrvCeiling, hrvTrendCeiling, tsbCeiling, rhrCeiling, carCeiling,
             moodCeiling, energyCeiling, sorenessCeiling, sleepQualityCeiling)
             .reduce { acc, next -> pickMoreConservative(acc, next) }
     }
