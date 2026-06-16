@@ -1083,7 +1083,7 @@ private fun HeartRateCard(s: BioLabSnapshot, onSeeRhrTrend: () -> Unit = {}) {
             MetricRow(
                 "30d PEAK",
                 value = "${s.highestHr30d} bpm",
-                subtitle = "hardest observed effort in 30d — athletic ceiling",
+                subtitle = "hardest observed effort in 30d (chest strap + band) — athletic ceiling",
             )
         }
         if (s.restingHrBpm != null) {

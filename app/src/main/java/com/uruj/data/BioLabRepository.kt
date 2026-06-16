@@ -195,9 +195,25 @@ class BioLabRepository(context: Context) {
             strapSamples = strapHrSamples30d,
         )
 
-        // Athletic max — the 30d peak across all tracked effort. Cycling-relevant
+        // Athletic max — the 30d peak across ALL tracked effort. Cycling-relevant
         // (the ceiling number lets riders see how close training has pushed them).
-        val highestHr30d = hrSamples30d.filter { it in 35..250 }.maxOrNull()
+        // v0.9.77 (#11): include chest-strap RIDE peaks, not only Health Connect
+        // (band) samples. The strap is the accurate sensor at the hardest efforts
+        // (rides), so HC-only understated the ceiling — a ride peaking 177 on the
+        // strap displayed as 174 (Samsung's wrist view). HrPeakCalculator merges
+        // both behind one rider-aware artifact ceiling. DISPLAY ONLY: the profile
+        // max-HR write-back below intentionally stays on the robust HC path
+        // (median of top 1%, HrAnalyzer) — a single strap beat must never silently
+        // mutate the Karvonen zone ceiling.
+        val allRides = rideHistory.listAll()
+        val rideMaxes30d = allRides
+            .filter { it.endedAtMs in monthAgo.toEpochMilli()..now.toEpochMilli() }
+            .mapNotNull { it.maxHrBpm }
+        val highestHr30d = com.uruj.power.HrPeakCalculator.observedPeak(
+            hcSamples = hrSamples30d,
+            rideMaxes = rideMaxes30d,
+            ageYears = profile.ageYears,
+        )
 
         // Samsung's own VO2 max if HC has it — shown side-by-side with ours in
         // the reframed VO2 card per the v0.4.0 transparency moat.
@@ -208,7 +224,7 @@ class BioLabRepository(context: Context) {
         // — closes the gap where the rider records with URUJ but doesn't start
         // a band workout (Samsung blind to the session). Dedupe within ±60s.
         val exerciseSessionEnds30d = agg.exerciseSessionEnds30d
-        val urujRideEnds30d = rideHistory.listAll()
+        val urujRideEnds30d = allRides // reuse the list already fetched for the 30d peak
             .map { Instant.ofEpochMilli(it.endedAtMs) }
             .filter { !it.isBefore(monthAgo) && !it.isAfter(now) }
         val combinedSessionEnds = (exerciseSessionEnds30d + urujRideEnds30d)
