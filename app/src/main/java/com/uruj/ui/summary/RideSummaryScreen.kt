@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.sp
 import com.uruj.BuildConfig
 import com.uruj.service.RideState
 import com.uruj.ui.branding.UrujLogo
+import com.uruj.ui.theme.UrujCadence
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujNeonMagenta
@@ -149,6 +150,13 @@ fun RideSummaryScreen(
             if (tiz != null) {
                 Spacer(Modifier.height(12.dp))
                 TimeInZoneCard(tiz!!, sourceBreakdown = hrSourceBreakdown)
+            }
+            // v0.9.78 — cadence. Rendered only when a sensor actually recorded
+            // for this ride, so pre-sensor rides and strap-only rides show no
+            // empty card rather than a row of honest-looking zeroes.
+            if (state.cadenceSampleCount > 0 || state.maxCadenceRpm > 0) {
+                Spacer(Modifier.height(12.dp))
+                CadenceCard(state)
             }
             Spacer(Modifier.height(12.dp))
             ClimbCard(state)
@@ -520,6 +528,68 @@ private fun polarizedFeedback(easy: Float, gray: Float, hard: Float): String = w
     else ->
         "Mixed distribution — context-dependent. Compare against weekly target."
 }
+
+/**
+ * v0.9.78 — cadence summary.
+ *
+ * AVERAGE excludes freewheeling (Strava / Garmin convention) because an average
+ * that counts coasting measures the terrain, not the rider: the same legs
+ * "average" 85 rpm on a flat loop and 55 rpm on a descent-heavy one. PEDALLING
+ * carries the coasting story separately and honestly — it is the share of moving
+ * time the cranks were actually turning, and on a long descent it should be low.
+ */
+@Composable
+private fun CadenceCard(state: RideState) {
+    val pedalPct = (state.pedalingRatio * 100).toInt()
+    Card("CADENCE", accent = UrujCadence) {
+        BigStatRow(
+            left = "${state.averageCadenceRpm} rpm",
+            leftLabel = "AVERAGE (PEDALLING)",
+            right = "${state.maxCadenceRpm} rpm",
+            rightLabel = "PEAK",
+        )
+        Divider()
+        BigStatRow(
+            left = "$pedalPct %",
+            leftLabel = "PEDALLING TIME",
+            right = if (state.totalCrankRevs > 0) "${state.totalCrankRevs}" else "—",
+            rightLabel = "PEDAL STROKES",
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = cadenceFeedback(state.averageCadenceRpm, pedalPct),
+            color = UrujMuted,
+            fontSize = 11.sp,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        )
+    }
+}
+
+/**
+ * Plain-language read on the ride's cadence. Deliberately descriptive rather
+ * than prescriptive — self-selected cadence is highly individual and the
+ * evidence for a single "correct" number is thin. What IS well supported is
+ * that habitually grinding a big gear at low rpm loads the knees and recruits
+ * more fast-twitch fibre for the same power, which is the opposite of what an
+ * aerobic base block is for.
+ */
+private fun cadenceFeedback(avgRpm: Int, pedalPct: Int): String = when {
+    avgRpm == 0 -> "No pedalling recorded."
+    avgRpm < 65 ->
+        "Low cadence (${avgRpm} rpm) — you're grinding a big gear. On base rides, " +
+            "spinning 80-95 shifts load off the knees and onto the aerobic system."
+    avgRpm < 80 ->
+        "Moderate cadence (${avgRpm} rpm). Comfortable, slightly gear-heavy. " +
+            "Nudging toward 85 costs nothing and eases joint load."
+    avgRpm <= 100 ->
+        "Endurance cadence (${avgRpm} rpm) — right in the efficient band for base work."
+    else ->
+        "High cadence (${avgRpm} rpm) — spinny. Great for leg speed; watch that HR " +
+            "isn't drifting up just from the churn."
+} + if (pedalPct in 1..59) {
+    " You freewheeled ${100 - pedalPct}% of moving time — a descent-heavy or " +
+        "stop-start route, so treat the average as the pedalling portion only."
+} else ""
 
 @Composable
 private fun ClimbCard(state: RideState) {

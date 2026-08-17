@@ -1,14 +1,10 @@
 package com.uruj.ui.hud
 
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,8 +21,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -52,32 +46,61 @@ import com.uruj.power.ElevationTracker
 import com.uruj.power.KarvonenZonesCalculator
 import com.uruj.service.RideState
 import com.uruj.service.RideStateHolder
-import com.uruj.weather.WeatherStatus
 import com.uruj.ui.branding.UrujLogo
-import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujAccent
+import com.uruj.ui.theme.UrujCadence
+import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujNeonMagenta
 import com.uruj.ui.theme.UrujSurface
 import com.uruj.ui.theme.UrujSurfaceHigh
 import com.uruj.ui.theme.UrujText
 import com.uruj.ui.theme.UrujZone1
-import com.uruj.ui.theme.UrujZoneBelowZ1
 import com.uruj.ui.theme.UrujZone2
 import com.uruj.ui.theme.UrujZone3
 import com.uruj.ui.theme.UrujZone4
 import com.uruj.ui.theme.UrujZone5
+import com.uruj.ui.theme.UrujZoneBelowZ1
+import com.uruj.weather.WeatherStatus
 import kotlinx.coroutines.delay
 
+/**
+ * v0.9.78 — the HUD, rebuilt around three hero metrics.
+ *
+ * ## What changed and why
+ *
+ * **Three heroes, not two.** SPEED · CADENCE · HR now share the top of the
+ * screen at equal weight, each with a segmented range bar underneath (see
+ * [HudMetric]). Cadence joins as a first-class metric because the bike now has
+ * a sensor for it; when no cadence sensor is paired the row falls back to the
+ * previous two-up SPEED + HR layout, so nothing is lost for a strap-only ride.
+ *
+ * **Digits are sized from the device, not from a constant.** Each hero cell
+ * measures itself and picks the largest font that fits, so the readout is as
+ * big as the phone physically allows rather than a number tuned on one handset.
+ *
+ * **Nothing scrolls in practice.** Everything fits above the fixed control bar
+ * on a normal phone; the scroll container is retained purely as the v0.8.5
+ * safety net (content can never push the ride controls off-screen), and the
+ * waveform is dropped automatically on short displays.
+ *
+ * **Ending a ride is a swipe, not a tap.** See [SwipeToEndControl] — rain on
+ * the screen was ending rides.
+ *
+ * **No idle animation anywhere.** The two always-on pulse loops (REC dot, HR
+ * glow) are gone. Every remaining animation is driven by a value that actually
+ * changed. On a ride the display is forced on for hours, so the HUD's job is to
+ * add as close to zero as possible on top of GPS + two BLE links.
+ */
 @Composable
 fun HudScreen(onStopRide: () -> Unit, onTogglePause: () -> Unit = {}) {
     val state by RideStateHolder.state.collectAsStateWithLifecycle()
 
-    // Stop-ride confirmation dialog state. v0.3.7 fix — user reported
-    // pocket-touching the STOP button ended a ride accidentally. OpenTracks-
-    // style confirmation guards against this.
-    var showStopConfirm by remember { mutableStateOf(false) }
+    // Kept from v0.3.7: a sub-500 m ride is much more likely to be an accident
+    // than an intention, so that one case still asks. Every other ride is ended
+    // by the swipe alone — a second confirmation in the rain helps nobody.
+    var showShortRideConfirm by remember { mutableStateOf(false) }
 
-    // Auto-clear the PR flash 6 seconds after it appears so the HUD returns to normal.
+    // Auto-clear the PR flash 6 seconds after it appears.
     LaunchedEffect(state.prAnnouncedAtMs) {
         if (state.prAnnouncedAtMs != null) {
             delay(6_000)
@@ -87,106 +110,90 @@ fun HudScreen(onStopRide: () -> Unit, onTogglePause: () -> Unit = {}) {
         }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .windowInsetsPadding(WindowInsets.systemBars),
     ) {
-        // v0.8.5 — STOP button MUST always be visible. v0.8.0 SessionIntentBar
-        // + v0.8.1 HudWaveform added content above; on a OnePlus-class display
-        // total content exceeded screen height and pushed STOP offscreen.
-        // Rider had no way to end the ride from the HUD on today's 37.78km ride.
-        //
-        // Architecture: scrollable upper content + FIXED STOP at BottomCenter.
-        // STOP is never hidden regardless of scroll position or screen size,
-        // and future additions to the gauge stack can grow without re-pushing
-        // STOP offscreen. Stop button gets a solid-background container so
-        // content scrolling underneath doesn't visually collide.
-        val stopButtonHeightWithPadding = 82.dp  // 58dp button + 12dp top/bottom padding
+        // Short displays drop the waveform rather than pushing content into a
+        // scroll the rider would have to perform one-handed at speed.
+        val roomy = maxHeight >= 640.dp
+        val controlBarHeight = 82.dp
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 12.dp)
-                .padding(bottom = stopButtonHeightWithPadding),
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .padding(bottom = controlBarHeight),
         ) {
             HudTopBar(state)
-            // v0.8.0 — session intent indicator + CHANGE button (override mid-ride).
-            Spacer(Modifier.height(2.dp))
-            SessionIntentBar(state)
-            // v0.8.1 — inline live HR waveform (last 30s). Only when paired
-            // strap is supplying beats. Saves a glance: see HR trend instead
-            // of just the current number.
-            if (state.bleStrapName != null) {
-                Spacer(Modifier.height(4.dp))
-                HudWaveform()
+            if (state.isPaused) {
+                Spacer(Modifier.height(6.dp))
+                PausedBanner(manual = state.manuallyPaused)
             }
-            // v0.5.1 — BLE chest strap row, only shown when a paired strap exists
-            // for this ride. Off-screen otherwise so non-strap users don't see clutter.
-            if (state.bleStrapName != null) {
-                Spacer(Modifier.height(2.dp))
-                StrapRow(state)
-            }
-            Spacer(Modifier.height(4.dp))
-            GpsRow(state)
-            Spacer(Modifier.height(2.dp))
+            Spacer(Modifier.height(5.dp))
+            SensorStrip(state)
+            Spacer(Modifier.height(3.dp))
             WindRow(state)
-            Spacer(Modifier.height(4.dp))
-            // v0.9.16 — twin heroes (HR + Speed) at the top so HR never
-            // scrolls offscreen. HR uses Karvonen zone color from the rider's
-            // profile (same source-of-truth as TIZ/Route map/Audio coach).
-            TwinHero(state)
-            Spacer(Modifier.height(12.dp))
-            PowerBlock(state, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(12.dp))
-            StatsGrid(state, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(3.dp))
+            SessionIntentBar(state)
+            Spacer(Modifier.height(if (roomy) 12.dp else 8.dp))
+            HeroRow(state)
+            Spacer(Modifier.height(if (roomy) 12.dp else 8.dp))
+            if (roomy && state.bleStrapName != null) {
+                HudWaveform()
+                Spacer(Modifier.height(12.dp))
+            }
+            StatsPanel(state)
         }
 
-        // Fixed STOP button — always visible at bottom regardless of scroll
-        // position or screen size. Solid background hides any content scrolling
-        // underneath so the button is always clearly readable.
+        // Fixed control bar — never scrolls away (the v0.8.5 guarantee).
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .background(MaterialTheme.colorScheme.background)
-                .padding(horizontal = 20.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
-            // v0.9.76 — PAUSE/RESUME (manual) sits beside STOP, both fixed at the
-            // bottom (same 82dp scroll-reserve). PAUSE lets the rider halt the
-            // timer + moving-stats on purpose (long light, phone pickup, break)
-            // when auto-pause hasn't caught it. Button label tracks the MANUAL
-            // pause flag; the top-bar "PAUSED" indicator already covers the
-            // effective (auto OR manual) state.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                PauseResumeButton(
+                PauseToggleControl(
                     manuallyPaused = state.manuallyPaused,
                     onClick = onTogglePause,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(0.42f),
                 )
-                StopButton(
-                    onClick = { showStopConfirm = true },
+                SwipeToEndControl(
+                    subtitle = "%.2f km · %s".format(
+                        state.totalDistanceMeters / 1000,
+                        formatDuration(state.movingTimeMs),
+                    ),
+                    onConfirmed = {
+                        if (state.totalDistanceMeters < SHORT_RIDE_METERS) {
+                            showShortRideConfirm = true
+                        } else {
+                            onStopRide()
+                        }
+                    },
                     modifier = Modifier.weight(1f),
                 )
             }
         }
 
-        if (showStopConfirm) {
-            StopConfirmDialog(
+        if (showShortRideConfirm) {
+            ShortRideConfirmDialog(
                 state = state,
                 onConfirm = {
-                    showStopConfirm = false
+                    showShortRideConfirm = false
                     onStopRide()
                 },
-                onCancel = { showStopConfirm = false },
+                onCancel = { showShortRideConfirm = false },
             )
         }
 
-        // PR flash overlay on top of everything — only when fresh.
         val pr = state.latestPr
         val announcedAt = state.prAnnouncedAtMs
         if (pr != null && announcedAt != null) {
@@ -195,115 +202,211 @@ fun HudScreen(onStopRide: () -> Unit, onTogglePause: () -> Unit = {}) {
     }
 }
 
+/**
+ * The three hero readouts. Falls back to two-up when no cadence sensor is
+ * paired, so a strap-only ride gets bigger SPEED and HR digits instead of a
+ * permanent dead cell.
+ */
 @Composable
-private fun StrapRow(state: RideState) {
-    // v0.5.1 — BLE chest strap status. Shown only when a paired strap is
-    // configured. Three visual states:
-    //   CONNECTED + contact ✓ → green, shows BPM + battery
-    //   CONNECTED but no contact → amber, prompts "wet electrodes"
-    //   DISCONNECTED (paired but no live samples) → red, "OFFLINE"
-    val connected = state.bleConnected
-    val contact = state.bleContactDetected
-    val (label, color) = when {
-        !connected -> "STRAP · OFFLINE" to UrujZone5
-        contact == false -> "STRAP · NO CONTACT" to UrujZone3
-        else -> "STRAP" to UrujZone2
+private fun HeroRow(state: RideState) {
+    val context = LocalContext.current
+    val profileStore = remember { RiderProfileStore(context) }
+    val profile by profileStore.profile.collectAsStateWithLifecycle(
+        initialValue = com.uruj.domain.RiderProfile(),
+    )
+
+    val hr = state.bleLiveBpm ?: state.latestSample?.hrBpm
+    val hrFromBle = state.bleLiveBpm != null
+    val restingHr = profile.restingHrBpm.coerceAtLeast(40)
+    val maxHr = profile.maxHrBpm
+    val zonesValid = maxHr > restingHr
+
+    // Same Karvonen classifier as TIZ / route map / Bio Lab / audio coach —
+    // one source of truth for what "zone" means (v0.9.14).
+    val zoneIndex = if (hr != null && zonesValid) {
+        KarvonenZonesCalculator.classifyKarvonenZone(hr, maxHr, restingHr)
+    } else null
+    val hrColor = when (zoneIndex) {
+        0 -> UrujZoneBelowZ1
+        1 -> UrujZone1
+        2 -> UrujZone2
+        3 -> UrujZone3
+        4 -> UrujZone4
+        5 -> UrujZone5
+        else -> UrujMuted
     }
-    // v0.5.2 — read the beat-by-beat field updated on every BLE notification
-    // (not the 1Hz-throttled latestSample). HUD now reflects strap pulse in
-    // real time.
-    val bpm = if (connected) state.bleLiveBpm?.toString() ?: "—" else null
-    val battery = state.bleBatteryPct
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(color),
+    val hrProgress = if (hr != null && zonesValid) {
+        (hr - restingHr).toFloat() / (maxHr - restingHr).toFloat()
+    } else 0f
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        val kph = state.currentSpeedKph
+        HudMetric(
+            value = if (kph < 0.05f) "0" else kph.toInt().toString(),
+            suffix = if (kph < 0.05f) null else ".%d".format(((kph * 10f).toInt() % 10)),
+            unit = "KPH",
+            color = UrujAccent,
+            progress = kph / SPEED_SCALE_KPH,
+            modifier = Modifier.weight(1f),
         )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = label,
-            color = color,
-            fontWeight = FontWeight.Black,
-            fontSize = 9.sp,
-            letterSpacing = 1.5.sp,
-            maxLines = 1,
+
+        if (state.cadenceSensorName != null) {
+            CadenceMetric(state, modifier = Modifier.weight(1f))
+        }
+
+        HudMetric(
+            value = hr?.toString() ?: PLACEHOLDER,
+            suffix = null,
+            unit = when {
+                hr == null -> "BPM · NO SOURCE"
+                hrFromBle -> "BPM · STRAP"
+                else -> "BPM · BAND"
+            },
+            color = hrColor,
+            progress = hrProgress,
+            // The full Karvonen zone map stays visible in the unlit track, so the
+            // rider can see how far Z2 is from where they are without arithmetic.
+            bands = if (zonesValid) HR_ZONE_BANDS else emptyList(),
+            dim = hr == null,
+            modifier = Modifier.weight(1f),
         )
-        if (bpm != null) {
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = "$bpm bpm",
-                color = UrujText,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                fontSize = 10.sp,
-            )
-        }
-        Spacer(Modifier.weight(1f))
-        state.bleStrapName?.let {
-            Text(
-                text = it,
-                color = UrujMuted,
-                fontWeight = FontWeight.Medium,
-                fontSize = 9.sp,
-                maxLines = 1,
-            )
-        }
-        if (battery != null) {
-            Spacer(Modifier.width(6.dp))
-            val batColor = when {
-                battery >= 30 -> UrujMuted
-                battery >= 15 -> UrujZone3
-                else -> UrujZone5
+    }
+}
+
+/**
+ * Cadence hero cell. Three honest states rather than one number:
+ *  - connected + crank data → live rpm, green inside the 80-95 target band
+ *  - connected but wheel-only → "—" and "RPM · WHEEL MODE" (the dual-mode
+ *    sensor is configured as a speed sensor; the app is fine, the mount isn't)
+ *  - disconnected → "—" and "RPM · OFFLINE"
+ */
+@Composable
+private fun CadenceMetric(state: RideState, modifier: Modifier = Modifier) {
+    val rpm = state.cadenceRpm
+    val connected = state.cadenceConnected
+    val wheelOnly = connected && !state.cadenceHasCrankData
+    val inTarget = rpm != null && rpm >= CADENCE_TARGET_LOW && rpm <= CADENCE_TARGET_HIGH
+    HudMetric(
+        value = when {
+            !connected || wheelOnly -> PLACEHOLDER
+            rpm == null -> PLACEHOLDER
+            else -> rpm.toString()
+        },
+        suffix = null,
+        unit = when {
+            wheelOnly -> "RPM · WHEEL MODE"
+            !connected -> "RPM · OFFLINE"
+            else -> "RPM · CRANK"
+        },
+        color = if (inTarget) UrujZone2 else UrujCadence,
+        progress = (rpm ?: 0) / CADENCE_SCALE_RPM,
+        // The endurance target band stays lit-dim even at 0 rpm, so the rider
+        // always knows where they're aiming rather than guessing at a number.
+        bands = CADENCE_TARGET_BANDS,
+        dim = !connected || wheelOnly,
+        modifier = modifier,
+    )
+}
+
+/**
+ * Sensor status line — GPS, chest strap, cadence sensor. One row of chips
+ * instead of the previous stack of full-width rows: the same information in a
+ * third of the vertical space, which is what buys the third hero metric its
+ * room.
+ */
+@Composable
+private fun SensorStrip(state: RideState) {
+    val accuracy = state.gpsAccuracyMeters
+    val (gpsLabel, gpsColor) = when {
+        accuracy <= 0f -> "GPS ACQ…" to UrujMuted
+        state.gpsAccurate && accuracy <= 10f -> "GPS ±${accuracy.toInt()}m" to UrujZone2
+        state.gpsAccurate -> "GPS ±${accuracy.toInt()}m" to UrujZone2
+        accuracy <= 50f -> "GPS POOR ±${accuracy.toInt()}" to UrujZone3
+        else -> "GPS ✕ ±${accuracy.toInt()}" to UrujZone5
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        SensorChip(label = gpsLabel, color = gpsColor, modifier = Modifier.weight(1f))
+
+        if (state.bleStrapName != null) {
+            val (label, color) = when {
+                !state.bleConnected -> "STRAP OFF" to UrujZone5
+                state.bleContactDetected == false -> "STRAP ⚠ SKIN" to UrujZone3
+                else -> {
+                    val battery = state.bleBatteryPct
+                    val suffix = if (battery != null) " · $battery%" else ""
+                    "STRAP ✓$suffix" to UrujZone2
+                }
             }
-            Text(
-                text = "${battery}%",
-                color = batColor,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                fontSize = 10.sp,
-            )
+            SensorChip(label = label, color = color, modifier = Modifier.weight(1f))
+        }
+
+        if (state.cadenceSensorName != null) {
+            val battery = state.cadenceBatteryPct
+            val (label, color) = when {
+                !state.cadenceConnected -> "CAD OFF" to UrujZone5
+                !state.cadenceHasCrankData -> "CAD WHEEL?" to UrujZone3
+                // Below 20% the sensor is close enough to dying that the rider
+                // should hear about it before the next ride, not during it.
+                battery != null && battery < 20 -> "CAD ⚠ $battery%" to UrujZone3
+                battery != null -> "CAD ✓ · $battery%" to UrujZone2
+                else -> "CAD ✓" to UrujZone2
+            }
+            SensorChip(label = label, color = color, modifier = Modifier.weight(1f))
         }
     }
 }
 
 @Composable
-private fun GpsRow(state: RideState) {
-    val accuracy = state.gpsAccuracyMeters
-    val (gpsLabel, gpsColor) = when {
-        accuracy <= 0f -> "GPS · acquiring lock…" to UrujMuted
-        state.gpsAccurate && accuracy <= 10f ->
-            "GPS · LOCKED ±${accuracy.toInt()}m" to UrujZone2
-        state.gpsAccurate ->
-            "GPS · ±${accuracy.toInt()}m" to UrujZone2
-        accuracy <= 50f ->
-            "GPS · POOR ±${accuracy.toInt()}m" to UrujZone3
-        else ->
-            "GPS · UNUSABLE ±${accuracy.toInt()}m" to UrujZone5
-    }
-    val (elevLabel, elevColor) = when (state.elevationSource) {
-        ElevationTracker.Source.BAROMETER -> "ALT · BAROMETER" to UrujZone2
-        ElevationTracker.Source.DEM -> "ALT · DEM" to UrujZone2
-        ElevationTracker.Source.GPS -> "ALT · GPS (noisy)" to UrujZone3
-        ElevationTracker.Source.NONE -> "ALT · —" to UrujMuted
-    }
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+private fun SensorChip(label: String, color: Color, modifier: Modifier = Modifier) {
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(color),
+        )
+        Spacer(Modifier.width(5.dp))
         Text(
-            text = gpsLabel,
-            color = gpsColor,
+            text = label,
+            color = color,
             fontWeight = FontWeight.Black,
-            fontSize = 10.sp,
-            letterSpacing = 1.5.sp,
+            fontSize = 9.sp,
+            letterSpacing = 1.sp,
             maxLines = 1,
         )
-        Spacer(Modifier.weight(1f))
+    }
+}
+
+/**
+ * A mis-tapped PAUSE has to be impossible to miss — that's the trade that lets
+ * PAUSE stay a plain tap while ending a ride needs a swipe.
+ */
+@Composable
+private fun PausedBanner(manual: Boolean) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(UrujZone3.copy(alpha = 0.18f))
+            .border(1.dp, UrujZone3, RoundedCornerShape(8.dp))
+            .padding(vertical = 5.dp),
+        contentAlignment = Alignment.Center,
+    ) {
         Text(
-            text = elevLabel,
-            color = elevColor,
+            text = if (manual) "❚❚  PAUSED — TAP RESUME TO CONTINUE" else "❚❚  AUTO-PAUSED — STOPPED",
+            color = UrujZone3,
             fontWeight = FontWeight.Black,
             fontSize = 10.sp,
-            letterSpacing = 1.5.sp,
+            letterSpacing = 2.sp,
             maxLines = 1,
         )
     }
@@ -315,12 +418,9 @@ private fun WindRow(state: RideState) {
     val status = state.weatherStatus
     val now = System.currentTimeMillis()
 
-    // Left side: wind component label OR a state-machine status (loading / failed / waiting).
     val (leftLabel, leftColor) = when (status) {
-        is WeatherStatus.WaitingForGps ->
-            "WIND · waiting on GPS lock" to UrujMuted
-        is WeatherStatus.Fetching ->
-            "WIND · fetching…" to UrujMuted
+        is WeatherStatus.WaitingForGps -> "WIND · waiting on GPS lock" to UrujMuted
+        is WeatherStatus.Fetching -> "WIND · fetching…" to UrujMuted
         is WeatherStatus.Failed -> {
             val retryIn = ((status.retryAtMs - now) / 1000L).coerceAtLeast(0L)
             "WIND · offline (retry ${retryIn}s)" to UrujZone3
@@ -329,9 +429,6 @@ private fun WindRow(state: RideState) {
             if (w == null) {
                 "WIND · —" to UrujMuted
             } else {
-                // When moving with good GPS, show the headwind/tailwind COMPONENT relative
-                // to your direction of travel. Otherwise show raw wind speed + cardinal
-                // direction so you always have actionable wind info even at a stop.
                 val movingEnough = state.gpsAccurate && state.currentSpeedKph > 3.6f
                 if (movingEnough) {
                     val headwind = state.headwindMs
@@ -343,37 +440,30 @@ private fun WindRow(state: RideState) {
                     }
                 } else {
                     val windKph = (w.windSpeedMs * 3.6f).toInt()
-                    val cardinal = bearingToCardinal(w.windDirectionDeg)
-                    "WIND · $windKph KPH from $cardinal" to UrujZone3
+                    "WIND · $windKph KPH from ${bearingToCardinal(w.windDirectionDeg)}" to UrujZone3
                 }
             }
         }
     }
 
-    // Right side: temp + humidity + freshness/next-refresh.
     val rightLabel = buildString {
         if (w != null) {
             append("${w.temperatureCelsius.toInt()}° · ${w.humidityPercent.toInt()}%")
         }
         if (status is WeatherStatus.Ok) {
             val ageMin = ((now - status.fetchedAtMs) / 60_000L).toInt()
-            val nextMin = ((status.nextFetchAtMs - now) / 60_000L).coerceAtLeast(0L).toInt()
             if (isNotEmpty()) append(" · ")
             append(if (ageMin <= 0) "live" else "${ageMin}m old")
-            append(" · next ${nextMin}m")
         }
     }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = leftLabel,
             color = leftColor,
             fontWeight = FontWeight.Black,
-            fontSize = 10.sp,
-            letterSpacing = 2.sp,
+            fontSize = 9.sp,
+            letterSpacing = 1.5.sp,
             maxLines = 1,
         )
         Spacer(Modifier.weight(1f))
@@ -382,7 +472,7 @@ private fun WindRow(state: RideState) {
                 text = rightLabel,
                 color = UrujMuted,
                 fontWeight = FontWeight.Bold,
-                fontSize = 10.sp,
+                fontSize = 9.sp,
                 maxLines = 1,
             )
         }
@@ -399,7 +489,7 @@ private fun PrFlashOverlay(label: String, watts: Int) {
     ) {
         Column(
             modifier = Modifier
-                .background(UrujNeonMagenta, shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
+                .background(UrujNeonMagenta, shape = RoundedCornerShape(16.dp))
                 .padding(horizontal = 24.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -421,393 +511,180 @@ private fun PrFlashOverlay(label: String, watts: Int) {
     }
 }
 
+/**
+ * Top bar: service health, branding, elapsed clock.
+ *
+ * v0.9.78 — the pulsing REC dot is gone. It animated forever regardless of what
+ * the recorder was doing, and the checkpoint age it was meant to convey is now
+ * simply printed ("REC · 12s"): an honest number the rider can read, instead of
+ * a blink they have to interpret. The elapsed clock ticking every second is
+ * already all the liveness proof a HUD needs.
+ */
 @Composable
 private fun HudTopBar(state: RideState) {
-    val infinite = rememberInfiniteTransition(label = "rec")
-    val pulse by infinite.animateFloat(
-        initialValue = 0.4f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(900),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "rec_pulse",
-    )
-    // v0.3.8 service-health: REC dot is now a live health indicator.
-    // Green = checkpoint within 40s (healthy), amber = 40-90s (degraded),
-    // red = >90s or never (likely dead). Pulse animation only applies when
-    // healthy — a frozen-coloured dot is a clearer "something is wrong" signal.
     val checkpoint = state.lastCheckpointAtMs
     val checkpointAgeMs = checkpoint?.let { (System.currentTimeMillis() - it).coerceAtLeast(0L) }
     val health = serviceHealth(state.isPaused, checkpointAgeMs)
+    val ageLabel = checkpointAgeMs?.let { " · ${it / 1000}s" } ?: ""
     val (recColor, recLabel) = when (health) {
         ServiceHealth.PAUSED -> UrujMuted to "PAUSED"
         ServiceHealth.STARTING -> UrujZone3 to "REC · STARTING"
-        ServiceHealth.HEALTHY -> UrujZone2 to "REC"
-        ServiceHealth.DEGRADED -> UrujZone3 to "REC · DEGRADED"
-        ServiceHealth.STALE -> UrujZone5 to "REC · STALE"
-    }
-    val dotAlpha = when (health) {
-        ServiceHealth.PAUSED -> 0.6f
-        ServiceHealth.HEALTHY, ServiceHealth.STARTING -> pulse
-        ServiceHealth.DEGRADED, ServiceHealth.STALE -> 1f
+        ServiceHealth.HEALTHY -> UrujZone2 to "REC$ageLabel"
+        ServiceHealth.DEGRADED -> UrujZone3 to "REC · SLOW$ageLabel"
+        ServiceHealth.STALE -> UrujZone5 to "REC · STALE$ageLabel"
     }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Box(
             modifier = Modifier
-                .size(10.dp)
+                .size(9.dp)
                 .clip(CircleShape)
-                .background(recColor.copy(alpha = dotAlpha)),
+                .background(recColor),
         )
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(6.dp))
         Text(
             text = recLabel,
             color = recColor,
             fontWeight = FontWeight.Black,
-            fontSize = 12.sp,
-            letterSpacing = 3.sp,
+            fontSize = 11.sp,
+            letterSpacing = 2.sp,
+            maxLines = 1,
         )
-
         Spacer(Modifier.weight(1f))
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            UrujLogo(size = 22.dp)
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = "URUJ LABS",
-                color = UrujText,
-                fontWeight = FontWeight.Black,
-                fontSize = 10.sp,
-                letterSpacing = 2.sp,
-                maxLines = 1,
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = "v${BuildConfig.VERSION_NAME}",
-                color = UrujMuted,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                fontSize = 9.sp,
-                letterSpacing = 1.sp,
-                maxLines = 1,
-            )
-        }
-
+        UrujLogo(size = 18.dp)
+        Spacer(Modifier.width(5.dp))
+        Text(
+            text = "v${BuildConfig.VERSION_NAME}",
+            color = UrujMuted,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            fontSize = 9.sp,
+            maxLines = 1,
+        )
         Spacer(Modifier.weight(1f))
-
         Text(
             text = formatDuration(state.totalElapsedMs),
             color = UrujText,
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.Bold,
-            fontSize = 18.sp,
+            fontSize = 17.sp,
             letterSpacing = 1.sp,
-        )
-    }
-}
-
-@Composable
-private fun SpeedHero(state: RideState) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            text = formatSpeed(state.currentSpeedKph),
-            color = UrujAccent,
-            fontFamily = FontFamily.SansSerif,
-            fontWeight = FontWeight.Black,
-            fontSize = 120.sp,
-            letterSpacing = (-4).sp,
-        )
-        Text(
-            text = "KPH",
-            color = UrujMuted,
-            fontWeight = FontWeight.Black,
-            fontSize = 12.sp,
-            letterSpacing = 6.sp,
+            maxLines = 1,
         )
     }
 }
 
 /**
- * v0.9.16 — twin heroes. HR (left) + Speed (right), both hero-sized so they
- * compete for the rider's glance equally. HR is Karvonen zone-colored using
- * the rider's profile maxHR + restingHR (single source of truth shared with
- * TIZ, Route map, Audio coach — see [KarvonenZonesCalculator]).
- *
- * Why this exists: pre-v0.9.16 the HEART RATE row sat inside StatsGrid at
- * 22sp and scrolled offscreen on shorter phones once the v0.8.0/0.8.1 stack
- * (SessionIntentBar + Waveform + StrapRow) grew the upper section. Rider
- * had to scroll mid-ride to see live HR — defeats the lab-grade live HR
- * promise. Twin heroes pin HR + Speed above the scroll seam.
- *
- * BLE-first HR (sub-100ms latency on strap), HC-batched fallback. Same
- * cascade as the old StatsGrid HEART RATE cell — no data-flow change.
- *
- * Subtle pulse only when HR is present + above Z3 (effort signal — the
- * rider's eye gets drawn to high-effort moments, not idle baseline).
+ * Secondary stats, three per row. The list is built from what the ride actually
+ * has: the three cadence figures only exist when a cadence sensor is paired,
+ * so a strap-only ride shows a tidy 3×3 rather than a grid of dashes.
  */
 @Composable
-private fun TwinHero(state: RideState) {
-    val context = LocalContext.current
-    val profileStore = remember { RiderProfileStore(context) }
-    val profile by profileStore.profile.collectAsStateWithLifecycle(
-        initialValue = com.uruj.domain.RiderProfile(),
-    )
-
-    val hr = state.bleLiveBpm ?: state.latestSample?.hrBpm
-    val hrFromBle = state.bleLiveBpm != null
-
-    // v0.9.17 — Karvonen classifier returns 0..5 (0 = sub-Z1 below 50% HRR,
-    // 1-5 = Z1-Z5). HUD now distinguishes sub-Z1 with its own muted slate
-    // color so the rider can tell at a glance "below recovery" vs "in Z1."
-    // Same classifier as TIZ, Route map, Bio Lab, Audio coach — single
-    // source of truth (v0.9.14 + v0.9.17).
-    val zoneColor = if (hr != null && profile.maxHrBpm > profile.restingHrBpm) {
-        val z = KarvonenZonesCalculator.classifyKarvonenZone(
-            hrBpm = hr,
-            hrMax = profile.maxHrBpm,
-            hrRest = profile.restingHrBpm.coerceAtLeast(40),
-        )
-        when (z) {
-            0 -> UrujZoneBelowZ1
-            1 -> UrujZone1
-            2 -> UrujZone2
-            3 -> UrujZone3
-            4 -> UrujZone4
-            else -> UrujZone5
-        }
-    } else UrujMuted
-
-    // Pulse only at Z3+ (tempo / threshold / VO2) — calm baseline reads steady.
-    // Sub-Z1, Z1, Z2 all stay still so the rider's eye isn't drawn to
-    // sub-threshold intensity (where they should already be unhurried).
-    val infinite = rememberInfiniteTransition(label = "hr_pulse")
-    val pulse by infinite.animateFloat(
-        initialValue = 0.65f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(700),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "hr_pulse_alpha",
-    )
-    val pulseAlpha = if (
-        hr != null &&
-        zoneColor != UrujMuted &&
-        zoneColor != UrujZoneBelowZ1 &&
-        zoneColor != UrujZone1 &&
-        zoneColor != UrujZone2
-    ) pulse else 1f
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        // HR — left
-        Column(
-            modifier = Modifier.weight(1f),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                text = hr?.toString() ?: "—",
-                color = zoneColor.copy(alpha = pulseAlpha),
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.Black,
-                fontSize = 84.sp,
-                letterSpacing = (-3).sp,
-                maxLines = 1,
-            )
-            Text(
-                text = when {
-                    hr == null -> "BPM · no source"
-                    hrFromBle -> "BPM · strap"
-                    else -> "BPM · band"
-                },
-                color = UrujMuted,
-                fontWeight = FontWeight.Black,
-                fontSize = 10.sp,
-                letterSpacing = 3.sp,
-                maxLines = 1,
-            )
-        }
-        // Speed — right
-        Column(
-            modifier = Modifier.weight(1f),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                text = formatSpeed(state.currentSpeedKph),
-                color = UrujAccent,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.Black,
-                fontSize = 84.sp,
-                letterSpacing = (-3).sp,
-                maxLines = 1,
-            )
-            Text(
-                text = "KPH",
-                color = UrujMuted,
-                fontWeight = FontWeight.Black,
-                fontSize = 10.sp,
-                letterSpacing = 6.sp,
-                maxLines = 1,
-            )
-        }
+private fun StatsPanel(state: RideState) {
+    val elevSourceTag = when (state.elevationSource) {
+        ElevationTracker.Source.BAROMETER -> "m · baro"
+        ElevationTracker.Source.DEM -> "m · dem"
+        ElevationTracker.Source.GPS -> "m · gps"
+        ElevationTracker.Source.NONE -> "m"
     }
-}
-
-@Composable
-private fun PowerBlock(state: RideState, modifier: Modifier = Modifier) {
     val zone = state.currentZone
-    val zoneColor = zone?.color() ?: UrujMuted
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(UrujSurface)
-            .border(1.dp, UrujSurfaceHigh, RoundedCornerShape(16.dp))
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-    ) {
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                text = "≈",
-                color = UrujMuted,
-                fontWeight = FontWeight.Black,
-                fontSize = 22.sp,
-                modifier = Modifier.padding(bottom = 8.dp),
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(
-                text = state.smoothedPower3sWatts.toInt().toString(),
-                color = zoneColor,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.Black,
-                fontSize = 56.sp,
-                letterSpacing = (-2).sp,
-            )
-            Spacer(Modifier.width(8.dp))
-            Column {
-                Text(
-                    text = "WATTS",
-                    color = UrujMuted,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 11.sp,
-                    letterSpacing = 3.sp,
-                )
-                Text(
-                    text = zone?.let { "ZONE ${zoneEnumIndex(it)} · ${it.label.uppercase()}" }
-                        ?: "—",
-                    color = zoneColor,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 12.sp,
-                    letterSpacing = 1.sp,
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            Column(horizontalAlignment = Alignment.End) {
-                Text(
-                    text = "30s",
-                    color = UrujMuted,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 10.sp,
-                    letterSpacing = 2.sp,
-                )
-                Text(
-                    text = state.smoothedPower30sWatts.toInt().toString(),
-                    color = UrujText,
-                    fontFamily = FontFamily.SansSerif,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 22.sp,
-                )
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-        ZoneBar(currentZone = zone)
-    }
-}
-
-@Composable
-private fun ZoneBar(currentZone: PowerZone?) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(10.dp)
-            .clip(RoundedCornerShape(5.dp)),
-    ) {
-        PowerZone.entries.forEach { zone ->
-            val isActive = zone == currentZone
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .background(if (isActive) zone.color() else zone.color().copy(alpha = 0.18f)),
-            )
-        }
-    }
-}
-
-@Composable
-private fun StatsGrid(state: RideState, modifier: Modifier = Modifier) {
-    // v0.9.16 — HEART RATE row removed. HR now lives in [TwinHero] at the
-    // top of the HUD as a hero readout (was 22sp inside this grid; scrolled
-    // offscreen on shorter phones). MAX HR (in-ride peak observed) takes
-    // its slot here so the rider still has the post-ride number in view.
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(UrujSurface)
-            .border(1.dp, UrujSurfaceHigh, RoundedCornerShape(16.dp))
-            .padding(8.dp),
-    ) {
-        StatRow(
-            left = Stat("DISTANCE", "%.2f".format(state.totalDistanceMeters / 1000), "km"),
-            right = Stat("MOVING", formatDuration(state.movingTimeMs), null),
+    val stats = buildList {
+        add(HudStatSpec("DISTANCE", "%.2f".format(state.totalDistanceMeters / 1000), "km", UrujText))
+        add(HudStatSpec("MOVING", formatDuration(state.movingTimeMs), null, UrujText))
+        add(HudStatSpec("AVG SPD", "%.1f".format(state.averageSpeedMovingKph), "kph", UrujAccent))
+        add(HudStatSpec("ELEV ↑", state.totalElevGainMeters.toInt().toString(), "m", UrujText))
+        add(HudStatSpec("ALT", state.currentAltitudeMeters.toInt().toString(), elevSourceTag, UrujText))
+        add(HudStatSpec("GRADE", "%+.1f".format(state.currentGradePercent), "%", UrujText))
+        add(
+            HudStatSpec(
+                label = "≈ POWER",
+                value = state.smoothedPower3sWatts.toInt().toString(),
+                unit = zone?.let { "W · z${PowerZone.entries.indexOf(it) + 1}" } ?: "W",
+                accent = zone?.color() ?: UrujMuted,
+            ),
         )
-        Divider()
-        StatRow(
-            left = Stat("AVG SPEED", "%.1f".format(state.averageSpeedMovingKph), "kph"),
-            right = Stat("GRADE", "%+.1f".format(state.currentGradePercent), "%"),
-        )
-        Divider()
-        StatRow(
-            // v0.3.7: surface CURRENT altitude (ticks every sample) alongside
-            // total gain. Rider can see live altitude feedback during climbs
-            // instead of only the slow-accumulating total.
-            left = Stat("ALT", state.currentAltitudeMeters.toInt().toString(), "m"),
-            right = Stat("ELEV ↑", state.totalElevGainMeters.toInt().toString(), "m"),
-        )
-        Divider()
-        StatRow(
-            // v0.9.16: peak HR seen in-ride. Previously had no visible home
-            // (only surfaced post-ride). Useful live to know whether today's
-            // peak crossed personal milestones.
-            left = Stat(
+        add(
+            HudStatSpec(
                 label = "MAX HR",
                 value = if (state.maxHrBpmObserved > 0) state.maxHrBpmObserved.toString() else "—",
                 unit = if (state.maxHrBpmObserved > 0) "bpm" else null,
                 accent = if (state.maxHrBpmObserved > 0) UrujNeonMagenta else UrujMuted,
             ),
-            // v0.3.7: 30s-checkpoint heartbeat. Lets the rider verify the
-            // service is alive even when the phone is backgrounded (the
-            // foreground notification can be hidden by aggressive OEM ROMs).
-            right = Stat(
-                label = "LAST SAVE",
-                value = state.lastCheckpointAtMs?.let { lastSavedSecondsAgo(it).toString() } ?: "—",
-                unit = if (state.lastCheckpointAtMs != null) "s ago" else "no save yet",
-                accent = UrujAccent,
-            ),
         )
+        add(HudStatSpec("MAX SPD", "%.1f".format(state.maxSpeedMs * 3.6f), "kph", UrujText))
+        if (state.cadenceSensorName != null) {
+            add(
+                HudStatSpec(
+                    label = "AVG CAD",
+                    value = if (state.averageCadenceRpm > 0) state.averageCadenceRpm.toString() else "—",
+                    unit = if (state.averageCadenceRpm > 0) "rpm" else null,
+                    accent = UrujCadence,
+                ),
+            )
+            add(
+                HudStatSpec(
+                    label = "PEDALLING",
+                    value = "${(state.pedalingRatio * 100).toInt()}",
+                    unit = "% of moving",
+                    accent = UrujCadence,
+                ),
+            )
+            add(
+                HudStatSpec(
+                    label = "STROKES",
+                    value = state.totalCrankRevs.toString(),
+                    unit = null,
+                    accent = UrujCadence,
+                ),
+            )
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(UrujSurface)
+            .border(1.dp, UrujSurfaceHigh, RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        stats.chunked(3).forEachIndexed { index, row ->
+            if (index > 0) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(UrujSurfaceHigh),
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                row.forEach { stat ->
+                    HudStat(
+                        label = stat.label,
+                        value = stat.value,
+                        unit = stat.unit,
+                        accent = stat.accent,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                // Keep the last row's columns aligned with the rows above it.
+                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
     }
 }
 
-private fun lastSavedSecondsAgo(lastCheckpointMs: Long): Long {
-    return ((System.currentTimeMillis() - lastCheckpointMs) / 1000L).coerceAtLeast(0L)
-}
+private data class HudStatSpec(
+    val label: String,
+    val value: String,
+    val unit: String?,
+    val accent: Color,
+)
 
 private enum class ServiceHealth { PAUSED, STARTING, HEALTHY, DEGRADED, STALE }
 
@@ -821,81 +698,12 @@ private fun serviceHealth(isPaused: Boolean, checkpointAgeMs: Long?): ServiceHea
     }
 }
 
+/**
+ * The one remaining tap-confirm: a ride under [SHORT_RIDE_METERS] is far more
+ * likely to be an accidental swipe two minutes in than a deliberate finish.
+ */
 @Composable
-private fun Divider() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(1.dp)
-            .background(UrujSurfaceHigh),
-    )
-}
-
-private data class Stat(
-    val label: String,
-    val value: String,
-    val unit: String?,
-    val accent: Color = UrujText,
-)
-
-@Composable
-private fun StatRow(left: Stat, right: Stat) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        StatCell(stat = left, modifier = Modifier.weight(1f))
-        Box(
-            modifier = Modifier
-                .width(1.dp)
-                .height(38.dp)
-                .background(UrujSurfaceHigh),
-        )
-        StatCell(stat = right, modifier = Modifier.weight(1f))
-    }
-}
-
-@Composable
-private fun StatCell(stat: Stat, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier.padding(horizontal = 12.dp),
-        horizontalAlignment = Alignment.Start,
-    ) {
-        Text(
-            text = stat.label,
-            color = UrujMuted,
-            fontWeight = FontWeight.Black,
-            fontSize = 9.sp,
-            letterSpacing = 2.sp,
-        )
-        Spacer(Modifier.height(3.dp))
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                text = stat.value,
-                color = stat.accent,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.Black,
-                fontSize = 22.sp,
-                letterSpacing = (-0.5).sp,
-            )
-            if (stat.unit != null) {
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    text = stat.unit,
-                    color = UrujMuted,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 10.sp,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun StopConfirmDialog(
+private fun ShortRideConfirmDialog(
     state: RideState,
     onConfirm: () -> Unit,
     onCancel: () -> Unit,
@@ -905,107 +713,36 @@ private fun StopConfirmDialog(
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onCancel,
         title = {
-            Text(
-                "End ride?",
-                color = UrujText,
-                fontWeight = FontWeight.Black,
-                fontSize = 20.sp,
-            )
+            Text("End this short ride?", color = UrujText, fontWeight = FontWeight.Black, fontSize = 20.sp)
         },
         text = {
             Column {
                 Text(
-                    "You've ridden $distanceKm km in $moving.",
+                    "Only $distanceKm km in $moving so far.",
                     color = UrujText,
                     fontSize = 14.sp,
                 )
-                if (state.totalDistanceMeters < 500) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "⚠ This ride is very short — confirm you really want to end it.",
-                        color = UrujZone3,
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 12.sp,
-                    )
-                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "⚠ This ride is very short — confirm you really want to end it.",
+                    color = UrujZone3,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 12.sp,
+                )
             }
         },
         confirmButton = {
             androidx.compose.material3.TextButton(onClick = onConfirm) {
-                Text(
-                    "END RIDE",
-                    color = UrujZone5,
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 2.sp,
-                )
+                Text("END RIDE", color = UrujZone5, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
             }
         },
         dismissButton = {
             androidx.compose.material3.TextButton(onClick = onCancel) {
-                Text(
-                    "KEEP GOING",
-                    color = UrujAccent,
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 2.sp,
-                )
+                Text("KEEP GOING", color = UrujAccent, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
             }
         },
         containerColor = UrujSurface,
     )
-}
-
-@Composable
-private fun StopButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Button(
-        onClick = onClick,
-        modifier = modifier
-            .fillMaxWidth()
-            .height(58.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = UrujZone5,
-            contentColor = Color.White,
-        ),
-    ) {
-        Text(
-            text = "■  STOP",
-            fontWeight = FontWeight.Black,
-            fontSize = 16.sp,
-            letterSpacing = 4.sp,
-        )
-    }
-}
-
-/**
- * v0.9.76 — manual PAUSE / RESUME toggle. Label + colour track the rider's
- * MANUAL pause flag ([RideState.manuallyPaused]): amber "PAUSE" when running,
- * green "RESUME" when manually paused. Leads with the WORD so the control is
- * unambiguous even if the ❚❚ / ▶ glyph fails to render on a given font.
- */
-@Composable
-private fun PauseResumeButton(
-    manuallyPaused: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Button(
-        onClick = onClick,
-        modifier = modifier
-            .fillMaxWidth()
-            .height(58.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (manuallyPaused) UrujZone2 else UrujZone3,
-            contentColor = Color.Black,
-        ),
-    ) {
-        Text(
-            text = if (manuallyPaused) "▶  RESUME" else "❚❚  PAUSE",
-            fontWeight = FontWeight.Black,
-            fontSize = 16.sp,
-            letterSpacing = 4.sp,
-        )
-    }
 }
 
 private fun PowerZone.color(): Color = when (this) {
@@ -1016,16 +753,10 @@ private fun PowerZone.color(): Color = when (this) {
     PowerZone.Z5 -> UrujZone5
 }
 
-private fun zoneEnumIndex(zone: PowerZone): Int = PowerZone.entries.indexOf(zone) + 1
-
-private fun formatSpeed(kph: Float): String =
-    if (kph < 0.05f) "0" else "%.1f".format(kph)
-
 private fun bearingToCardinal(deg: Float): String {
     val normalized = ((deg % 360f) + 360f) % 360f
     val sectors = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
-    val idx = ((normalized + 22.5f) / 45f).toInt() % 8
-    return sectors[idx]
+    return sectors[((normalized + 22.5f) / 45f).toInt() % 8]
 }
 
 private fun formatDuration(millis: Long): String {
@@ -1036,3 +767,37 @@ private fun formatDuration(millis: Long): String {
     return "%d:%02d:%02d".format(h, m, s)
 }
 
+/** Full-scale of the SPEED bar. 50 kph covers everything short of a descent PB. */
+private const val SPEED_SCALE_KPH = 50f
+
+/** Full-scale of the CADENCE bar. */
+private const val CADENCE_SCALE_RPM = 120f
+
+/** Endurance cadence target band — the range the bar highlights permanently. */
+private const val CADENCE_TARGET_LOW = 80
+private const val CADENCE_TARGET_HIGH = 95
+
+private val CADENCE_TARGET_BANDS = listOf(
+    MetricBand(
+        fromFraction = CADENCE_TARGET_LOW / CADENCE_SCALE_RPM,
+        toFraction = CADENCE_TARGET_HIGH / CADENCE_SCALE_RPM,
+        color = UrujZone2,
+    ),
+)
+
+/**
+ * Karvonen zones as fractions of the rider's HR reserve — the same 50/60/70/80/90
+ * boundaries [KarvonenZonesCalculator.classifyKarvonenZone] uses, so the bar's
+ * band map and the digit's colour can never disagree.
+ */
+private val HR_ZONE_BANDS = listOf(
+    MetricBand(0f, 0.50f, UrujZoneBelowZ1),
+    MetricBand(0.50f, 0.60f, UrujZone1),
+    MetricBand(0.60f, 0.70f, UrujZone2),
+    MetricBand(0.70f, 0.80f, UrujZone3),
+    MetricBand(0.80f, 0.90f, UrujZone4),
+    MetricBand(0.90f, 1.00f, UrujZone5),
+)
+
+/** Below this, ending a ride still asks for a tap confirmation. */
+private const val SHORT_RIDE_METERS = 500.0

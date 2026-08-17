@@ -15,6 +15,88 @@
 
 ---
 
+## 🗓️ v0.9.78 SHIPPED 2026-08-17 — Cadence sensor + HUD v2 + slide-to-end
+
+First code since v0.9.77 (2026-06-16). Two-month gap: recovery + life, no
+tracking. The rider came back with new hardware (**Magene S314** cadence sensor
+on the left crank, hood drop bars), a spontaneous **100 km** ride that felt
+great, and three asks — add cadence, rebuild the HUD around speed/cadence/HR
+without eating battery, and stop rain from ending rides.
+
+**Full design + edge-case matrix + on-device test plan**:
+[`docs/research/2026-08-17-cadence-sensor-and-hud-v2.md`](research/2026-08-17-cadence-sensor-and-hud-v2.md)
+
+**1. Cadence (BLE CSC service 0x1816)**
+  - New `com.uruj.power.CadenceCalculator` — `CscParser` + `CadenceTracker`,
+    pure Kotlin, **16 unit tests**. Single source of truth for "what cadence is
+    it right now". uint16 rollover on BOTH counters (crank revs wrap every
+    65 536 strokes, the 1024 Hz event clock wraps every 64 s), sensor
+    power-cycle re-baselining, 250 rpm plausibility ceiling.
+  - New `sensor/android/BleCadenceSource` — sibling of `BleHrSource`, same
+    chained one-GATT-op-at-a-time state machine. Reads CSC Measurement +
+    CSC Feature + Sensor Location + Battery + Device Info.
+    **`autoConnect = true`** (unlike the strap): a crank sensor sleeps when the
+    bike is parked, so a parked connection that fires when the crank turns beats
+    burning 30 s GATT timeouts against a device that isn't listening.
+  - `BleSettingsStore` gains a second device slot (`cadence_*` keys) +
+    last-seen battery for both devices. `forget()` no longer wipes the whole
+    preferences file — it clears its own keys, so forgetting one device can't
+    disturb the other.
+  - `RideRecorderService`: retry-with-back-off cadence loop; the **1 Hz ticker**
+    re-reads the tracker every second so coasting reads **0 rpm** rather than
+    freezing at the last pedalling value (cadence sensors go silent when you
+    stop pedalling). Accumulators live inside the atomic `RideStateHolder`
+    update so ticker and BLE writers can't lose each other's increments.
+  - Persisted: `RideSample.cadenceRpm` (nullable — `null` = no sensor,
+    `0` = coasting), `StoredRideSummary` avg / max / pedalling-time / strokes.
+    Crash-rebuild recomputes cadence from NDJSON; resume seeds the average
+    **weighted by pedalling seconds** (same reconstruction power has used since
+    v0.4.4).
+  - **AVG excludes coasting** (Strava/Garmin convention) — an average that
+    counts freewheeling measures the terrain, not the rider. PEDALLING % carries
+    the coasting story separately.
+  - New `CadenceTestCard` in Diagnostics: pair, forget, and **audit** — raw
+    crank revolutions, CSC feature bits, and the sensor's own
+    `mounted at: Left crank`. The dual-mode failure mode (sensor configured as a
+    SPEED sensor → valid packets with no crank data) is surfaced explicitly
+    instead of showing a silent dead dash.
+
+**2. HUD v2 — three heroes**
+  - SPEED · CADENCE · HR, digits **auto-sized to the cell the device actually
+    gives them** (weighted for the speed decimal), each over a segmented range
+    bar. Falls back to two-up SPEED + HR when no cadence sensor is paired.
+  - Bars carry the band map: HR shows the rider's full Karvonen zone map in its
+    unlit track (same `classifyKarvonenZone` as every other surface); cadence
+    permanently highlights the 80-95 rpm endurance band.
+  - Sensor rows collapsed into one chip strip (GPS · STRAP · CAD + battery +
+    fault states) — that compression is what buys the third hero its room.
+  - Stats grid rebuilt to 3-per-row, built from what the ride actually has.
+  - **Every always-on animation removed.** The REC dot and HR pulse
+    `rememberInfiniteTransition` loops ran continuously for whole rides
+    regardless of sensor state; the REC dot now prints its checkpoint age
+    ("REC · 12s") — the honest number the blink stood in for. Remaining
+    animations are `animateFloatAsState` driven by values that actually change.
+    Battery expectation: neutral-to-better. **Argued, not measured** — a
+    same-route A/B is logged as an open item.
+
+**3. Slide-to-end**
+  - Rain on the screen was ending rides. A confirmation dialog can't fix that —
+    its buttons are equally tappable by a droplet. A capacitive false-touch is a
+    **point event**; it cannot travel 85% of the screen width while maintaining
+    contact. Haptic thump at the threshold so the confirm is verifiable by feel
+    at speed.
+  - PAUSE stays a tap (reversible, and now backed by a loud full-width PAUSED
+    banner). The sub-500 m dialog survives as the one tap-confirm.
+
+**Verification**: full unit suite **55 tests, 0 failures**; `assembleDebug`
+clean. Device testing pending — the rider had no phone connected at build time.
+
+**Deferred** (with reasons, in the research doc): cadence in the audio coach,
+route-map polyline coloured by cadence, time-in-cadence-band chart, wheel-based
+speed from the S314's second mode, and the battery A/B measurement.
+
+---
+
 ## ⚡ Session ship log — 2026-05-11/12 night session (URUJ Labs v0.1)
 
 **Shipped in one all-night session**, validated via indoor walking tests, ready for first real outdoor ride:

@@ -32,6 +32,7 @@ import com.uruj.sensor.LocationSample
 import com.uruj.data.BleSettingsStore
 import com.uruj.data.PairedStrap
 import com.uruj.sensor.android.AndroidHealthConnectHrSource
+import com.uruj.sensor.android.BleCadenceSource
 import com.uruj.sensor.android.BleHrSource
 import com.uruj.sensor.android.FusedLocationSource
 import com.uruj.sensor.android.LinearAccelSource
@@ -51,6 +52,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import java.io.File
 import java.util.UUID
+import kotlin.math.roundToInt
 
 class RideRecorderService : Service() {
 
@@ -63,6 +65,9 @@ class RideRecorderService : Service() {
     private val accelSource by lazy { LinearAccelSource(this) }
     private val hrSource by lazy { AndroidHealthConnectHrSource(this) }
     private val bleSource by lazy { BleHrSource(this) }
+    // v0.9.78 — BLE cadence (Magene S314, CSC 0x1816). Lazy, so a rider without
+    // a cadence sensor never constructs it, never scans, never spends a mA.
+    private val bleCadenceSource by lazy { BleCadenceSource(this) }
     private val bleSettings by lazy { BleSettingsStore(this) }
     private val profileStore by lazy { RiderProfileStore(this) }
     private val historyRepo by lazy { RideHistoryRepository(this) }
@@ -168,6 +173,14 @@ class RideRecorderService : Service() {
                 // Resume: seed accumulators from the existing summary so the new
                 // samples extend the totals rather than starting from zero.
                 Log.d(TAG, "Resuming session $sessionId: ${existingSummary.totalDistanceMeters / 1000} km already logged")
+                // v0.9.78 — seed the cadence average by WEIGHT, not as a single
+                // sample: the pre-resume leg contributed one reading per second
+                // of pedalling, so it must carry that weight or a 2-minute
+                // post-resume spin would dominate a 3-hour ride's average. Same
+                // reconstruction the power average has used since v0.4.4.
+                val cadenceSeedCount = if (existingSummary.averageCadenceRpm != null) {
+                    ((existingSummary.pedalingTimeMs ?: 0L) / 1000L).toInt().coerceAtLeast(1)
+                } else 0
                 RideState(
                     isRecording = true,
                     sessionId = sessionId,
@@ -182,6 +195,12 @@ class RideRecorderService : Service() {
                     totalElevLossMeters = existingSummary.totalElevLossMeters,
                     maxSpeedMs = existingSummary.maxSpeedKph / 3.6f,
                     ftpWatts = existingSummary.ftpWatts,
+                    maxCadenceRpm = existingSummary.maxCadenceRpm ?: 0,
+                    cadenceSumRpm = (existingSummary.averageCadenceRpm ?: 0).toLong() *
+                        cadenceSeedCount,
+                    cadenceSampleCount = cadenceSeedCount,
+                    pedalingTimeMs = existingSummary.pedalingTimeMs ?: 0L,
+                    totalCrankRevs = existingSummary.totalCrankRevs ?: 0L,
                 )
             } else {
                 RideState(
@@ -630,6 +649,70 @@ class RideRecorderService : Service() {
             }
         }
 
+        // v0.9.78 — BLE cadence sensor (Magene S314 on the left crank).
+        //
+        // Same retry-with-back-off shape as the strap loop above, with two
+        // cadence-specific differences that matter on the road:
+        //
+        //  1. No paired sensor → return immediately. Riders without one pay
+        //     nothing: no scan, no GATT, no battery, no UI.
+        //  2. `totalCrankRevs` is tracked as (revs before this connection) +
+        //     (revs this connection). BleCadenceSource resets its tracker on
+        //     every connect because the sensor's own cumulative counters are
+        //     only meaningful within a session — without this base the ride's
+        //     stroke count would restart from zero after the first dropout.
+        launch {
+            val pairedCadence = bleSettings.currentCadence()
+            if (pairedCadence == null) {
+                Log.d(TAG, "[cad] no paired cadence sensor — skipping CSC source for this ride")
+                return@launch
+            }
+            val seedLabel = pairedCadence.model ?: pairedCadence.name ?: pairedCadence.address
+            RideStateHolder.update { it.copy(cadenceSensorName = seedLabel) }
+            Log.d(TAG, "[cad] connecting to paired cadence sensor ${pairedCadence.address} ($seedLabel)")
+            bleCadenceSource.onPaired = { info ->
+                scope.launch {
+                    runCatching { bleSettings.touchCadenceLastConnected() }
+                    // Battery is persisted once per connection, not per packet.
+                    bleCadenceSource.battery.value?.let { pct ->
+                        runCatching { bleSettings.saveCadenceBattery(pct) }
+                    }
+                }
+                RideStateHolder.update {
+                    it.copy(cadenceSensorName = info.model ?: info.name ?: pairedCadence.address)
+                }
+            }
+
+            var crankRevsBeforeConnection = seed.totalCrankRevs
+            var retryDelayMs = 5_000L
+            while (isActive) {
+                try {
+                    bleCadenceSource.samples(directAddress = pairedCadence.address).collect { sample ->
+                        RideStateHolder.update {
+                            it.copy(
+                                cadenceConnected = true,
+                                cadenceRpm = sample.cadenceRpm.roundToInt(),
+                                cadenceBatteryPct = bleCadenceSource.battery.value,
+                                cadenceHasCrankData = sample.hasCrankData,
+                                totalCrankRevs = crankRevsBeforeConnection + sample.cumulativeCrankRevs,
+                            )
+                        }
+                        retryDelayMs = 5_000L
+                    }
+                    Log.w(TAG, "[cad] flow ended (disconnect) — reconnect in ${retryDelayMs}ms")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    Log.w(TAG, "[cad] flow errored — reconnect in ${retryDelayMs}ms", e)
+                }
+                // Carry the strokes counted so far across the reconnect.
+                crankRevsBeforeConnection = RideStateHolder.state.value.totalCrankRevs
+                RideStateHolder.update { it.copy(cadenceConnected = false, cadenceRpm = 0) }
+                delay(retryDelayMs)
+                retryDelayMs = (retryDelayMs * 2).coerceAtMost(60_000L)
+            }
+        }
+
         val notificationManager = getSystemService(NotificationManager::class.java)
 
         // 1 Hz wall-clock ticker — drives elapsed/moving time + notification refresh,
@@ -646,12 +729,38 @@ class RideRecorderService : Service() {
                 val deltaMs = (nowMs - lastTickMs).coerceAtLeast(0L)
                 lastTickMs = nowMs
                 tickCount++
+                // v0.9.78 — cadence is re-evaluated from the tracker every tick,
+                // NOT only when a packet arrives. A cadence sensor stops sending
+                // the moment the rider stops pedalling, so a packet-driven
+                // readout would freeze at the last pedalling value all the way
+                // down a descent. The tracker returns 0 once no crank event has
+                // landed inside its window — coasting is a measurement, not a gap.
+                // The paired-sensor check is deliberately OUTSIDE the lazy field
+                // access, so a rider with no cadence sensor never even
+                // constructs BleCadenceSource.
+                val cadenceNowRpm = if (RideStateHolder.state.value.cadenceSensorName != null) {
+                    bleCadenceSource.tracker.currentRpm(nowMs).roundToInt()
+                } else null
                 RideStateHolder.update { current ->
                     if (current.startedAtMs == null) return@update current
+                    // Accumulators live inside the atomic update so the ticker and
+                    // the GPS/BLE writers can never lose one another's increments.
+                    val rpm = cadenceNowRpm
+                    // AVG cadence excludes coasting (Strava / Garmin convention).
+                    val pedalling = rpm != null && rpm > 0 && !current.isPaused
                     current.copy(
                         totalElapsedMs = nowMs - current.startedAtMs,
                         movingTimeMs = if (current.isPaused) current.movingTimeMs
                         else current.movingTimeMs + deltaMs,
+                        cadenceRpm = rpm,
+                        maxCadenceRpm = if (pedalling && rpm!! > current.maxCadenceRpm) rpm
+                        else current.maxCadenceRpm,
+                        cadenceSumRpm = if (pedalling) current.cadenceSumRpm + rpm!!
+                        else current.cadenceSumRpm,
+                        cadenceSampleCount = if (pedalling) current.cadenceSampleCount + 1
+                        else current.cadenceSampleCount,
+                        pedalingTimeMs = if (pedalling) current.pedalingTimeMs + deltaMs
+                        else current.pedalingTimeMs,
                     )
                 }
                 runCatching {
@@ -766,6 +875,13 @@ class RideRecorderService : Service() {
                 val zone = if (instantPower > 0f) PowerZone.forPower(pow3s, profile.ftpWatts) else null
 
                 val hrAgeMs = latestHr?.let { System.currentTimeMillis() - it.measuredAtMs }
+                // v0.9.78 — read cadence off the ride state (kept fresh at 1 Hz by
+                // the ticker above) rather than re-deriving it here, so the NDJSON
+                // records exactly the number the rider saw on the HUD. Null when no
+                // cadence sensor is paired — distinct from 0, which means coasting.
+                val cadenceForSample = RideStateHolder.state.value
+                    .takeIf { it.cadenceSensorName != null }
+                    ?.let { it.cadenceRpm ?: 0 }
                 val sample = RideSample(
                     timestampMs = location.timestampMs,
                     latitude = location.latitude,
@@ -783,6 +899,7 @@ class RideRecorderService : Service() {
                     // doesn't expose RR via Health Connect).
                     rrIntervalsMs = latestHr?.rrIntervalsMs ?: emptyList(),
                     hrSource = latestHr?.source?.name,
+                    cadenceRpm = cadenceForSample,
                 )
                 recorder.append(sample)
 
