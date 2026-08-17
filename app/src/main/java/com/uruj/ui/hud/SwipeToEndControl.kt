@@ -214,13 +214,16 @@ fun PauseToggleControl(
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
+        // Sized to survive the narrow (~30% width) column without clipping —
+        // maxLines=1 would silently cut "PAUSE" in half on a small screen.
         Text(
-            text = if (manuallyPaused) "▶  RESUME" else "❚❚  PAUSE",
+            text = if (manuallyPaused) "▶ RESUME" else "❚❚ PAUSE",
             color = if (manuallyPaused) Color.Black else accent,
             fontWeight = FontWeight.Black,
-            fontSize = 13.sp,
-            letterSpacing = 2.sp,
+            fontSize = 12.sp,
+            letterSpacing = 1.sp,
             maxLines = 1,
+            softWrap = false,
         )
     }
 }
