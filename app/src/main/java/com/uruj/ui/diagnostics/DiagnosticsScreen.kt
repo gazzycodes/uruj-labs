@@ -228,6 +228,14 @@ fun DiagnosticsScreen(
                     StrapTestCard()
                     Spacer(Modifier.height(8.dp))
                 }
+                // v0.9.78 — cadence sensor pair + audit panel. Sits directly
+                // below the strap card: both are BLE devices the rider pairs
+                // once and then wants to be able to interrogate when a number
+                // on the HUD looks wrong.
+                item(key = "ble_cadence_test") {
+                    CadenceTestCard()
+                    Spacer(Modifier.height(8.dp))
+                }
                 HcCategory.entries.forEach { cat ->
                     val items = byCategory[cat].orEmpty()
                     if (items.isNotEmpty()) {

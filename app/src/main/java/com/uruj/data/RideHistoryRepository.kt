@@ -45,6 +45,16 @@ data class StoredRideSummary(
      *  (UI shows "legacy" tag in that case). New rides populate this from
      *  ride NDJSON's per-tick `hrSource` field (BLE-first via the merger). */
     val hrSourceLabel: String? = null,
+    /** v0.9.78 — cadence, from a BLE CSC sensor (Magene S314). All nullable so
+     *  every pre-v0.9.78 summary still decodes; null means "this ride had no
+     *  cadence sensor", which the UI renders as an absent card rather than a
+     *  row of zeroes. AVERAGE excludes coasting (Strava / Garmin convention);
+     *  [pedalingTimeMs] carries the freewheeling story separately. */
+    val averageCadenceRpm: Int? = null,
+    val maxCadenceRpm: Int? = null,
+    val pedalingTimeMs: Long? = null,
+    /** Total crank revolutions — the ride's pedal-stroke count. */
+    val totalCrankRevs: Long? = null,
 ) {
     /** Rebuild a RideState skeleton from this summary so the summary screen can render
      *  historic rides with the same UI it uses for just-completed rides. */
@@ -61,6 +71,17 @@ data class StoredRideSummary(
         totalElevGainMeters = totalElevGainMeters,
         totalElevLossMeters = totalElevLossMeters,
         ftpWatts = ftpWatts,
+        // v0.9.78 — rebuild the cadence accumulators too. `cadenceSampleCount`
+        // is set to 1 so `averageCadenceRpm` (sum / count) reproduces the stored
+        // average exactly; the raw per-second sum isn't persisted because only
+        // the average is ever displayed for a finished ride. That same count is
+        // what the summary screen tests to decide whether this ride had a
+        // cadence sensor at all.
+        cadenceSumRpm = (averageCadenceRpm ?: 0).toLong(),
+        cadenceSampleCount = if (averageCadenceRpm != null) 1 else 0,
+        maxCadenceRpm = maxCadenceRpm ?: 0,
+        pedalingTimeMs = pedalingTimeMs ?: 0L,
+        totalCrankRevs = totalCrankRevs ?: 0L,
     )
 
     companion object {
@@ -79,6 +100,13 @@ data class StoredRideSummary(
             totalElevGainMeters = state.totalElevGainMeters,
             totalElevLossMeters = state.totalElevLossMeters,
             ftpWatts = state.ftpWatts,
+            // v0.9.78 — persist cadence only when a sensor actually contributed.
+            // A ride recorded without one stores nulls, so the summary screen can
+            // hide the card instead of showing an honest-looking 0 rpm.
+            averageCadenceRpm = state.averageCadenceRpm.takeIf { state.cadenceSampleCount > 0 },
+            maxCadenceRpm = state.maxCadenceRpm.takeIf { it > 0 },
+            pedalingTimeMs = state.pedalingTimeMs.takeIf { state.cadenceSampleCount > 0 },
+            totalCrankRevs = state.totalCrankRevs.takeIf { it > 0 },
         )
     }
 }
@@ -183,6 +211,12 @@ class RideHistoryRepository(context: Context) {
         var totalElevLossM = 0.0
         var prev: RideSample? = null
         var sampleCount = 0
+        // v0.9.78 — cadence survives an interrupted ride too. Averaged over
+        // pedalling samples only, same rule as the live accumulator.
+        var cadenceSum = 0L
+        var cadenceCount = 0
+        var maxCadence = 0
+        var pedalingMs = 0L
 
         ndjson.bufferedReader().use { reader ->
             reader.lineSequence().forEach { line ->
@@ -196,11 +230,21 @@ class RideHistoryRepository(context: Context) {
                 if (!sample.isPaused && sample.speedMetersPerSecond > maxSpeedMs) {
                     maxSpeedMs = sample.speedMetersPerSecond
                 }
+                val cadence = sample.cadenceRpm
+                if (cadence != null && cadence > 0 && !sample.isPaused) {
+                    cadenceSum += cadence
+                    cadenceCount++
+                    if (cadence > maxCadence) maxCadence = cadence
+                }
                 val previous = prev
                 if (previous != null) {
                     val dtMs = sample.timestampMs - previous.timestampMs
                     if (dtMs in 0..5_000) {
                         if (!sample.isPaused) movingTimeMs += dtMs
+                        val prevCadence = previous.cadenceRpm
+                        if (prevCadence != null && prevCadence > 0 && !sample.isPaused) {
+                            pedalingMs += dtMs
+                        }
                     }
                     if (!sample.isPaused && sample.horizontalAccuracyMeters <= 25f) {
                         val d = haversineMeters(
@@ -240,6 +284,14 @@ class RideHistoryRepository(context: Context) {
             totalElevGainMeters = 0f,
             totalElevLossMeters = 0f,
             ftpWatts = 200,
+            averageCadenceRpm = if (cadenceCount > 0) (cadenceSum / cadenceCount).toInt() else null,
+            maxCadenceRpm = maxCadence.takeIf { it > 0 },
+            pedalingTimeMs = pedalingMs.takeIf { cadenceCount > 0 },
+            // Stroke count stays null on a rebuild: the NDJSON stores sampled
+            // rpm, not the sensor's revolution counter, so any figure here would
+            // be an integral dressed up as a count. Same honesty rule that
+            // leaves power / elevation zeroed on this path.
+            totalCrankRevs = null,
         )
         save(summary)
         return summary

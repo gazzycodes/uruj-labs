@@ -58,8 +58,12 @@ object RideNotifications {
             append(" · ")
             append(formatDuration(state.movingTimeMs))
             if (state.isPaused) append(" · PAUSED")
-            val hr = state.latestSample?.hrBpm
+            val hr = state.bleLiveBpm ?: state.latestSample?.hrBpm
             if (hr != null) append(" · $hr bpm")
+            // v0.9.78 — cadence on the lock screen too, but only when a sensor
+            // is paired: no sensor, no phantom "0 rpm".
+            val cadence = state.cadenceRpm
+            if (state.cadenceSensorName != null && cadence != null) append(" · $cadence rpm")
         }
 
         return NotificationCompat.Builder(context, CHANNEL_ID)

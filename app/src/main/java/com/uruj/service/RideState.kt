@@ -95,7 +95,45 @@ data class RideState(
      *  session indicator + the audio coach's zone-discipline cues. Default
      *  EXPLORATORY means no coaching (silent). */
     val sessionIntent: com.uruj.domain.SessionIntent = com.uruj.domain.SessionIntent.EXPLORATORY,
+
+    // ── v0.9.78 — BLE cadence sensor (Magene S314, CSC service 0x1816) ──
+    /** Display name for the cadence sensor. NULL = no sensor paired, which is
+     *  what every cadence surface keys off: no pairing, no cadence UI, no BLE
+     *  connection attempt, zero cost for riders without one. */
+    val cadenceSensorName: String? = null,
+    /** True while the cadence sensor is connected and streaming. */
+    val cadenceConnected: Boolean = false,
+    /** Live crank cadence. 0 = freewheeling (a measurement); null = no data yet. */
+    val cadenceRpm: Int? = null,
+    /** Sensor battery level 0-100, null when unread. */
+    val cadenceBatteryPct: Int? = null,
+    /** False when the sensor is streaming WHEEL data only — i.e. it is in speed
+     *  mode, not cadence mode. Surfaced so a mis-configured dual-mode sensor
+     *  reads as "wrong mode", never as a broken app. */
+    val cadenceHasCrankData: Boolean = true,
+    /** Crank revolutions this ride — the pedal-stroke count. */
+    val totalCrankRevs: Long = 0L,
+    /** Peak cadence observed while moving and unpaused. */
+    val maxCadenceRpm: Int = 0,
+    /** Sum + count of NON-ZERO cadence ticks. Average cadence excludes coasting,
+     *  matching Strava / Garmin convention — otherwise a descent full of
+     *  freewheeling would drag the number toward zero and misreport the rider's
+     *  actual pedalling style. [averageCadenceRpm] derives from these. */
+    val cadenceSumRpm: Long = 0L,
+    val cadenceSampleCount: Int = 0,
+    /** Time spent actually turning the cranks (cadence > 0, moving, unpaused). */
+    val pedalingTimeMs: Long = 0L,
 ) {
+    /** Average cadence over pedalling time only (zeros excluded — see [cadenceSumRpm]). */
+    val averageCadenceRpm: Int
+        get() = if (cadenceSampleCount > 0) (cadenceSumRpm / cadenceSampleCount).toInt() else 0
+
+    /** Fraction of moving time spent pedalling rather than freewheeling, 0..1. */
+    val pedalingRatio: Float
+        get() = if (movingTimeMs > 0) {
+            (pedalingTimeMs.toFloat() / movingTimeMs.toFloat()).coerceIn(0f, 1f)
+        } else 0f
+
     val averageSpeedMovingKph: Float
         get() = if (movingTimeMs > 0) {
             (totalDistanceMeters / (movingTimeMs / 1000.0) * 3.6).toFloat()

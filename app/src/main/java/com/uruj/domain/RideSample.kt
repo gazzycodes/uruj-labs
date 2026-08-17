@@ -37,4 +37,13 @@ data class RideSample(
      * if more sources are added later. v0.5.1 introduction.
      */
     val hrSource: String? = null,
+    /**
+     * Crank cadence in rpm from a BLE CSC sensor (Magene S314) at this tick.
+     * `0` is a real reading — the rider was freewheeling. `null` means no
+     * cadence sensor was connected, which is why this is nullable rather than
+     * defaulting to zero: post-ride analysis must be able to tell "coasting"
+     * apart from "we had no sensor". v0.9.78 introduction; older NDJSON rides
+     * simply omit the field and decode to null.
+     */
+    val cadenceRpm: Int? = null,
 )

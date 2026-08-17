@@ -18,6 +18,11 @@ val UrujMuted = Color(0xFF707080)
 val UrujAccent = Color(0xFF00E676)
 val UrujNeonMagenta = Color(0xFFFF2DC8)
 
+// v0.9.78 — cadence channel. Deliberately a cool cyan: the HUD's three hero
+// metrics must be separable by colour alone in peripheral vision, and green
+// (speed) / zone-coloured (HR) already own the warm-to-green half of the wheel.
+val UrujCadence = Color(0xFF00D9FF)
+
 // v0.9.17 — Sub-Z1 (below 50% HRR / below Z1 floor). Muted slate-blue
 // distinct from Z1's bright blue. Surfaces sub-recovery time in TIZ bar
 // + HUD HR readout. Calm by design — the rider's eye should not be drawn
