@@ -8,7 +8,7 @@
 
 **عروج** — *ascent, rising, the act of climbing*
 
-`v0.9.68` · Android 8.0+
+`v0.9.78` · Android 8.0+
 
 </div>
 
@@ -46,7 +46,7 @@ URUJ's edges:
 - **Transparency first** — every reading shows source label (`STRAP / BAND / MIXED`), capture timestamp, methodology version, math. ⓘ tooltips on every card explain ELI10 + caveats.
 - **Hardware-agnostic** — drop-in priority registry. Magene H613 today, any standards-compliant ECG strap tomorrow. Power meters, smart scales, CGM, lactate strips slot in cleanly.
 - **Sovereign data** — NDJSON on your device. Export anytime. No cloud account, no subscription, no lock-in.
-- **Honest about limits** — refuses to fake HRV from PPG, refuses to invent cadence from frame-bag accelerometer, refuses "lab grade" claims without disambiguating.
+- **Honest about limits** — refuses to fake HRV from PPG, refuses "lab grade" claims without disambiguating. Cadence was left blank for nine months rather than estimated from frame-bag accelerometer wobble; it appeared in v0.9.78 only when a real crank sensor did.
 
 ---
 
@@ -59,6 +59,7 @@ URUJ scales gracefully with whatever sensors you have. Each metric reports its d
 | **0 — Phone only** | OnePlus / any Android 8.0+ device with barometer | Recording engine, GPS, physics-model power, Karvonen zones (estimated from formula), grade + wind + DEM elevation, route map, polarized compliance, FTP auto-update from best 20-min effort |
 | **1 — + HC wearable** *(Samsung Fit Band 3, Apple Watch via HC, Whoop via export, etc.)* | Tier 0 + post-ride HR enrichment + Athletic RHR (sleep-window median) + sleep tracking + multi-sport TSB (Samsung-tracked runs feed via hrTSS) + readiness scoring |
 | **2 — + BLE chest strap** *(Magene H613 validated, Polar H10 / Wahoo TICKR / Coospo H6 compatible)* | Tier 1 + live HR on HUD (sub-100ms latency) + **real RMSSD HRV** from RR intervals + true continuous HRR1 + 24/7 BiometricService (~5 MB/day) + CAR detector + 4-min orthostatic test + zone-discipline audio coach |
+| **2b — + BLE cadence sensor** *(Magene S314 validated, any CSC 0x1816 device: Garmin / Wahoo RPM / CooSpo / Xoss)* | **Measured crank cadence** on the HUD as a third hero metric + avg (excluding coasting) / peak / pedalling-time-share / pedal-stroke count per ride + per-second cadence in the ride NDJSON |
 | **3+ — Power meter / CGM / lactate / smart scale** *(roadmap)* | True watts (replaces physics model) · continuous glucose curve · real LT1/LT2 anchored zones · body composition |
 
 ---
@@ -71,13 +72,16 @@ URUJ scales gracefully with whatever sensors you have. Each metric reports its d
 - `WAKE_LOCK` during recording (survives OEM background killing on OxygenOS/MIUI), **true ride resume** from `.active` marker after process kill, orphan-NDJSON auto-recovery into history
 - Service-health REC indicator on HUD (green pulsing / amber degraded / red stale) based on checkpoint age — visible lie-detector for "is the service actually alive"
 
-### Live HUD (v0.9.16 twin-hero polish)
-- **TwinHero**: HR (Karvonen zone-colored, subtle pulse at Z3+) + Speed side-by-side at the top — never scrolls offscreen
-- Live waveform (last 30 s of beats, tier-colored) when strap paired
-- Physics-model power: `P = rolling + aero + climbing + inertia` (Coggan-style). 3 s + 30 s rolling avgs. 5-zone bar.
+### Live HUD (v0.9.78 three-hero rebuild)
+- **Three heroes**: SPEED · CADENCE · HR, digits auto-sized to the largest font the device's screen width allows, each over a segmented range bar. Falls back to two-up SPEED + HR when no cadence sensor is paired.
+- **Bars encode state without reading digits** — the HR bar carries the rider's full Karvonen zone map in its unlit track; the cadence bar permanently highlights the 80–95 rpm endurance band. Peripheral-glance readable.
+- **Slide-to-end** replaces tap-STOP. Rain on the screen was ending rides mid-session: a droplet is a point event and cannot travel 85% of the screen width. Haptic thump at the confirm threshold. PAUSE stays a tap (reversible) with a loud PAUSED banner.
+- **No idle animation** — the always-on REC and HR pulse loops are gone; every remaining animation is driven by a value that actually changed. On a ride the display is forced on for hours, so the HUD adds as close to zero as possible on top of GPS + BLE.
+- One-row sensor strip (GPS · STRAP · CADENCE with battery + fault states), live waveform (last 30 s of beats) when a strap is paired, 12-cell secondary stats grid.
+- Physics-model power: `P = rolling + aero + climbing + inertia` (Coggan-style), demoted to the stats grid since v0.9.72 made HR the training-load source of truth.
 - Grade + wind component (headwind ↓ / tailwind ↑ / crosswind →) from Open-Meteo + GPS heading
 - Session-intent bar with mid-ride CHANGE (Recovery / Endurance / Tempo / Threshold / VO2 / Exploratory)
-- STOP button fixed at BottomCenter (v0.8.5 fix — never gets pushed offscreen)
+- Ride controls fixed at BottomCenter (v0.8.5 fix — never get pushed offscreen)
 
 ### Biohacker lab (the moat)
 - **Real RMSSD HRV** — 24/7 BLE service captures RR intervals to daily NDJSON; `HrvCalculator` runs windowed 5-min RMSSD (Task Force 1996 standard) with timestamp-aware consecutive-beat filter + Kubios-style physiological range + ectopic delta filter. Validated against EliteHRV.
@@ -182,7 +186,7 @@ You'll be prompted to grant:
 - **v0.5 Groq AI coach** — pre-ride narrative + post-ride debrief + free-form Q&A. Math stays rule-based and deterministic; AI is narrative on top. Must cite the data points it reasoned from (no untraceable claims). Plugs into existing `ReadinessReasoner` seam — one-line change at instantiation site.
 
 ### Hardware ladder
-- **BLE cadence sensor** — measured cadence (currently estimated from speed × grade)
+- ~~**BLE cadence sensor**~~ — **shipped v0.9.78** (Magene S314 on the left crank, CSC service 0x1816)
 - **Power meter pedals/crank** *(Favero Assioma / Stages)* — replaces physics-model power estimate with real watts ±1%
 - **CGM** *(Abbott Libre / Stelo)* — glucose curve during ride + postprandial response + dawn phenomenon
 - **Lactate meter** *(Lactate Plus + strips)* — real LT1/LT2 anchored zones
