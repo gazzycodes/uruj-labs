@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.uruj.ui.theme.UrujOnAccent
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujSurface
 import com.uruj.ui.theme.UrujSurfaceHigh
@@ -218,7 +219,7 @@ fun PauseToggleControl(
         // maxLines=1 would silently cut "PAUSE" in half on a small screen.
         Text(
             text = if (manuallyPaused) "▶ RESUME" else "❚❚ PAUSE",
-            color = if (manuallyPaused) Color.Black else accent,
+            color = if (manuallyPaused) UrujOnAccent else accent,
             fontWeight = FontWeight.Black,
             fontSize = 12.sp,
             letterSpacing = 1.sp,

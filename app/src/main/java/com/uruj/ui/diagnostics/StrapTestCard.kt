@@ -42,6 +42,7 @@ import com.uruj.sensor.HrSample
 import com.uruj.sensor.android.BleHrSource
 import com.uruj.sensor.android.StrapModels
 import kotlinx.coroutines.launch
+import com.uruj.ui.theme.UrujOnAccent
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujSurface
@@ -212,7 +213,7 @@ fun StrapTestCard() {
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = UrujAccent,
-                            contentColor = Color.Black,
+                            contentColor = UrujOnAccent,
                         ),
                     ) {
                         Text(
@@ -282,7 +283,7 @@ fun StrapTestCard() {
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = UrujAccent,
-                    contentColor = Color.Black,
+                    contentColor = UrujOnAccent,
                 ),
             ) {
                 Text(

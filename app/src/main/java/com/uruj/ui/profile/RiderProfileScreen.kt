@@ -43,6 +43,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.uruj.domain.RiderProfile
 import com.uruj.domain.RidingPosition
 import com.uruj.domain.TireType
+import com.uruj.ui.theme.UrujOnAccent
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujSurface
@@ -183,7 +184,7 @@ fun RiderProfileScreen(
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = UrujAccent,
-                        contentColor = Color.Black,
+                        contentColor = UrujOnAccent,
                     ),
                 ) {
                     Text("SAVE", fontWeight = FontWeight.Black, fontSize = 16.sp, letterSpacing = 3.sp)

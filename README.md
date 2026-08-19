@@ -8,7 +8,7 @@
 
 **عروج** — *ascent, rising, the act of climbing*
 
-`v0.9.78` · Android 8.0+
+`v0.9.79` · Android 8.0+
 
 </div>
 
@@ -71,6 +71,25 @@ URUJ scales gracefully with whatever sensors you have. Each metric reports its d
 - Combined GPS + accelerometer **auto-pause** (5 s threshold), 1 Hz wall-clock ticker decoupled from sparse indoor GPS, **GPS-quality gating** (25 m accuracy) prevents indoor cell-tower-fused junk
 - `WAKE_LOCK` during recording (survives OEM background killing on OxygenOS/MIUI), **true ride resume** from `.active` marker after process kill, orphan-NDJSON auto-recovery into history
 - Service-health REC indicator on HUD (green pulsing / amber degraded / red stale) based on checkpoint age — visible lie-detector for "is the service actually alive"
+
+### Display modes (v0.9.79)
+
+Two palettes, rider-owned, persisted across launches — **not** a follower of the
+system light/dark setting, because the decision is about *sunlight*, not about
+what time the OS thinks it is.
+
+- **Dark (default)** — true-black AMOLED, neon accents. Costs almost nothing over
+  a multi-hour ride.
+- **Light** — for direct daylight in a frame bag at low screen brightness, where
+  neon-on-black washes out to unreadable.
+
+Light values are not the dark ones lightened: greens and cyans tuned for an AMOLED
+black background disappear on white, so each was re-picked as a darker saturated
+variant clearing ~4.5:1 contrast. Labels drawn *on* filled accent surfaces flip
+black→white with the palette, so buttons stay readable in both.
+
+Toggle lives in the pre-ride header and in the HUD's top strip — reachable
+mid-ride without stopping.
 
 ### Live HUD (v0.9.78 three-hero rebuild)
 - **Three heroes**: SPEED · CADENCE · HR, digits auto-sized to the largest font the device's screen width allows, each over a segmented range bar. Falls back to two-up SPEED + HR when no cadence sensor is paired.

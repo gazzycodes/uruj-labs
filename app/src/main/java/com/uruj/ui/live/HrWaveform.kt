@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -25,6 +26,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uruj.power.KarvonenZonesCalculator
 import com.uruj.service.LiveStateHolder
+import com.uruj.ui.theme.UrujPalette
+import com.uruj.ui.theme.LocalUrujPalette
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujSurface
 import com.uruj.ui.theme.UrujSurfaceHigh
@@ -76,6 +79,10 @@ fun HrWaveform(
             .clip(RoundedCornerShape(10.dp))
             .background(UrujSurface),
     ) {
+        // Canvas draws in a DrawScope, not a composable scope — palette values
+        // are read here and captured by the lambda below.
+        val palette = LocalUrujPalette.current
+        val mutedColor = UrujMuted
         Canvas(modifier = Modifier.fillMaxWidth().height(height)) {
             val padLeft = if (showYAxisLabels) 32f else 8f
             val padRight = 8f
@@ -105,7 +112,7 @@ fun HrWaveform(
             // ── 1) Zone bands (thin tinted horizontal lines) ──
             if (zones != null) {
                 for (zone in zones.zones) {
-                    val color = zoneColor(zone.number)
+                    val color = zoneColor(zone.number, palette)
                     val yLow = yFor(zone.lowerBpm)
                     val yHigh = yFor(zone.upperBpm)
                     drawRect(
@@ -131,7 +138,7 @@ fun HrWaveform(
                     drawText(
                         textMeasurer = textMeasurer,
                         text = tick.toString(),
-                        style = TextStyle(color = UrujMuted, fontSize = 9.sp),
+                        style = TextStyle(color = mutedColor, fontSize = 9.sp),
                         topLeft = Offset(2f, y - 6f),
                     )
                 }
@@ -139,7 +146,7 @@ fun HrWaveform(
 
             // ── 3) Waveform line + filled area below ──
             if (visibleBeats.size >= 2) {
-                val accent = currentBeatColor(visibleBeats.last().bpm, zones)
+                val accent = currentBeatColor(visibleBeats.last().bpm, zones, palette)
                 val areaPath = Path()
                 val linePath = Path()
                 var first = true
@@ -194,7 +201,7 @@ fun HrWaveform(
                 drawText(
                     textMeasurer = textMeasurer,
                     text = "Waiting for live HR…",
-                    style = TextStyle(color = UrujMuted, fontSize = 10.sp),
+                    style = TextStyle(color = mutedColor, fontSize = 10.sp),
                     topLeft = Offset(plotLeft + 8f, plotTop + plotH / 2f - 6f),
                 )
             }
@@ -202,19 +209,25 @@ fun HrWaveform(
     }
 }
 
-private fun zoneColor(zone: Int): Color = when (zone) {
-    1 -> UrujZone1
-    2 -> UrujZone2
-    3 -> UrujZone3
-    4 -> UrujZone4
-    5 -> UrujZone5
-    else -> UrujText
+// Plain functions taking the palette, NOT @Composable: both are called from
+// inside the Canvas draw lambda, where composable reads are illegal.
+private fun zoneColor(zone: Int, palette: UrujPalette): Color = when (zone) {
+    1 -> palette.zone1
+    2 -> palette.zone2
+    3 -> palette.zone3
+    4 -> palette.zone4
+    5 -> palette.zone5
+    else -> palette.text
 }
 
-private fun currentBeatColor(bpm: Int, zones: KarvonenZonesCalculator.Result?): Color {
-    if (zones == null) return UrujZone2
+private fun currentBeatColor(
+    bpm: Int,
+    zones: KarvonenZonesCalculator.Result?,
+    palette: UrujPalette,
+): Color {
+    if (zones == null) return palette.zone2
     for (z in zones.zones) {
-        if (bpm <= z.upperBpm) return zoneColor(z.number)
+        if (bpm <= z.upperBpm) return zoneColor(z.number, palette)
     }
-    return zoneColor(zones.zones.lastOrNull()?.number ?: 5)
+    return zoneColor(zones.zones.lastOrNull()?.number ?: 5, palette)
 }
