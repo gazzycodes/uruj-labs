@@ -170,6 +170,9 @@ fun SegmentBar(
     bands: List<MetricBand> = emptyList(),
     height: Dp = 7.dp,
 ) {
+    // Hoisted: the draw lambda is a DrawScope, not a composable scope, so the
+    // palette has to be read here and captured.
+    val unlitColor = UrujSurfaceHigh
     Canvas(modifier = modifier.height(height)) {
         val gap = size.width * SEGMENT_GAP_FRACTION / (SEGMENT_COUNT - 1)
         val segmentWidth = (size.width - gap * (SEGMENT_COUNT - 1)) / SEGMENT_COUNT
@@ -183,7 +186,7 @@ fun SegmentBar(
             val segmentColor = when {
                 i < litCount -> color
                 band != null -> band.color.copy(alpha = 0.42f)
-                else -> UrujSurfaceHigh
+                else -> unlitColor
             }
             drawRoundRect(
                 color = segmentColor,

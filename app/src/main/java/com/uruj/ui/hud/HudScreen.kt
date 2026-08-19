@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,6 +48,8 @@ import com.uruj.power.KarvonenZonesCalculator
 import com.uruj.service.RideState
 import com.uruj.service.RideStateHolder
 import com.uruj.ui.branding.UrujLogo
+import com.uruj.ui.components.ThemeToggleButton
+import com.uruj.ui.theme.UrujOnAccent
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujCadence
 import com.uruj.ui.theme.UrujMuted
@@ -495,7 +498,7 @@ private fun PrFlashOverlay(label: String, watts: Int) {
         ) {
             Text(
                 text = "🔥 NEW PR",
-                color = Color.Black,
+                color = UrujOnAccent,
                 fontWeight = FontWeight.Black,
                 fontSize = 14.sp,
                 letterSpacing = 4.sp,
@@ -503,7 +506,7 @@ private fun PrFlashOverlay(label: String, watts: Int) {
             Spacer(Modifier.height(4.dp))
             Text(
                 text = "$label · ${watts}W",
-                color = Color.Black,
+                color = UrujOnAccent,
                 fontWeight = FontWeight.Black,
                 fontSize = 20.sp,
             )
@@ -561,6 +564,10 @@ private fun HudTopBar(state: RideState) {
             fontSize = 9.sp,
             maxLines = 1,
         )
+        Spacer(Modifier.width(8.dp))
+        // v0.9.79 — reachable mid-ride: the sun comes out, the HUD washes out,
+        // one tap fixes it without stopping or leaving the screen.
+        ThemeToggleButton()
         Spacer(Modifier.weight(1f))
         Text(
             text = formatDuration(state.totalElapsedMs),
@@ -745,6 +752,8 @@ private fun ShortRideConfirmDialog(
     )
 }
 
+@Composable
+@ReadOnlyComposable
 private fun PowerZone.color(): Color = when (this) {
     PowerZone.Z1 -> UrujZone1
     PowerZone.Z2 -> UrujZone2
@@ -777,7 +786,8 @@ private const val CADENCE_SCALE_RPM = 120f
 private const val CADENCE_TARGET_LOW = 80
 private const val CADENCE_TARGET_HIGH = 95
 
-private val CADENCE_TARGET_BANDS = listOf(
+private val CADENCE_TARGET_BANDS: List<MetricBand>
+    @Composable @ReadOnlyComposable get() = listOf(
     MetricBand(
         fromFraction = CADENCE_TARGET_LOW / CADENCE_SCALE_RPM,
         toFraction = CADENCE_TARGET_HIGH / CADENCE_SCALE_RPM,
@@ -790,7 +800,8 @@ private val CADENCE_TARGET_BANDS = listOf(
  * boundaries [KarvonenZonesCalculator.classifyKarvonenZone] uses, so the bar's
  * band map and the digit's colour can never disagree.
  */
-private val HR_ZONE_BANDS = listOf(
+private val HR_ZONE_BANDS: List<MetricBand>
+    @Composable @ReadOnlyComposable get() = listOf(
     MetricBand(0f, 0.50f, UrujZoneBelowZ1),
     MetricBand(0.50f, 0.60f, UrujZone1),
     MetricBand(0.60f, 0.70f, UrujZone2),

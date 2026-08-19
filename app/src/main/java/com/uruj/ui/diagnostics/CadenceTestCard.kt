@@ -42,6 +42,7 @@ import com.uruj.data.BleSettingsStore
 import com.uruj.data.PairedBleDevice
 import com.uruj.sensor.CadenceSample
 import com.uruj.sensor.android.BleCadenceSource
+import com.uruj.ui.theme.UrujOnAccent
 import com.uruj.ui.theme.UrujCadence
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujSurface
@@ -197,7 +198,7 @@ fun CadenceTestCard() {
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = UrujCadence,
-                            contentColor = Color.Black,
+                            contentColor = UrujOnAccent,
                         ),
                     ) {
                         Text(
@@ -245,7 +246,7 @@ fun CadenceTestCard() {
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = UrujCadence,
-                    contentColor = Color.Black,
+                    contentColor = UrujOnAccent,
                 ),
             ) {
                 Text(

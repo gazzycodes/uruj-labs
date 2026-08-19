@@ -67,6 +67,9 @@ fun TrendChart(
             .fillMaxWidth()
             .height(height),
     ) {
+        // Canvas draws in a DrawScope — palette colours read here, captured below.
+        val mutedColor = UrujMuted
+        val textColor = UrujText
         Canvas(modifier = Modifier.fillMaxWidth().height(height)) {
             // Reserve space: left for Y-axis labels, bottom for X-axis labels.
             // Right side now flush — tier labels moved to a legend BELOW the
@@ -100,7 +103,7 @@ fun TrendChart(
             for (tick in yTicks) {
                 val y = yToPixel(tick, yMin, yMax, plotTop, plotH)
                 drawLine(
-                    color = UrujMuted.copy(alpha = 0.20f),
+                    color = mutedColor.copy(alpha = 0.20f),
                     start = Offset(plotLeft, y),
                     end = Offset(plotRight, y),
                     strokeWidth = 1f,
@@ -109,7 +112,7 @@ fun TrendChart(
                     textMeasurer = textMeasurer,
                     text = yLabelFormatter(tick),
                     style = TextStyle(
-                        color = UrujMuted,
+                        color = mutedColor,
                         fontSize = 9.sp,
                     ),
                     topLeft = Offset(x = 2f, y = y - 6f),
@@ -118,7 +121,7 @@ fun TrendChart(
 
             // ── 3) X-axis baseline ─────────────────────────────────────────
             drawLine(
-                color = UrujMuted.copy(alpha = 0.4f),
+                color = mutedColor.copy(alpha = 0.4f),
                 start = Offset(plotLeft, plotBottom),
                 end = Offset(plotRight, plotBottom),
                 strokeWidth = 1f,
@@ -176,7 +179,7 @@ fun TrendChart(
                 textMeasurer = textMeasurer,
                 text = firstLabel,
                 style = TextStyle(
-                    color = UrujText.copy(alpha = 0.7f),
+                    color = textColor.copy(alpha = 0.7f),
                     fontSize = 9.sp,
                 ),
                 topLeft = Offset(x = plotLeft, y = plotBottom + 6f),
@@ -188,7 +191,7 @@ fun TrendChart(
                     textMeasurer = textMeasurer,
                     text = lastLabel,
                     style = TextStyle(
-                        color = UrujText.copy(alpha = 0.7f),
+                        color = textColor.copy(alpha = 0.7f),
                         fontSize = 9.sp,
                     ),
                     topLeft = Offset(x = plotRight - rightLabelWidth, y = plotBottom + 6f),

@@ -29,6 +29,8 @@ import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.uruj.ui.theme.UrujText
+import com.uruj.ui.theme.UrujOnAccent
 import com.uruj.ui.theme.UrujAccent
 
 /**
@@ -55,19 +57,24 @@ fun UrujLogo(modifier: Modifier = Modifier, size: Dp = 44.dp) {
         modifier = modifier.size(size),
         contentAlignment = Alignment.Center,
     ) {
+        // Canvas draws in a DrawScope — accent read here, captured below.
+        val accentColor = UrujAccent
+        // The orbit sweep must contrast with the PAGE, so it tracks the text
+        // colour: near-white on black, near-black on white.
+        val orbitColor = UrujText
         Canvas(modifier = Modifier.size(size)) {
             val stroke = (size.toPx() * 0.07f).coerceAtLeast(2f)
             // Dim base track — always visible, defines the ring shape.
             drawArc(
-                color = UrujAccent.copy(alpha = 0.20f),
+                color = accentColor.copy(alpha = 0.20f),
                 startAngle = 0f,
                 sweepAngle = 360f,
                 useCenter = false,
                 style = Stroke(width = stroke),
             )
-            // Bright white orbit arc — sweeps around the track once per 3s.
+            // High-contrast orbit arc — sweeps around the track once per 3s.
             drawArc(
-                color = Color.White,
+                color = orbitColor,
                 startAngle = angle - 30f,
                 sweepAngle = 60f,
                 useCenter = false,
@@ -84,7 +91,7 @@ fun UrujLogo(modifier: Modifier = Modifier, size: Dp = 44.dp) {
         ) {
             Text(
                 text = "U",
-                color = Color.Black,
+                color = UrujOnAccent,
                 // Force the glyph to its true geometric center — Android's default font
                 // padding + line-height offsets shift the "U" visibly off-center at small
                 // logo sizes. Removing both gives us a precisely centered letter.

@@ -1,3 +1,36 @@
+## 🗓️ v0.9.79 SHIPPED 2026-08-19 — light mode (daylight palette)
+
+**Problem** — phone rides in a frame bag. In direct sun at low brightness the
+neon-on-black HUD washes out to unreadable, exactly when the rider needs it.
+
+**Shipped**
+- `UrujPalette` holder + `LocalUrujPalette` CompositionLocal; dark + light instances.
+- Every public colour name (`UrujText`, `UrujAccent`, …) became a
+  `@Composable @ReadOnlyComposable` getter reading the palette. **~1400 call sites
+  across 45 files kept working unchanged** — no mass edit.
+- New `onAccent` palette role: labels drawn on filled accent surfaces flip
+  black→white with the theme. 18 hardcoded `Color.Black` call sites swapped;
+  without this, START RIDE would have been black-on-dark-green.
+- `ThemeSettingsStore` (own DataStore file, off the BLE/profile critical path),
+  default dark so a fresh install never flashes white on a night ride.
+- `ThemeToggleButton` in the pre-ride header + HUD top strip (reachable mid-ride).
+- Status-bar icons flip via `isAppearanceLightStatusBars`.
+
+**What had to change by hand** — only non-composable contexts the compiler flagged:
+12 private `zone → colour` mappers annotated `@Composable`, 3 called from inside
+`Canvas` draw lambdas converted to plain functions taking a `UrujPalette`, and 5
+draw lambdas now read colours above the `Canvas` and capture them.
+
+**Deliberately untouched** — `WindDownScreen` (intentionally dark, self-contained
+meditation surface) and the RemoteViews notification (renders in the system shade,
+follows its own theme via `colors.xml`).
+
+**Verified** — `assembleDebug` clean; 55 unit tests, 0 failures; installed to
+device (versionCode 169); both palettes screenshotted on-device including the
+filled START RIDE button.
+
+---
+
 ## 📦 GitHub — live as of 2026-05-12
 
 **Repo**: https://github.com/gazzycodes/uruj-labs

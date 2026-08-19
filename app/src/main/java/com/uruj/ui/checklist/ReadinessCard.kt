@@ -27,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.Alignment
 import kotlinx.coroutines.delay
 import androidx.compose.ui.Modifier
@@ -702,6 +703,8 @@ private fun reasonFor(label: String, score: Int, detail: String): String = when 
     else -> ""
 }
 
+@Composable
+@ReadOnlyComposable
 private fun scoreColor(score: Int): Color = when {
     score >= 80 -> UrujZone2
     score >= 60 -> UrujZone3
@@ -709,6 +712,8 @@ private fun scoreColor(score: Int): Color = when {
     else -> UrujZone5
 }
 
+@Composable
+@ReadOnlyComposable
 private fun ReadinessGrade.color(): Color = when (this) {
     ReadinessGrade.GoHard -> UrujZone2
     ReadinessGrade.Moderate -> UrujZone3

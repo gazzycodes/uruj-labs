@@ -42,6 +42,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.uruj.data.HcCategory
 import com.uruj.data.HcDataTypeStatus
 import com.uruj.data.HcDataTypes
+import com.uruj.ui.theme.UrujOnAccent
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujSurface
@@ -114,7 +115,7 @@ fun DiagnosticsScreen(
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = UrujAccent,
-                        contentColor = Color.Black,
+                        contentColor = UrujOnAccent,
                     ),
                 ) {
                     Text(

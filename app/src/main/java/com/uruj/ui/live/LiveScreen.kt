@@ -30,6 +30,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,6 +45,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.uruj.data.RiderProfileStore
 import com.uruj.power.KarvonenZonesCalculator
 import com.uruj.service.LiveStateHolder
+import com.uruj.ui.theme.UrujPalette
+import com.uruj.ui.theme.LocalUrujPalette
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujSurface
@@ -301,6 +304,8 @@ private fun RrIntervalBars(
             .clip(RoundedCornerShape(10.dp))
             .background(UrujSurface),
     ) {
+        // Canvas draws in a DrawScope — palette read here, captured below.
+        val palette = LocalUrujPalette.current
         Canvas(modifier = Modifier.fillMaxSize()) {
             if (beats.isEmpty()) return@Canvas
             val padTop = 8f
@@ -326,7 +331,7 @@ private fun RrIntervalBars(
                 // user with Z1 starting at 119 bpm saw rest bars colored as
                 // "Z3 tempo" because RR ~820ms hit my generic Z3 threshold).
                 val impliedBpm = (60_000f / beat.rrMs.toFloat().coerceAtLeast(1f)).toInt()
-                val color = barColorForBpm(impliedBpm, zones)
+                val color = barColorForBpm(impliedBpm, zones, palette)
                 drawRect(
                     color = color,
                     topLeft = Offset(x, y),
@@ -346,22 +351,28 @@ private fun RrIntervalBars(
  * because there's no zone-tier for "sub-recovery." Above Z5 is capped at
  * Z5 color.
  */
-private fun barColorForBpm(bpm: Int, zones: KarvonenZonesCalculator.Result?): Color {
-    if (zones == null) return UrujMuted
-    // Below Z1 lower → muted (rider is sub-recovery effort)
+// Plain function taking the palette, NOT @Composable: called from inside the
+// Canvas draw lambda, where composable reads are illegal.
+private fun barColorForBpm(
+    bpm: Int,
+    zones: KarvonenZonesCalculator.Result?,
+    palette: UrujPalette,
+): Color {
+    if (zones == null) return palette.muted
+    // Below Z1 lower -> muted (rider is sub-recovery effort)
     val z1Lower = zones.zones.firstOrNull()?.lowerBpm ?: 0
-    if (bpm < z1Lower) return UrujMuted
+    if (bpm < z1Lower) return palette.muted
     for (z in zones.zones) {
         if (bpm <= z.upperBpm) return when (z.number) {
-            1 -> UrujZone1
-            2 -> UrujZone2
-            3 -> UrujZone3
-            4 -> UrujZone4
-            5 -> UrujZone5
-            else -> UrujMuted
+            1 -> palette.zone1
+            2 -> palette.zone2
+            3 -> palette.zone3
+            4 -> palette.zone4
+            5 -> palette.zone5
+            else -> palette.muted
         }
     }
-    return UrujZone5
+    return palette.zone5
 }
 
 @Composable
@@ -399,6 +410,8 @@ private fun currentZoneLabel(bpm: Int?, zones: KarvonenZonesCalculator.Result?):
     return "Z${zones.zones.lastOrNull()?.number ?: 5}+"
 }
 
+@Composable
+@ReadOnlyComposable
 private fun currentZoneColor(bpm: Int?, zones: KarvonenZonesCalculator.Result?): Color {
     if (bpm == null) return UrujMuted
     if (zones == null) return UrujText

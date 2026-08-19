@@ -49,6 +49,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.uruj.BuildConfig
 import com.uruj.sensor.android.HealthConnectPermissions
 import com.uruj.ui.branding.UrujLogo
+import com.uruj.ui.components.ThemeToggleButton
+import com.uruj.ui.theme.UrujOnAccent
 import com.uruj.ui.theme.URUJTheme
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujAccent
@@ -232,7 +234,7 @@ fun PreRideChecklistScreen(
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = UrujAccent,
-                        contentColor = Color.Black,
+                        contentColor = UrujOnAccent,
                         disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                         disabledContentColor = UrujMuted,
                     ),
@@ -287,6 +289,8 @@ private fun UrujHeader(
                     letterSpacing = 1.sp,
                 )
             }
+            Spacer(Modifier.weight(1f))
+            ThemeToggleButton()
         }
         Spacer(Modifier.height(10.dp))
         Row(

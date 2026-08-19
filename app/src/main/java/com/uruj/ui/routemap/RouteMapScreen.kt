@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -470,6 +471,8 @@ private fun androidColorForZone(zone: HrZone?): Int = when (zone) {
     null -> AndroidColor.parseColor("#00E676")
 }
 
+@Composable
+@ReadOnlyComposable
 private fun zoneColor(zone: HrZone): Color = when (zone) {
     HrZone.Z1 -> UrujZone1
     HrZone.Z2 -> UrujZone2

@@ -42,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import kotlinx.coroutines.delay
@@ -63,6 +64,7 @@ import com.uruj.power.KarvonenZonesCalculator
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.uruj.ui.theme.UrujOnAccent
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujSurface
@@ -2032,6 +2034,8 @@ private fun FrequencyDomainCard(
 }
 
 /** DFA α1 tier color — healthy ~1.0; drops below 0.75 above Aerobic Threshold. */
+@Composable
+@ReadOnlyComposable
 private fun dfaAlpha1Color(dfa: Float): androidx.compose.ui.graphics.Color = when {
     dfa >= 0.85f && dfa < 1.15f -> UrujZone2  // healthy fractal scaling
     dfa >= 0.75f -> UrujZone3                  // slight stress / fatigue
@@ -2781,6 +2785,8 @@ private fun CarCard(
     }
 }
 
+@Composable
+@ReadOnlyComposable
 private fun carTierColor(tier: com.uruj.domain.CarTier): Color = when (tier) {
     com.uruj.domain.CarTier.NORMAL -> UrujZone2
     com.uruj.domain.CarTier.ROBUST -> UrujZone1
@@ -2886,7 +2892,7 @@ private fun OrthostaticTestLauncherCard(
         ) {
             Text(
                 if (latest == null) "TAKE FIRST READING" else "TAKE NEW READING",
-                color = Color.Black,
+                color = UrujOnAccent,
                 fontWeight = FontWeight.Black,
                 letterSpacing = 1.5.sp,
             )
@@ -2914,6 +2920,8 @@ private fun OrthostaticTestLauncherCard(
 /**
  * Bands-tier color for the launcher card title accent + tier-label color.
  */
+@Composable
+@ReadOnlyComposable
 private fun tierColorForLauncher(tier: com.uruj.domain.AutonomicTier): Color = when (tier) {
     com.uruj.domain.AutonomicTier.ELITE -> UrujZone1
     com.uruj.domain.AutonomicTier.HEALTHY -> UrujZone2

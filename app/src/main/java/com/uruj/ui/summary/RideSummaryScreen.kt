@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.sp
 import com.uruj.BuildConfig
 import com.uruj.service.RideState
 import com.uruj.ui.branding.UrujLogo
+import com.uruj.ui.theme.UrujOnAccent
 import com.uruj.ui.theme.UrujCadence
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujAccent
@@ -204,7 +205,7 @@ fun RideSummaryScreen(
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = UrujNeonMagenta,
-                        contentColor = Color.Black,
+                        contentColor = UrujOnAccent,
                     ),
                 ) {
                     Text(
@@ -221,7 +222,7 @@ fun RideSummaryScreen(
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = UrujAccent,
-                        contentColor = Color.Black,
+                        contentColor = UrujOnAccent,
                     ),
                 ) {
                     Text("DONE", fontWeight = FontWeight.Black, fontSize = 18.sp, letterSpacing = 4.sp)

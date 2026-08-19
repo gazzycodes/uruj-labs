@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.uruj.ui.theme.UrujOnAccent
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujSurfaceHigh
@@ -337,7 +338,7 @@ enum class TrendRange(val label: String) {
 @Composable
 private fun RangeChip(label: String, selected: Boolean, onClick: () -> Unit) {
     val bg = if (selected) UrujAccent else UrujSurfaceHigh.copy(alpha = 0.5f)
-    val fg = if (selected) androidx.compose.ui.graphics.Color.Black else UrujText
+    val fg = if (selected) UrujOnAccent else UrujText
     androidx.compose.material3.TextButton(
         onClick = onClick,
         modifier = Modifier.background(bg, androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),

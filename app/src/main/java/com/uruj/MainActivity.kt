@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import android.graphics.Color as AndroidColor
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -16,6 +17,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.uruj.data.RideHistoryRepository
+import com.uruj.data.ThemeSettingsStore
 import com.uruj.data.StoredRideSummary
 import com.uruj.service.RideRecorderService
 import com.uruj.service.RideStateHolder
@@ -223,7 +225,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            URUJTheme {
+            // v0.9.79 — rider-owned daylight switch. Read as state so flipping it
+            // anywhere in the app re-themes every screen at once.
+            val themeStore = remember { ThemeSettingsStore(applicationContext) }
+            val lightMode by themeStore.lightMode.collectAsState(initial = false)
+
+            URUJTheme(lightMode = lightMode) {
                 // ACTIVE orphan: ride was interrupted, .active marker still present.
                 // Offer the rider a choice before any auto-recovery.
                 val active = activeOrphan

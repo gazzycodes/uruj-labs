@@ -401,6 +401,8 @@ private fun MultiLineChart(snapshots: List<HrvSnapshot>) {
     val lightColor = UrujZone2
     val gridColor = UrujMuted.copy(alpha = 0.3f)
 
+    // Canvas draws in a DrawScope — palette colour read here, captured below.
+    val mutedColor = UrujMuted
     Canvas(modifier = Modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
@@ -429,7 +431,7 @@ private fun MultiLineChart(snapshots: List<HrvSnapshot>) {
         }
         // Axis baseline
         drawLine(
-            color = UrujMuted,
+            color = mutedColor,
             start = Offset(left, bottom),
             end = Offset(right, bottom),
             strokeWidth = 1.5f,

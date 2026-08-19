@@ -20,6 +20,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -33,6 +34,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.uruj.domain.AutonomicTier
 import com.uruj.domain.OrthostaticInterpretation
 import com.uruj.domain.OrthostaticTestResult
+import com.uruj.ui.theme.UrujOnAccent
 import com.uruj.ui.theme.UrujAccent
 import com.uruj.ui.theme.UrujMuted
 import com.uruj.ui.theme.UrujSurfaceHigh
@@ -177,7 +179,7 @@ private fun IdleView(onStart: () -> Unit, onBack: () -> Unit) {
         ) {
             Text(
                 "START TEST",
-                color = Color.Black,
+                color = UrujOnAccent,
                 fontWeight = FontWeight.Black,
                 fontSize = 16.sp,
                 letterSpacing = 1.5.sp,
@@ -269,7 +271,7 @@ private fun ResultView(
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = UrujAccent),
             ) {
-                Text("DONE", color = Color.Black, fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
+                Text("DONE", color = UrujOnAccent, fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
             }
         }
     }
@@ -327,7 +329,7 @@ private fun ErrorView(message: String, onRetry: () -> Unit, onBack: () -> Unit) 
             onClick = onRetry,
             colors = ButtonDefaults.buttonColors(containerColor = UrujAccent),
         ) {
-            Text("TRY AGAIN", color = Color.Black, fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
+            Text("TRY AGAIN", color = UrujOnAccent, fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
         }
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = onBack) {
@@ -336,6 +338,8 @@ private fun ErrorView(message: String, onRetry: () -> Unit, onBack: () -> Unit) 
     }
 }
 
+@Composable
+@ReadOnlyComposable
 private fun tierColor(tier: AutonomicTier): Color = when (tier) {
     AutonomicTier.ELITE -> UrujZone1
     AutonomicTier.HEALTHY -> UrujZone2
