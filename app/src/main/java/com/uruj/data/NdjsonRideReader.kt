@@ -31,7 +31,11 @@ class NdjsonRideReader(context: Context) {
      * @param stride keep every Nth sample for memory efficiency. stride=1 keeps
      *   all, stride=5 keeps every 5th. Map rendering doesn't need 1Hz precision.
      */
-    suspend fun readSamples(sessionId: String, stride: Int = 1): List<RideSample> = withContext(Dispatchers.IO) {
+    suspend fun readSamples(
+        sessionId: String,
+        stride: Int = 1,
+        maxSamples: Int = MAX_SAMPLES,
+    ): List<RideSample> = withContext(Dispatchers.IO) {
         val file = File(ridesDir, "$sessionId.ndjson")
         if (!file.exists()) {
             Log.w(TAG, "NDJSON file not found: ${file.absolutePath}")
@@ -40,6 +44,7 @@ class NdjsonRideReader(context: Context) {
         val samples = mutableListOf<RideSample>()
         var lineNumber = 0
         var skipped = 0
+        var truncated = false
         runCatching {
             file.bufferedReader().useLines { lines ->
                 for (line in lines) {
@@ -51,11 +56,27 @@ class NdjsonRideReader(context: Context) {
                     }.getOrNull()
                     if (parsed != null) samples += parsed
                     else skipped++
-                    if (samples.size >= MAX_SAMPLES) break
+                    if (samples.size >= maxSamples) {
+                        truncated = true
+                        break
+                    }
                 }
             }
         }.onFailure { Log.w(TAG, "NDJSON read failed for $sessionId", it) }
         if (skipped > 0) Log.w(TAG, "$sessionId: skipped $skipped malformed lines")
+        // v0.9.80 — truncation must never be silent. Pre-v0.9.80 this cap was
+        // applied to the HR path at stride=1, which cut long rides off at the
+        // 10,000th line: a 5h38 ride lost its last 2h51 from avg HR, max HR,
+        // time-in-zone, IF and TSS, and therefore from CTL/ATL/TSB. Because
+        // the truncation kept the PREFIX, the discarded portion was whatever
+        // the rider did late in the ride — systematically biasing load LOW.
+        if (truncated) {
+            Log.w(
+                TAG,
+                "$sessionId: TRUNCATED at $maxSamples samples (stride=$stride) — " +
+                    "derived metrics cover only part of this ride",
+            )
+        }
         Log.d(TAG, "$sessionId: loaded ${samples.size} samples (stride=$stride)")
         samples
     }
@@ -78,7 +99,11 @@ class NdjsonRideReader(context: Context) {
      * effectively empty — < MIN_USEFUL_SAMPLES).
      */
     suspend fun readHrSamples(sessionId: String): List<RideHrSample> =
-        readSamples(sessionId, stride = 1)
+        // v0.9.80 — NO CAP. Every HR metric downstream (avg, max, time-in-zone,
+        // IF, TSS) needs the whole ride; max HR in particular is destroyed by
+        // dropping any sample. The MAX_SAMPLES ceiling exists to bound memory
+        // for the map polyline, which reads at stride=3 and downsamples anyway.
+        readSamples(sessionId, stride = 1, maxSamples = Int.MAX_VALUE)
             .mapNotNull { s ->
                 val bpm = s.hrBpm ?: return@mapNotNull null
                 if (bpm <= 0) return@mapNotNull null
@@ -104,7 +129,11 @@ class NdjsonRideReader(context: Context) {
 
     companion object {
         private const val TAG = "URUJ-NdjsonReader"
-        /** Hard ceiling on samples returned. At stride=1 corresponds to ~2.7 hours of 1Hz data. */
+        /**
+         * Default ceiling on samples returned, for RENDER paths only (route
+         * polyline). At stride=3 this covers ~8.3 hours of 1Hz data. Metric
+         * paths must pass an explicit higher cap — see [readHrSamples].
+         */
         private const val MAX_SAMPLES = 10_000
         /** Below this many samples, fall back to HC instead of trusting NDJSON
          *  HR alone. Most real rides have ≥60 samples (1 min minimum). */
