@@ -280,6 +280,7 @@ class BioLabRepository(context: Context) {
                     mostRecentNightEndMs = sleepingRhr.mostRecentNightEndTime.toEpochMilli(),
                     mostRecentNightSource = sleepingRhr.mostRecentNightSource.name,
                     nightsContributing = sleepingRhr.nightsCount,
+                    medianSource = sleepingRhr.medianSource.name,
                     methodologyVersion = RhrSnapshotRepository.METHODOLOGY_VERSION,
                     computedAtMs = System.currentTimeMillis(),
                 ),
