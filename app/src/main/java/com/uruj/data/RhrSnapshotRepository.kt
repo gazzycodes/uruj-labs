@@ -241,7 +241,7 @@ class RhrSnapshotRepository(context: Context) {
          * future calculator change (e.g. switch from min-of-night to median-of-
          * lowest-quartile) can be tracked without retroactively rewriting history.
          */
-        const val METHODOLOGY_VERSION = "v0.7.7-sleep-window-min-with-glitch-filter"
+        const val METHODOLOGY_VERSION = "v0.9.82-sleep-window-min-strap-pure-median"
     }
 }
 
@@ -263,6 +263,14 @@ data class RhrSnapshot(
     val mostRecentNightSource: String,
     /** Number of nights that contributed to today's median. */
     val nightsContributing: Int,
+    /** v0.9.82 — which population the median was taken over: "STRAP" when the
+     *  median came from strap nights alone (trend-safe), "MIXED" when band
+     *  nights had to be included. The wrist band reads systematically higher
+     *  than the strap (+7.5 bpm measured on this athlete), so a MIXED median
+     *  moves with device choice, not physiology, and must not be trended or
+     *  fed to VO2 without that caveat. Null = pre-v0.9.82 snapshot, provenance
+     *  unknown — treat as MIXED. */
+    val medianSource: String? = null,
     // v0.9.49.1 — default "legacy" per [[reference_lab_grade_architecture_rules]]
     // Rule 2 so pre-versioning snapshots deserialize gracefully + future
     // methodology bumps invalidate via mismatch instead of accidental match.

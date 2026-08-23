@@ -37,6 +37,14 @@ class SleepingRhrCalculator {
         val mostRecentNightSource: SensorSource = SensorSource.UNKNOWN_LEGACY,
         /** Per-source nightly count for the overall breakdown badge. */
         val sourceBreakdown: Map<SensorSource, Int> = emptyMap(),
+        /** v0.9.82 — which population the median was actually taken over.
+         *  STRAP = strap-only nights (trustworthy for trending). MIXED = the
+         *  pool had to include band nights, so the value carries a systematic
+         *  offset and MUST NOT be trended or fed to derived metrics without
+         *  saying so. See [medianIsSourcePure]. */
+        val medianSource: SensorSource = SensorSource.UNKNOWN_LEGACY,
+        /** v0.9.82 — true when the median came from strap nights alone. */
+        val medianIsSourcePure: Boolean = false,
     )
 
     /**
@@ -82,7 +90,27 @@ class SleepingRhrCalculator {
         }
         if (perNight.isEmpty()) return null
 
-        val sortedMins = perNight.map { it.minBpm }.sorted()
+        // v0.9.82 — SOURCE PURITY. Pooling strap and band nights into one median
+        // is invalid: the two sensors do not measure the same thing. Measured on
+        // this athlete's own data (2026-06-30 .. 2026-08-23), the wrist band read
+        // a mean of 47.3 bpm on nights the strap read 39.8 — a systematic
+        // +7.5 bpm offset on the same person, same nights' worth of sleep.
+        //
+        // Pooling them means the median moves whenever the rider happens to
+        // change which device they slept in, and that movement is then read as
+        // physiology. It produced a false "RHR creeping up — illness / over-reach
+        // early warning" on 2026-08-23 (median 45 -> 46) driven purely by more
+        // band nights entering the window, and it propagates into VO2 max, which
+        // is 15 x maxHR / RHR and therefore swings ~15% on sensor choice alone.
+        //
+        // Prefer strap-only nights whenever there are enough for a stable median.
+        // Fall back to the mixed pool only when there aren't, and label it so
+        // every downstream consumer can see the value is not trend-safe.
+        val strapNights = perNight.filter { it.source == SensorSource.STRAP }
+        val usePureStrap = strapNights.size >= MIN_STRAP_NIGHTS_FOR_PURE_MEDIAN
+        val medianPool = if (usePureStrap) strapNights else perNight
+
+        val sortedMins = medianPool.map { it.minBpm }.sorted()
         val median = if (sortedMins.size % 2 == 1) {
             sortedMins[sortedMins.size / 2]
         } else {
@@ -94,9 +122,11 @@ class SleepingRhrCalculator {
             medianBpm = median,
             mostRecentNightBpm = mostRecent.minBpm,
             mostRecentNightEndTime = mostRecent.endTime,
-            nightsCount = perNight.size,
+            nightsCount = medianPool.size,
             mostRecentNightSource = mostRecent.source,
             sourceBreakdown = breakdown,
+            medianSource = if (usePureStrap) SensorSource.STRAP else SensorSource.MIXED,
+            medianIsSourcePure = usePureStrap,
         )
     }
 
@@ -120,5 +150,12 @@ class SleepingRhrCalculator {
          *  commit to STRAP source. 0.10 = ~36 samples per hour-long window,
          *  generous enough to absorb BLE drops while still meaningful. */
         private const val COVERAGE_THRESHOLD = 0.10f
+
+        /** v0.9.82 — nights of strap data required before the median is taken
+         *  over strap nights ALONE. Five is enough for a median to be robust to
+         *  one bad night while still being reachable for a rider who wears the
+         *  strap most nights. Below this we fall back to the mixed pool and
+         *  flag it rather than report a strap median off one or two nights. */
+        private const val MIN_STRAP_NIGHTS_FOR_PURE_MEDIAN = 5
     }
 }
