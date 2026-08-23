@@ -1281,10 +1281,15 @@ class ReadinessRepository(context: Context) {
         var urujRideTssTotal = 0f
         var urujRidesInWindow = 0
         var urujRidesPowerFallback = 0
+        // v0.9.81 — evidence for the EWMA warm-start below: did this athlete
+        // train in the 42 days BEFORE the window? Counted from URUJ's own ride
+        // store, which keeps history far longer than Health Connect's ~30d.
+        var ridesInPriorPeriod = 0
         for (ride in rides) {
             val rideInstant = Instant.ofEpochMilli(ride.startedAtMs)
             val rideDate = rideInstant.atZone(zone).toLocalDate()
             val daysAgo = ChronoUnit.DAYS.between(rideDate, todayDate).toInt()
+            if (daysAgo in 43..84) ridesInPriorPeriod++
             if (daysAgo !in 0..42) continue
             val hours = ride.movingTimeMs / 3_600_000f
             val avgHr = ride.averageHrBpm
@@ -1331,8 +1336,32 @@ class ReadinessRepository(context: Context) {
         if (totalLoad < 1f) return null
         if (urujRideWindows.size < 2 && athleticRhr == null) return null
 
-        var atl = 0f
-        var ctl = 0f
+        // v0.9.81 — EWMA WARM-START. Correctness fix for a structural bias.
+        //
+        // Starting both averages at zero 42 days ago is only valid for an
+        // athlete whose FIRST EVER training day is the start of the window.
+        // For anyone already training, it is wrong, and it is wrong ASYMMETRICALLY:
+        // over a 42-day run, the 7-day ATL converges to 99.75% of its true value
+        // while the 42-day CTL reaches only 1-(1-1/42)^43 = 64.5%.
+        //
+        // TSB = CTL - ATL therefore carries a built-in negative offset of about
+        // 0.355 x true CTL — roughly -19 points for a rider averaging 55 TSS/day.
+        // The engine calls that "over-trained" and prescribes rest to an athlete
+        // who is merely training consistently. Every day of honest training makes
+        // it worse, because ATL keeps up and CTL cannot.
+        //
+        // Fix: when URUJ's own ride store shows the athlete was ALSO training in
+        // the 42 days before the window, seed both averages with the window's mean
+        // daily load instead of zero. The window mean is used rather than the prior
+        // period's measured load because Health Connect has already dropped
+        // external sessions from that far back — reconstructing it from URUJ-only
+        // rides would under-count in exactly the way v0.9.80 just fixed.
+        //
+        // Gated on evidence, never assumed: a genuinely new athlete (no rides in
+        // the prior period) still starts at zero, so their fatigue is not masked.
+        val warmStart = if (ridesInPriorPeriod > 0) totalLoad / 43f else 0f
+        var atl = warmStart
+        var ctl = warmStart
         for (day in 42 downTo 0) {
             val tss = dailyTss[day]
             atl = atl * (1f - 1f / 7f) + tss * (1f / 7f)
@@ -1352,6 +1381,7 @@ class ReadinessRepository(context: Context) {
                 "($urujRidesPowerFallback power-fallback, no HR) · " +
                 "$samsungSessionsInWindow Samsung non-cycling → hrTSS ${"%.0f".format(samsungHrTssTotal)} · " +
                 "totalLoad42d ${"%.0f".format(totalLoad)} · " +
+                "warmStart=${"%.1f".format(warmStart)} ($ridesInPriorPeriod prior-period rides) · " +
                 "athleticRhr=${athleticRhr ?: "null"} · maxHr=$maxHrForLoad · ftp=$ftp(fallback-only)",
         )
         return TsbCompute(tsb = tsbValue, ctl = ctl, atl = atl, totalLoad42d = totalLoad)

@@ -148,7 +148,7 @@ class TsbSnapshotRepository(context: Context) {
          *  the rider's measured internal load. Whole TSB model now = one honest
          *  methodology. Power fields stay captured → re-adding power-TSS if a real
          *  meter ever arrives is trivial (branch on a hasPowerMeter flag). */
-        const val METHODOLOGY_VERSION = "v0.4.4-coggan-ewma-cycling-hrtss"
+        const val METHODOLOGY_VERSION = "v0.4.5-coggan-ewma-warmstart"
     }
 }
 
