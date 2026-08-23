@@ -1256,7 +1256,9 @@ class ReadinessRepository(context: Context) {
         val todayDate = targetDate
         val dailyTss = FloatArray(43)
         var totalLoad = 0f
-        val urujRideStarts = mutableListOf<Instant>()
+        // v0.9.80 — full [start, end] windows, not just starts. The external-session
+        // dedup below now matches by TIME-RANGE OVERLAP, which needs both ends.
+        val urujRideWindows = mutableListOf<Pair<Instant, Instant>>()
 
         // v0.9.72 — profile fetched ONCE up front; maxHR + athleticRhr feed BOTH
         // the cycling hrTSS below AND the Samsung non-cycling hrTSS further down.
@@ -1279,10 +1281,15 @@ class ReadinessRepository(context: Context) {
         var urujRideTssTotal = 0f
         var urujRidesInWindow = 0
         var urujRidesPowerFallback = 0
+        // v0.9.81 — evidence for the EWMA warm-start below: did this athlete
+        // train in the 42 days BEFORE the window? Counted from URUJ's own ride
+        // store, which keeps history far longer than Health Connect's ~30d.
+        var ridesInPriorPeriod = 0
         for (ride in rides) {
             val rideInstant = Instant.ofEpochMilli(ride.startedAtMs)
             val rideDate = rideInstant.atZone(zone).toLocalDate()
             val daysAgo = ChronoUnit.DAYS.between(rideDate, todayDate).toInt()
+            if (daysAgo in 43..84) ridesInPriorPeriod++
             if (daysAgo !in 0..42) continue
             val hours = ride.movingTimeMs / 3_600_000f
             val avgHr = ride.averageHrBpm
@@ -1297,7 +1304,7 @@ class ReadinessRepository(context: Context) {
             totalLoad += tss
             urujRideTssTotal += tss
             urujRidesInWindow++
-            urujRideStarts += rideInstant
+            urujRideWindows += rideInstant to Instant.ofEpochMilli(ride.endedAtMs)
         }
 
         // 2. Samsung non-cycling sessions (HR-based hrTSS). Needs RHR + maxHR
@@ -1306,12 +1313,12 @@ class ReadinessRepository(context: Context) {
         var samsungHrTssTotal = 0f
         var samsungSessionsInWindow = 0
         if (client != null && athleticRhr != null && athleticRhr > 0 && maxHrForLoad > athleticRhr) {
-            val sessions = readNonCyclingSessionLoads(
+            val sessions = readExternalSessionLoads(
                 client = client,
                 granted = granted,
                 todayDate = todayDate,
                 zone = zone,
-                urujRideStarts = urujRideStarts,
+                urujRideWindows = urujRideWindows,
                 rhr = athleticRhr,
                 maxHr = maxHrForLoad,
             )
@@ -1327,10 +1334,34 @@ class ReadinessRepository(context: Context) {
         // Below 1 TSS total: not enough load to compute a meaningful balance.
         // 2-ride floor preserved for cycling-only riders (no non-cycling data).
         if (totalLoad < 1f) return null
-        if (urujRideStarts.size < 2 && athleticRhr == null) return null
+        if (urujRideWindows.size < 2 && athleticRhr == null) return null
 
-        var atl = 0f
-        var ctl = 0f
+        // v0.9.81 — EWMA WARM-START. Correctness fix for a structural bias.
+        //
+        // Starting both averages at zero 42 days ago is only valid for an
+        // athlete whose FIRST EVER training day is the start of the window.
+        // For anyone already training, it is wrong, and it is wrong ASYMMETRICALLY:
+        // over a 42-day run, the 7-day ATL converges to 99.75% of its true value
+        // while the 42-day CTL reaches only 1-(1-1/42)^43 = 64.5%.
+        //
+        // TSB = CTL - ATL therefore carries a built-in negative offset of about
+        // 0.355 x true CTL — roughly -19 points for a rider averaging 55 TSS/day.
+        // The engine calls that "over-trained" and prescribes rest to an athlete
+        // who is merely training consistently. Every day of honest training makes
+        // it worse, because ATL keeps up and CTL cannot.
+        //
+        // Fix: when URUJ's own ride store shows the athlete was ALSO training in
+        // the 42 days before the window, seed both averages with the window's mean
+        // daily load instead of zero. The window mean is used rather than the prior
+        // period's measured load because Health Connect has already dropped
+        // external sessions from that far back — reconstructing it from URUJ-only
+        // rides would under-count in exactly the way v0.9.80 just fixed.
+        //
+        // Gated on evidence, never assumed: a genuinely new athlete (no rides in
+        // the prior period) still starts at zero, so their fatigue is not masked.
+        val warmStart = if (ridesInPriorPeriod > 0) totalLoad / 43f else 0f
+        var atl = warmStart
+        var ctl = warmStart
         for (day in 42 downTo 0) {
             val tss = dailyTss[day]
             atl = atl * (1f - 1f / 7f) + tss * (1f / 7f)
@@ -1350,6 +1381,7 @@ class ReadinessRepository(context: Context) {
                 "($urujRidesPowerFallback power-fallback, no HR) · " +
                 "$samsungSessionsInWindow Samsung non-cycling → hrTSS ${"%.0f".format(samsungHrTssTotal)} · " +
                 "totalLoad42d ${"%.0f".format(totalLoad)} · " +
+                "warmStart=${"%.1f".format(warmStart)} ($ridesInPriorPeriod prior-period rides) · " +
                 "athleticRhr=${athleticRhr ?: "null"} · maxHr=$maxHrForLoad · ftp=$ftp(fallback-only)",
         )
         return TsbCompute(tsb = tsbValue, ctl = ctl, atl = atl, totalLoad42d = totalLoad)
@@ -1386,16 +1418,34 @@ class ReadinessRepository(context: Context) {
         com.uruj.power.TrainingLoad.hrTss(avgHr, rhr, maxHr, hours)
 
     /**
-     * Reads Samsung exercise sessions from HC (last 42d), filters out cycling
-     * (URUJ owns that), filters out sessions overlapping URUJ rides within ±2min,
-     * and computes hrTSS per session.
+     * Reads Samsung / third-party exercise sessions from HC (last 42d) and
+     * computes hrTSS per session.
+     *
+     * v0.9.80 — CORRECTNESS FIX. This used to `continue` on EVERY cycling
+     * session on the assumption that "URUJ owns cycling". That assumption is
+     * false: URUJ only owns the rides URUJ actually recorded. Any ride logged
+     * on the phone while URUJ wasn't running — app not started, phone dead
+     * mid-ride, recorded in Samsung Health / Strava / another head unit — was
+     * silently dropped from CTL/ATL/TSB entirely. Verified against Strava on
+     * 2026-08-23: 19 real rides between 2026-07-15 and 2026-08-12, plus a
+     * 70 km ride on 08-16, were missing from the load model for this reason.
+     *
+     * Now: a session is skipped ONLY when it genuinely duplicates a URUJ ride,
+     * decided by time-range overlap (≥50% of the shorter session) rather than
+     * the old ±2min start-time heuristic — which missed duplicates whenever
+     * the two recorders disagreed on the start instant.
+     *
+     * Samsung auto-detect occasionally mislabels vehicle travel as cycling.
+     * That is self-limiting here: a session with no HR, or with avgHR at or
+     * below resting, is dropped, and hrTSS scales with (HR − RHR)² so a
+     * near-rest false positive contributes ≈0 load.
      */
-    private suspend fun readNonCyclingSessionLoads(
+    private suspend fun readExternalSessionLoads(
         client: HealthConnectClient,
         granted: Set<String>,
         todayDate: LocalDate,
         zone: ZoneId,
-        urujRideStarts: List<Instant>,
+        urujRideWindows: List<Pair<Instant, Instant>>,
         rhr: Int,
         maxHr: Int,
     ): List<SessionLoad> {
@@ -1418,19 +1468,29 @@ class ReadinessRepository(context: Context) {
         if (sessions.isEmpty()) return emptyList()
 
         val results = mutableListOf<SessionLoad>()
+        var externalCyclingCounted = 0
         for (session in sessions) {
-            // Skip cycling — URUJ owns it.
-            if (session.exerciseType == ExerciseSessionRecord.EXERCISE_TYPE_BIKING ||
-                session.exerciseType == ExerciseSessionRecord.EXERCISE_TYPE_BIKING_STATIONARY
-            ) continue
-            // Skip sessions overlapping URUJ rides (Samsung sometimes auto-detects
-            // a cycling workout for the same window URUJ recorded).
-            val overlapsUruj = urujRideStarts.any { urujStart ->
-                Duration.between(urujStart, session.startTime).abs() < Duration.ofMinutes(2)
-            }
-            if (overlapsUruj) continue
-
             val durationMs = Duration.between(session.startTime, session.endTime).toMillis()
+            if (durationMs <= 0L) continue
+
+            // v0.9.80 — duplicate detection by TIME-RANGE OVERLAP. A session is a
+            // duplicate of a URUJ ride when they overlap by at least half of the
+            // shorter of the two. Start-time proximity alone was too brittle: two
+            // recorders rarely agree on the start instant, and a ride split across
+            // two URUJ sessions (phone died) is one session on the Samsung side.
+            val duplicatesUrujRide = urujRideWindows.any { (rideStart, rideEnd) ->
+                val overlapMs = minOf(session.endTime, rideEnd).toEpochMilli() -
+                    maxOf(session.startTime, rideStart).toEpochMilli()
+                if (overlapMs <= 0L) return@any false
+                val rideMs = Duration.between(rideStart, rideEnd).toMillis()
+                val shorterMs = minOf(durationMs, rideMs)
+                shorterMs > 0L && overlapMs.toFloat() / shorterMs.toFloat() >= 0.5f
+            }
+            if (duplicatesUrujRide) continue
+
+            val isCycling = session.exerciseType == ExerciseSessionRecord.EXERCISE_TYPE_BIKING ||
+                session.exerciseType == ExerciseSessionRecord.EXERCISE_TYPE_BIKING_STATIONARY
+
             val durationMin = durationMs / 60_000f
             if (durationMin < 5f) continue  // too short to count
 
@@ -1456,6 +1516,14 @@ class ReadinessRepository(context: Context) {
             val sessionDate = session.startTime.atZone(zone).toLocalDate()
             val daysAgo = ChronoUnit.DAYS.between(sessionDate, todayDate).toInt()
             results += SessionLoad(daysAgo, hrTss)
+            if (isCycling) externalCyclingCounted++
+        }
+        if (externalCyclingCounted > 0) {
+            Log.i(
+                "URUJ-Readiness",
+                "recovered $externalCyclingCounted externally-recorded cycling session(s) " +
+                    "into load — rides URUJ did not record itself",
+            )
         }
         return results
     }
