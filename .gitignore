@@ -49,3 +49,6 @@ venv/
 
 # Personal — not part of this project. Private self-growth notes. NEVER commit.
 personal/
+
+# Personal medical records — NEVER commit. Third-party health data stays local.
+healthreports/
