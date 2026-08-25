@@ -52,3 +52,16 @@ personal/
 
 # Personal medical records — NEVER commit. Third-party health data stays local.
 healthreports/
+
+# ── Personal biometric data — NEVER commit. This repo is PUBLIC. ──
+# ~300 MB of beat-by-beat HR + RR-interval captures and pulled device
+# snapshots live under tools/. They are working data, not source.
+# Anything personal that needs versioning belongs in the PRIVATE
+# uruj-training-lab repo, not here.
+tools/*.ndjson
+tools/backup-*/
+tools/verify-pull*/
+tools/dashboard-sync/
+
+# Separate private git repo (gazzycodes/uruj-training-lab)
+training-plan/
