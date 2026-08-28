@@ -895,8 +895,9 @@ private fun HrvInfo(component: ReadinessComponent?) {
             "Parasympathetic saturation: in a fit heart with a low resting HR, a " +
             "LOW RMSSD can mean HIGH vagal tone, not fatigue. So a low reading with " +
             "a calm RHR is treated as benign — URUJ never reads HRV alone.\n\n" +
-            "Your low absolute number with an elite RHR (~41) + elite VO2 is exactly " +
-            "that profile — plus a live nicotine effect. It's not a deficiency.",
+            "Your low absolute number alongside a calm resting HR and a strong " +
+            "HR-recovery is exactly that profile — plus a live nicotine effect. " +
+            "It's not a deficiency.",
     )
     InfoSection(
         "General population reference (context only — NOT your gate)",

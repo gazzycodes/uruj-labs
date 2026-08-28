@@ -115,8 +115,12 @@ fun RhrTrendScreen(onBack: () -> Unit) {
                 "open. Wear the strap or band overnight + open Bio Lab tomorrow " +
                 "morning to populate. Disk-persisted forever — won't roll off " +
                 "with HC's 30-day window.",
-            methodologyFootnote = "RHR = minimum HR during the longest stable " +
-                "sleep window, filtered for arousal glitches. Methodology " +
+            methodologyFootnote = "RHR = lowest sustained 5-minute mean HR inside " +
+                "the longest stable sleep window (Garmin-style sustained statistic). " +
+                "Before v0.9.83 this was the single lowest BEAT of the night, which " +
+                "is a breath-cycle trough rather than a heart rate and read 6-8 bpm " +
+                "low; points either side of that date are not directly comparable. " +
+                "Corrupt nights are rejected outright, not averaged in. Methodology " +
                 "${RhrSnapshotRepository.METHODOLOGY_VERSION}. Endurance-athlete " +
                 "norms: 40-50 elite, 50-60 trained, 60-70 recreational, 70+ " +
                 "untrained. Every dot is persisted to URUJ's local disk — no " +

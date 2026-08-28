@@ -241,7 +241,7 @@ class RhrSnapshotRepository(context: Context) {
          * future calculator change (e.g. switch from min-of-night to median-of-
          * lowest-quartile) can be tracked without retroactively rewriting history.
          */
-        const val METHODOLOGY_VERSION = "v0.9.82-sleep-window-min-strap-pure-median"
+        const val METHODOLOGY_VERSION = "v0.9.83-sleep-window-sustained-5min"
     }
 }
 
@@ -276,6 +276,25 @@ data class RhrSnapshot(
     // methodology bumps invalidate via mismatch instead of accidental match.
     val methodologyVersion: String = "legacy",
     val computedAtMs: Long,
+    /** v0.9.83 — WHICH STATISTIC produced these numbers. "sustained-5min" from
+     *  v0.9.83 on; null means a pre-v0.9.83 record, which held the single lowest
+     *  BEAT of the night and reads 6-8 bpm LOW. **Two records with different
+     *  statistics are different quantities — never plot them on one axis or
+     *  pool them into one median without saying so.** */
+    val statistic: String? = null,
+    /** v0.9.83 — the OLD single-lowest-beat value for the most recent night, so
+     *  the pre-v0.9.83 series can be reconciled against the new one instead of
+     *  showing a phantom +6-8 bpm step on the day the fix shipped. */
+    val singleMinBpm: Int? = null,
+    /** v0.9.83 — fraction of the sleep window that actually had usable samples.
+     *  Below ~0.5 the value is real but must not be trended: a low-coverage night
+     *  samples a different part of the night, and early-night SWS runs several
+     *  bpm below morning REM. */
+    val coverage: Float? = null,
+    /** v0.9.83 — nights rejected by the plausibility gate (median sleep HR above
+     *  100 bpm = corrupt data, not a bad night). Non-zero means the athlete has
+     *  corrupt sensor days and the sample behind this median silently shrank. */
+    val rejectedNights: Int = 0,
 ) {
     val mostRecentNightSourceEnum: SensorSource
         get() = runCatching { SensorSource.valueOf(mostRecentNightSource) }

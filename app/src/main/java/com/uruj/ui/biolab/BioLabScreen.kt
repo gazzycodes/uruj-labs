@@ -1078,7 +1078,11 @@ private fun HeartRateCard(s: BioLabSnapshot, onSeeRhrTrend: () -> Unit = {}) {
         MetricRow(
             "MAX HR (effective)",
             value = "${s.maxHrBpm} bpm",
-            subtitle = if (s.maxHrAutoDetected) "auto-detected from your rides — high confidence"
+            // v0.9.83 — this used to claim "auto-detected from your rides" for ANY
+            // value that was not exactly 220−age, which meant a hand-typed number
+            // rendered as auto-detected. The flag cannot distinguish the two, so the
+            // label no longer asserts a provenance it does not know.
+            subtitle = if (s.maxHrAutoDetected) "measured or set by you — not the 220−age default"
             else "220−age estimate, ±10-12 bpm. Hit ≥${s.maxHrBpm + 1} bpm in a ride to auto-bump.",
         )
         if (s.highestHr30d != null) {

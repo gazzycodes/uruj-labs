@@ -383,8 +383,10 @@ fun HeartRateInfoDialog(s: BioLabSnapshot, onDismiss: () -> Unit) {
         InfoSection(
             "Athletic RHR — why sleep-window matters",
             "Samsung's 'Daily RHR' bounces around based on activity level + when you " +
-                "stand up. URUJ uses ONLY sleep-window minima — same protocol every " +
-                "night, activity-independent. Drops as you get fitter, spikes 5+ bpm " +
+                "stand up. URUJ uses the lowest sustained 5-minute mean inside the " +
+                "sleep window — same protocol every night, activity-independent. " +
+                "A single lowest BEAT is not a heart rate: at rest it is just your " +
+                "longest breath-cycle gap, and it reads 6-8 bpm low. Drops as you get fitter, spikes 5+ bpm " +
                 "early in illness / over-reach / dehydration.\n\n" +
                 "Endurance-athlete norms (males):\n" +
                 "  40–50 elite\n" +

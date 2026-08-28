@@ -59,9 +59,16 @@ class VO2MaxCalculator {
      *  trending toward elite or sedentary. */
     private fun classify(vo2: Float?): String {
         if (vo2 == null) return "—"
+        // v0.9.83 — THRESHOLDS UNIFIED. This table used >= 55 for "Elite (top 5%)"
+        // while Vo2SnapshotRepository:170, Vo2TrendScreen and BioLabInfoDialogs all
+        // used >= 60. This function drives the BioLab hero label, so a value of 57
+        // rendered as "Elite (top 5%)" on the card and "Excellent" everywhere else
+        // — the same number, two verdicts, in one app. The >= 60 table is the
+        // Cooper-consistent one; it wins.
         return when {
-            vo2 >= 55 -> "Elite (top 5%)"
-            vo2 >= 47 -> "Excellent"
+            vo2 >= 60 -> "Elite (top 5%)"
+            vo2 >= 52 -> "Excellent"
+            vo2 >= 47 -> "Good"
             vo2 >= 42 -> "Above average"
             vo2 >= 37 -> "Average"
             vo2 >= 33 -> "Below average"

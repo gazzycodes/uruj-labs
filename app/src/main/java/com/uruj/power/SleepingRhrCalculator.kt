@@ -4,9 +4,9 @@ import com.uruj.domain.SensorSource
 import java.time.Instant
 
 /**
- * Athletic sleeping RHR — for each detected sleep night, find the minimum HR
- * sample within that night (with a < 35 bpm glitch filter), then return both
- * the median across nights AND the most-recent night's min separately.
+ * Athletic sleeping RHR — for each detected sleep night, find the LOWEST
+ * SUSTAINED 5-minute mean HR within that night, then return both the median
+ * across nights AND the most-recent night's value separately.
  *
  * Used by Bio Lab (median for display) and Readiness scoring (most-recent for
  * "today" + median for "7d baseline"). Centralised so both screens compute
@@ -14,18 +14,47 @@ import java.time.Instant
  * Bio Lab showed 50 and Readiness showed 55 because they used different
  * proxy algorithms.
  *
- * Matches Garmin / Whoop's definition of resting HR: the lowest sustained HR
- * during deep sleep, smoothed across multiple nights of data. The previous
- * percentile-of-all-sleep-samples approach was over-conservative for sparse
- * Fit Band 3 spot-check data; min-per-night + median-across-nights tracks
- * the band's actual lows without being thrown by single-night sensor weird.
+ * v0.9.83 — THE STATISTIC IS NOW ACTUALLY SUSTAINED. Read this before changing it.
+ *
+ * Until v0.9.83 this class returned `nightSamples.min()` — the SINGLE LOWEST
+ * BEAT of the night — while this very comment claimed it matched "Garmin /
+ * Whoop's definition: the lowest sustained HR". It did not. At rest, with
+ * respiratory sinus arrhythmia, the single lowest sample is just the longest
+ * RR interval of the night: a breathing trough, not a heart rate.
+ *
+ * Measured on this athlete, 2026-08-28 sleep window, 65,162 strap samples:
+ *   single lowest sample .......... 43 bpm   <- what the app used to report
+ *   lowest 5-min rolling mean ..... 49.5 bpm <- what it reports now
+ *   lowest 30-min rolling mean .... 50.9 bpm <- Garmin's literal definition
+ * Across 26 clean nights the single-min median was 42 and the 5-min median
+ * 48.8, so the old number understated resting HR by 6-8 bpm on every night.
+ *
+ * That error did not stay local. VO2max is 15 x maxHR / RHR, and
+ * dVO2/dRHR = -1.51 per bpm versus dVO2/dmaxHR = +0.35 — 4.3x more sensitive
+ * to the input that was wrong. It reported 64.9 ("Elite, top 5%") where the
+ * corrected input gives ~57 ("Excellent"). Karvonen zones were shifted ~3 bpm
+ * low for the same reason.
+ *
+ * WHY 5 MINUTES and not 30: 30 min is Garmin's published definition and is the
+ * more conservative choice, but it needs 30 contiguous covered minutes, which
+ * this athlete's strap coverage cannot guarantee on every night. 5 min is long
+ * enough to average out respiratory sinus arrhythmia (a breath cycle is ~4-6 s)
+ * and short enough to survive real coverage. [SUSTAINED_WINDOW_MINUTES] is the
+ * single place to change it; the value used is reported in [Result.statistic].
+ *
+ * PLAUSIBILITY GATE: a night whose median HR exceeds [MAX_PLAUSIBLE_SLEEP_BPM]
+ * is not a sleep night — it is corrupt data — and is rejected outright rather
+ * than averaged in. Nine such nights exist in this athlete's history (e.g.
+ * 2026-08-15 sat above 140 bpm from 02:14 to 16:20, straight through a scored
+ * sleep session). Rejections are counted in [Result.rejectedNights] so a
+ * silently shrinking sample can never masquerade as a clean one.
  */
 class SleepingRhrCalculator {
 
     data class Result(
-        /** Median of nightly minimums — robust against single-night outliers. */
+        /** Median of nightly sustained values — robust against single-night outliers. */
         val medianBpm: Int,
-        /** Min HR observed during the most recent sleep night with HR samples. */
+        /** Lowest sustained 5-min mean during the most recent sleep night. */
         val mostRecentNightBpm: Int,
         /** When the most recent night with HR data ended. */
         val mostRecentNightEndTime: Instant,
@@ -45,6 +74,22 @@ class SleepingRhrCalculator {
         val medianSource: SensorSource = SensorSource.UNKNOWN_LEGACY,
         /** v0.9.82 — true when the median came from strap nights alone. */
         val medianIsSourcePure: Boolean = false,
+        /** v0.9.83 — PROVENANCE. Which statistic produced these numbers, so a
+         *  stored value can always be re-derived and compared like-for-like.
+         *  "sustained-5min" normally; "single-min-fallback" when a night had
+         *  too few contiguous covered minutes to form a rolling window. */
+        val statistic: String = STAT_SUSTAINED,
+        /** v0.9.83 — the OLD single-lowest-beat value for the most recent night.
+         *  Kept so the v0.9.82-and-earlier history can be reconciled against the
+         *  new series rather than showing a phantom step. Not for display. */
+        val mostRecentNightSingleMinBpm: Int? = null,
+        /** v0.9.83 — fraction of the most recent sleep window that actually had
+         *  usable samples (0..1). Below [MIN_COVERAGE_FOR_TREND] the value is
+         *  still returned but must not be trended. */
+        val mostRecentNightCoverage: Float = 0f,
+        /** v0.9.83 — nights thrown out by the plausibility gate. If this is
+         *  non-zero the athlete has corrupt sensor days and should be told. */
+        val rejectedNights: Int = 0,
     )
 
     /**
@@ -67,25 +112,31 @@ class SleepingRhrCalculator {
         if (sleepWindows.isEmpty()) return null
         if (hcSamples.isEmpty() && strapSamples.isEmpty()) return null
 
+        var rejected = 0
         val perNight = sleepWindows.mapNotNull { (start, end) ->
             // Try strap first (per-second precision)
-            val strapMin = minForWindow(strapSamples, start, end)
+            val strapStat = sustainedForWindow(strapSamples, start, end)
             val strapCount = strapSamples.count { (t, _) -> !t.isBefore(start) && !t.isAfter(end) }
             val winLengthSec = java.time.Duration.between(start, end).seconds.coerceAtLeast(1)
             val strapDensity = strapCount.toFloat() / winLengthSec.toFloat() // ~1.0 for full coverage
-            if (strapMin != null && strapDensity >= COVERAGE_THRESHOLD) {
-                return@mapNotNull NightMin(end, strapMin, SensorSource.STRAP)
+            if (strapStat != null && strapDensity >= COVERAGE_THRESHOLD) {
+                if (!strapStat.plausible) { rejected++; return@mapNotNull null }
+                return@mapNotNull NightMin(end, strapStat, SensorSource.STRAP)
             }
             // Fall back to HC
-            val hcMin = minForWindow(hcSamples, start, end)
-            if (hcMin != null) {
+            val hcStat = sustainedForWindow(hcSamples, start, end)
+            if (hcStat != null) {
                 // If strap had some data but didn't pass coverage, this is
                 // technically MIXED. But we use HC value (more samples), so
                 // call it BAND-leaning. Source = BAND.
-                return@mapNotNull NightMin(end, hcMin, SensorSource.BAND)
+                if (!hcStat.plausible) { rejected++; return@mapNotNull null }
+                return@mapNotNull NightMin(end, hcStat, SensorSource.BAND)
             }
             // Strap had partial coverage but HC empty — accept strap as MIXED.
-            if (strapMin != null) return@mapNotNull NightMin(end, strapMin, SensorSource.MIXED)
+            if (strapStat != null) {
+                if (!strapStat.plausible) { rejected++; return@mapNotNull null }
+                return@mapNotNull NightMin(end, strapStat, SensorSource.MIXED)
+            }
             null
         }
         if (perNight.isEmpty()) return null
@@ -110,7 +161,7 @@ class SleepingRhrCalculator {
         val usePureStrap = strapNights.size >= MIN_STRAP_NIGHTS_FOR_PURE_MEDIAN
         val medianPool = if (usePureStrap) strapNights else perNight
 
-        val sortedMins = medianPool.map { it.minBpm }.sorted()
+        val sortedMins = medianPool.map { it.stat.sustainedBpm }.sorted()
         val median = if (sortedMins.size % 2 == 1) {
             sortedMins[sortedMins.size / 2]
         } else {
@@ -120,30 +171,110 @@ class SleepingRhrCalculator {
         val breakdown = perNight.groupingBy { it.source }.eachCount()
         return Result(
             medianBpm = median,
-            mostRecentNightBpm = mostRecent.minBpm,
+            mostRecentNightBpm = mostRecent.stat.sustainedBpm,
             mostRecentNightEndTime = mostRecent.endTime,
             nightsCount = medianPool.size,
             mostRecentNightSource = mostRecent.source,
             sourceBreakdown = breakdown,
             medianSource = if (usePureStrap) SensorSource.STRAP else SensorSource.MIXED,
             medianIsSourcePure = usePureStrap,
+            statistic = mostRecent.stat.statistic,
+            mostRecentNightSingleMinBpm = mostRecent.stat.singleMinBpm,
+            mostRecentNightCoverage = mostRecent.stat.coverage,
+            rejectedNights = rejected,
         )
     }
 
-    /** Apply glitch filter + ≥5-sample requirement, return min bpm or null. */
-    private fun minForWindow(
+    /**
+     * v0.9.83 — the real statistic: the LOWEST SUSTAINED heart rate of the night.
+     *
+     * Samples are binned to per-minute means (which averages out respiratory
+     * sinus arrhythmia), then the lowest mean over [SUSTAINED_WINDOW_MINUTES]
+     * CONTIGUOUS minutes is taken. Contiguity is required — a "5-minute mean"
+     * stitched across a two-hour coverage gap is not a sustained heart rate.
+     *
+     * Falls back to the lowest single MINUTE (still not a single beat) when the
+     * night has no run of contiguous covered minutes long enough, and says so in
+     * [NightStat.statistic] rather than silently returning a different quantity.
+     *
+     * Returns null when there is too little data to say anything at all.
+     */
+    private fun sustainedForWindow(
         samples: List<Pair<Instant, Int>>,
         start: Instant,
         end: Instant,
-    ): Int? {
-        val nightSamples = samples
-            .filter { (t, bpm) -> !t.isBefore(start) && !t.isAfter(end) && bpm >= 35 }
-            .map { it.second }
-        if (nightSamples.size < 5) return null
-        return nightSamples.min()
+    ): NightStat? {
+        val valid = samples.filter { (t, bpm) ->
+            !t.isBefore(start) && !t.isAfter(end) && bpm >= GLITCH_FLOOR_BPM
+        }
+        if (valid.size < MIN_SAMPLES_PER_NIGHT) return null
+
+        // Per-minute means. Bucket key is absolute epoch-minute so contiguity is
+        // testable by simple difference.
+        val buckets = HashMap<Long, IntArray>()          // key -> [sum, count]
+        for ((t, bpm) in valid) {
+            val k = t.toEpochMilli() / 60_000L
+            val acc = buckets.getOrPut(k) { IntArray(2) }
+            acc[0] += bpm
+            acc[1] += 1
+        }
+        val keys = buckets.keys.sorted()
+        val means = keys.map { buckets[it]!![0].toFloat() / buckets[it]!![1] }
+
+        val windowSec = java.time.Duration.between(start, end).seconds.coerceAtLeast(1)
+        val coverage = (keys.size * 60f / windowSec).coerceIn(0f, 1f)
+
+        // PLAUSIBILITY: is this a sleep night at all? Median across covered
+        // minutes, so a short artefact burst cannot trip it but a night that
+        // genuinely sat at 150 bpm for hours will.
+        val medianMinute = means.sorted()[means.size / 2]
+        val plausible = medianMinute <= MAX_PLAUSIBLE_SLEEP_BPM
+
+        val singleMin = valid.minOf { it.second }
+        val lowestMinute = means.min()
+
+        // Lowest CONTIGUOUS N-minute rolling mean.
+        var bestRun: Float? = null
+        val n = SUSTAINED_WINDOW_MINUTES
+        if (keys.size >= n) {
+            for (i in 0..keys.size - n) {
+                if (keys[i + n - 1] - keys[i] != (n - 1).toLong()) continue   // gap inside the run
+                var sum = 0f
+                for (j in i until i + n) sum += means[j]
+                val m = sum / n
+                if (bestRun == null || m < bestRun!!) bestRun = m
+            }
+        }
+
+        return if (bestRun != null) {
+            NightStat(
+                sustainedBpm = Math.round(bestRun!!),
+                singleMinBpm = singleMin,
+                coverage = coverage,
+                plausible = plausible,
+                statistic = STAT_SUSTAINED,
+            )
+        } else {
+            NightStat(
+                sustainedBpm = Math.round(lowestMinute),
+                singleMinBpm = singleMin,
+                coverage = coverage,
+                plausible = plausible,
+                statistic = STAT_SINGLE_MINUTE_FALLBACK,
+            )
+        }
     }
 
-    private data class NightMin(val endTime: Instant, val minBpm: Int, val source: SensorSource)
+    /** One night's resolved statistics, with the provenance to audit them later. */
+    private data class NightStat(
+        val sustainedBpm: Int,
+        val singleMinBpm: Int,
+        val coverage: Float,
+        val plausible: Boolean,
+        val statistic: String,
+    )
+
+    private data class NightMin(val endTime: Instant, val stat: NightStat, val source: SensorSource)
 
     companion object {
         /** v0.7.7 — minimum sample density (samples per second of window) to
@@ -157,5 +288,36 @@ class SleepingRhrCalculator {
          *  strap most nights. Below this we fall back to the mixed pool and
          *  flag it rather than report a strap median off one or two nights. */
         private const val MIN_STRAP_NIGHTS_FOR_PURE_MEDIAN = 5
+
+        /** v0.9.83 — length of the sustained window, in contiguous covered
+         *  minutes. Garmin publishes 30; 5 is used here because it survives
+         *  this athlete's real strap coverage while still averaging out
+         *  respiratory sinus arrhythmia (a breath cycle is ~4-6 s). Change
+         *  HERE and nowhere else — the value in force is reported through
+         *  [Result.statistic]. */
+        const val SUSTAINED_WINDOW_MINUTES = 5
+
+        /** v0.9.83 — a sleep window whose MEDIAN covered minute exceeds this is
+         *  not sleep; it is corrupt sensor data, and it is rejected rather than
+         *  averaged in. 100 bpm is far above any plausible sleeping heart rate
+         *  (this athlete's clean nights median 46-70) and far below the 140-160
+         *  seen on the nine known corrupt nights, so the gate cannot misfire on
+         *  a genuinely poor night's sleep. */
+        const val MAX_PLAUSIBLE_SLEEP_BPM = 100f
+
+        /** Below this the sample is a dropout or a sensor glitch, not a beat.
+         *  ~22% of this strap's raw samples are `bpm:0, contactDetected:false`. */
+        const val GLITCH_FLOOR_BPM = 35
+
+        /** Minimum usable samples before a night is allowed to produce a value. */
+        const val MIN_SAMPLES_PER_NIGHT = 5
+
+        /** Below this fraction of the sleep window covered, the value is still
+         *  returned but MUST NOT be trended — see [Result.mostRecentNightCoverage]. */
+        const val MIN_COVERAGE_FOR_TREND = 0.5f
+
+        /** Provenance tags for [Result.statistic]. */
+        const val STAT_SUSTAINED = "sustained-5min"
+        const val STAT_SINGLE_MINUTE_FALLBACK = "single-min-fallback"
     }
 }

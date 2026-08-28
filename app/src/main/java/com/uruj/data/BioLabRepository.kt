@@ -283,6 +283,14 @@ class BioLabRepository(context: Context) {
                     medianSource = sleepingRhr.medianSource.name,
                     methodologyVersion = RhrSnapshotRepository.METHODOLOGY_VERSION,
                     computedAtMs = System.currentTimeMillis(),
+                    // v0.9.83 — provenance MUST survive the persistence boundary.
+                    // Computing it and dropping it here is how "which statistic
+                    // produced this number?" became unanswerable for every
+                    // snapshot written before today.
+                    statistic = sleepingRhr.statistic,
+                    singleMinBpm = sleepingRhr.mostRecentNightSingleMinBpm,
+                    coverage = sleepingRhr.mostRecentNightCoverage,
+                    rejectedNights = sleepingRhr.rejectedNights,
                 ),
                 date = today,
             )
