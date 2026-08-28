@@ -944,9 +944,12 @@ private fun HrvInfo(component: ReadinessComponent?) {
 private fun RestingHrInfo(component: ReadinessComponent?) {
     InfoSection(
         "What it is",
-        "Your lowest stable heart rate. URUJ uses the median of your sleep " +
-            "nights over the last 7 days (sleep-window RHR — more accurate than " +
-            "Samsung's daytime daily-RHR).",
+        "Your lowest SUSTAINED heart rate — the lowest 5-minute rolling mean " +
+            "inside the sleep window, then the median across your recent sleep " +
+            "nights (v0.9.83). Before that it was the single lowest BEAT of the " +
+            "night, which at rest is just your longest breath-cycle gap and read " +
+            "6-8 bpm low. More reliable than Samsung's daytime daily-RHR, which " +
+            "moves with whatever you were doing when it sampled.",
     )
     InfoSection(
         "Why cyclists care",

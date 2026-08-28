@@ -409,7 +409,13 @@ fun HeartRateInfoDialog(s: BioLabSnapshot, onDismiss: () -> Unit) {
             rhr <= 70 -> "RECREATIONAL FIT ($rhr bpm) — solid baseline"
             else -> "UNTRAINED ($rhr bpm) — long runway, Z2 base will move this"
         }
-        val maxHrConfidence = if (s.maxHrAutoDetected) "auto-detected (high confidence)"
+        // v0.9.83 -- `maxHrAutoDetected` is
+        // `autoDetected > profile.maxHrBpm || !maxHrIsFormulaDefault`, and the
+        // second clause fires for ANY value that is not exactly 220-age. So a
+        // hand-typed number rendered as "auto-detected (high confidence)". The
+        // flag cannot distinguish manual from automatic; the label must not claim
+        // it can. (Twin of the same defect on BioLabScreen.kt.)
+        val maxHrConfidence = if (s.maxHrAutoDetected) "measured or set by you — not the 220−age default"
         else "220−age estimate (±10-12 bpm — do one 5-min all-out effort to lock)"
         YouSection(
             "Max HR: $maxHr bpm — $maxHrConfidence\n" +
